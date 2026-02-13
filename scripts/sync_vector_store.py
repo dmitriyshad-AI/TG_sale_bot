@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -17,7 +18,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from sales_agent.sales_core.config import get_settings
-from sales_agent.sales_core.vector_store import load_vector_store_id, write_vector_store_meta
+from sales_agent.sales_core.vector_store import (
+    load_vector_store_id,
+    read_vector_store_meta,
+    write_vector_store_meta,
+)
 
 
 API_BASE = "https://api.openai.com/v1"
@@ -118,6 +123,45 @@ def _create_vector_store(api_key: str, name: str) -> str:
     return vector_store_id
 
 
+def _file_sha256(file_path: Path) -> str:
+    digest = hashlib.sha256()
+    with file_path.open("rb") as fh:
+        while True:
+            chunk = fh.read(8192)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _index_existing_files(meta: Dict[str, Any], vector_store_id: str) -> Dict[str, Dict[str, str]]:
+    if meta.get("vector_store_id") != vector_store_id:
+        return {}
+
+    raw_files = meta.get("files")
+    if not isinstance(raw_files, list):
+        return {}
+
+    indexed: Dict[str, Dict[str, str]] = {}
+    for item in raw_files:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        file_id = item.get("file_id")
+        sha256 = item.get("sha256")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if not isinstance(file_id, str) or not file_id.strip():
+            continue
+        if not isinstance(sha256, str) or not sha256.strip():
+            continue
+        indexed[name] = {
+            "file_id": file_id.strip(),
+            "sha256": sha256.strip(),
+        }
+    return indexed
+
+
 def main() -> int:
     args = parse_args()
     settings = get_settings()
@@ -145,6 +189,8 @@ def main() -> int:
         print(f"[ERROR] no knowledge files found in {knowledge_dir}")
         return 1
 
+    existing_meta = read_vector_store_meta(meta_path)
+
     vector_store_id = (
         args.vector_store_id
         or settings.openai_vector_store_id
@@ -158,16 +204,38 @@ def main() -> int:
         else:
             print(f"[INFO] using vector store: {vector_store_id}")
 
-        uploaded: List[Dict[str, str]] = []
+        existing_file_map = _index_existing_files(existing_meta, vector_store_id=vector_store_id)
+        uploaded_files = 0
+        skipped_files = 0
+        synced_files: List[Dict[str, object]] = []
         for file_path in knowledge_files:
-            file_id = _upload_file(api_key=api_key, file_path=file_path)
-            _attach_file_to_vector_store(
-                api_key=api_key,
-                vector_store_id=vector_store_id,
-                file_id=file_id,
+            sha256 = _file_sha256(file_path)
+            previous = existing_file_map.get(file_path.name)
+            if previous and previous.get("sha256") == sha256:
+                file_id = str(previous["file_id"])
+                skipped_files += 1
+                status = "reused"
+                print(f"[SKIP] unchanged {file_path.name} -> {file_id}")
+            else:
+                file_id = _upload_file(api_key=api_key, file_path=file_path)
+                _attach_file_to_vector_store(
+                    api_key=api_key,
+                    vector_store_id=vector_store_id,
+                    file_id=file_id,
+                )
+                uploaded_files += 1
+                status = "uploaded"
+                print(f"[OK] uploaded {file_path.name} -> {file_id}")
+
+            synced_files.append(
+                {
+                    "name": file_path.name,
+                    "file_id": file_id,
+                    "sha256": sha256,
+                    "size_bytes": file_path.stat().st_size,
+                    "status": status,
+                }
             )
-            uploaded.append({"name": file_path.name, "file_id": file_id})
-            print(f"[OK] uploaded {file_path.name} -> {file_id}")
 
         write_vector_store_meta(
             path=meta_path,
@@ -175,8 +243,16 @@ def main() -> int:
                 "vector_store_id": vector_store_id,
                 "knowledge_dir": str(knowledge_dir),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
-                "files": uploaded,
+                "files": synced_files,
+                "stats": {
+                    "uploaded": uploaded_files,
+                    "reused": skipped_files,
+                    "total": len(synced_files),
+                },
             },
+        )
+        print(
+            f"[INFO] sync complete: uploaded={uploaded_files}, reused={skipped_files}, total={len(synced_files)}"
         )
         print(f"[OK] metadata saved to {meta_path}")
         return 0

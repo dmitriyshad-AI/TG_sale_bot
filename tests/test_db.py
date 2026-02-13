@@ -122,6 +122,16 @@ class DatabaseTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row[0], 1)
 
+    def test_db_connection_sets_busy_timeout(self) -> None:
+        row = self.conn.execute("PRAGMA busy_timeout").fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], 5000)
+
+    def test_db_connection_uses_wal_journal_mode(self) -> None:
+        row = self.conn.execute("PRAGMA journal_mode").fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(str(row[0]).lower(), "wal")
+
     def test_create_lead_record_persists_contact_json(self) -> None:
         user_id = db.get_or_create_user(self.conn, "telegram", "555")
         lead_row_id = db.create_lead_record(

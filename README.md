@@ -117,6 +117,7 @@ VECTOR_STORE_META_PATH=
   python3 scripts/sync_vector_store.py
   ```
   - Скрипт сохранит `vector_store_id` в `data/vector_store.json`.
+  - Повторный запуск идемпотентный: неизменённые файлы будут переиспользованы без повторной загрузки.
   - Можно зафиксировать ID вручную через `OPENAI_VECTOR_STORE_ID`.
 - Валидация каталога:
   ```bash
@@ -135,6 +136,11 @@ VECTOR_STORE_META_PATH=
 - Запуск pytest (если установлен):
   ```bash
   pytest -q
+  ```
+
+- Точечные тесты CLI-утилит:
+  ```bash
+  python3 -m pytest tests/test_sync_vector_store_script.py tests/test_generate_deeplink_script.py -q
   ```
 
 ## Следующие шаги (по плану)

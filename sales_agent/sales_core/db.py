@@ -3,6 +3,9 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+SQLITE_BUSY_TIMEOUT_MS = 5000
+SQLITE_CONNECT_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1000
+
 
 CREATE_TABLE_STATEMENTS = [
     """
@@ -63,6 +66,9 @@ CREATE_INDEX_STATEMENTS = [
 
 def _apply_pragmas(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS};")
+    conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA synchronous = NORMAL;")
 
 
 def _migrate_sessions_uniqueness(conn: sqlite3.Connection) -> None:
@@ -90,7 +96,11 @@ def init_db(db_path: Path) -> None:
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn = sqlite3.connect(
+        db_path,
+        check_same_thread=False,
+        timeout=SQLITE_CONNECT_TIMEOUT_SECONDS,
+    )
     _apply_pragmas(conn)
     conn.row_factory = sqlite3.Row
     return conn
