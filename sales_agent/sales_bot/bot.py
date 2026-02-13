@@ -148,7 +148,7 @@ def _format_product_blurb(criteria: SearchCriteria, products) -> str:
     if not products:
         return "Подходящие продукты пока не найдены. Оставьте контакт, и менеджер подберет вручную."
 
-    lines = ["Подобрал 3 варианта:"]
+    lines = ["Подобрал варианты:"]
     for idx, product in enumerate(products, start=1):
         reason = explain_match(product, criteria)
         lines.append(
@@ -327,8 +327,7 @@ async def _handle_flow_step(
             logger.exception("Failed to prepare product suggestions")
             response_text = (
                 "Подбор временно недоступен. "
-                "Оставьте контакт, и менеджер поможет вручную. "
-                f"Техническая причина: {exc}"
+                "Оставьте контакт, и менеджер поможет вручную."
             )
 
     await _reply(update, response_text, keyboard_layout=step.keyboard)

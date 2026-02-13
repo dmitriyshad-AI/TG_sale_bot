@@ -148,35 +148,26 @@ def upsert_session_state(
 ) -> None:
     state_json = json.dumps(state or {}, ensure_ascii=False)
     meta_json = json.dumps(meta or {}, ensure_ascii=False) if meta else None
-    cursor = conn.execute(
-        "SELECT id FROM sessions WHERE user_id = ?",
-        (user_id,),
-    )
-    row = cursor.fetchone()
-    if row:
-        if meta_json is None:
-            conn.execute(
-                """
-                UPDATE sessions
-                SET state_json = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = ?
-                """,
-                (state_json, user_id),
-            )
-        else:
-            conn.execute(
-                """
-                UPDATE sessions
-                SET state_json = ?, meta_json = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = ?
-                """,
-                (state_json, meta_json, user_id),
-            )
+    if meta_json is None:
+        conn.execute(
+            """
+            INSERT INTO sessions (user_id, state_json, meta_json)
+            VALUES (?, ?, NULL)
+            ON CONFLICT(user_id) DO UPDATE SET
+                state_json = excluded.state_json,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (user_id, state_json),
+        )
     else:
         conn.execute(
             """
             INSERT INTO sessions (user_id, state_json, meta_json)
             VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                state_json = excluded.state_json,
+                meta_json = excluded.meta_json,
+                updated_at = CURRENT_TIMESTAMP
             """,
             (user_id, state_json, meta_json),
         )
