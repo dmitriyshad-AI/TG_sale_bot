@@ -8,6 +8,8 @@ from typing import Any, Dict, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+import httpx
+
 from sales_agent.sales_core.config import Settings, get_settings
 
 
@@ -133,6 +135,74 @@ class TallantoClient:
             error=None if success else "Tallanto returned no entry id.",
         )
 
+    async def set_entry_async(
+        self,
+        module: str,
+        fields_values: Dict[str, Any],
+        id: Optional[str] = None,
+    ) -> TallantoResult:
+        if self.mock_mode:
+            return self._mock_result()
+
+        if not self.is_configured():
+            return TallantoResult(
+                success=False,
+                entry_id=None,
+                raw={},
+                error="Tallanto is not configured. Fill TALLANTO_API_URL and TALLANTO_API_KEY.",
+            )
+
+        payload: Dict[str, Any] = {
+            "method": "set_entry",
+            "api_key": self.api_key,
+            "module": module,
+            "fields_values": fields_values,
+        }
+        if id:
+            payload["id"] = id
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(
+                    self.base_url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                )
+        except httpx.RequestError as exc:
+            return TallantoResult(
+                success=False,
+                entry_id=None,
+                raw={},
+                error=f"Tallanto connection error: {exc}",
+            )
+
+        if response.status_code >= 400:
+            return TallantoResult(
+                success=False,
+                entry_id=None,
+                raw={"status_code": response.status_code},
+                error=f"Tallanto HTTP error: {response.status_code}",
+            )
+
+        try:
+            parsed = response.json() if response.text else {}
+        except ValueError:
+            return TallantoResult(
+                success=False,
+                entry_id=None,
+                raw={},
+                error="Tallanto response is not valid JSON.",
+            )
+
+        entry_id = self._extract_entry_id(parsed)
+        success = bool(entry_id) or bool(parsed.get("success") is True)
+        return TallantoResult(
+            success=success,
+            entry_id=entry_id,
+            raw=parsed,
+            error=None if success else "Tallanto returned no entry id.",
+        )
+
     def create_lead(
         self,
         phone: str,
@@ -150,6 +220,23 @@ class TallantoClient:
         }
         return self.set_entry(module="leads", fields_values=fields)
 
+    async def create_lead_async(
+        self,
+        phone: str,
+        brand: str,
+        name: Optional[str] = None,
+        source: str = "telegram",
+        note: Optional[str] = None,
+    ) -> TallantoResult:
+        fields = {
+            "phone": phone,
+            "brand": brand,
+            "name": name or "",
+            "source": source,
+            "note": note or "",
+        }
+        return await self.set_entry_async(module="leads", fields_values=fields)
+
     def upsert_contact(
         self,
         phone: str,
@@ -163,3 +250,17 @@ class TallantoClient:
             "email": email or "",
         }
         return self.set_entry(module="contacts", fields_values=fields, id=contact_id)
+
+    async def upsert_contact_async(
+        self,
+        phone: str,
+        name: Optional[str] = None,
+        email: Optional[str] = None,
+        contact_id: Optional[str] = None,
+    ) -> TallantoResult:
+        fields = {
+            "phone": phone,
+            "name": name or "",
+            "email": email or "",
+        }
+        return await self.set_entry_async(module="contacts", fields_values=fields, id=contact_id)

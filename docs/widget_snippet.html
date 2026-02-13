@@ -1,0 +1,87 @@
+<!-- Telegram widget snippet for sales-agent -->
+<div id="sales-agent-widget" style="margin: 16px 0;">
+  <a
+    id="sales-agent-link"
+    href="#"
+    style="display:inline-block;padding:12px 18px;border-radius:10px;background:#111;color:#fff;text-decoration:none;font-weight:600;"
+  >
+    Подобрать курс в Telegram
+  </a>
+</div>
+
+<script>
+  (function () {
+    var BOT_USERNAME = "YOUR_BOT_USERNAME"; // пример: my_sales_agent_bot
+    var BRAND = "kmipt"; // kmipt | foton
+
+    function toBase64Url(text) {
+      var base64 = btoa(unescape(encodeURIComponent(text)));
+      return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    }
+
+    function normalizePart(value, maxLen) {
+      if (!value) return null;
+      var clean = String(value).trim();
+      if (!clean) return null;
+      return clean.slice(0, maxLen);
+    }
+
+    function encodePayload(payloadObj) {
+      return "dl_" + toBase64Url(JSON.stringify(payloadObj));
+    }
+
+    function buildToken(meta) {
+      var compact = {
+        b: normalizePart(meta.brand, 10),
+        s: normalizePart(meta.source, 14),
+        p: normalizePart(meta.page, 24),
+        us: normalizePart(meta.utm_source, 14),
+        um: normalizePart(meta.utm_medium, 14),
+        uc: normalizePart(meta.utm_campaign, 14),
+      };
+
+      Object.keys(compact).forEach(function (key) {
+        if (!compact[key]) delete compact[key];
+      });
+
+      var token = encodePayload(compact);
+      if (token.length <= 64) return token;
+
+      delete compact.uc;
+      delete compact.um;
+      delete compact.us;
+      token = encodePayload(compact);
+      if (token.length <= 64) return token;
+
+      if (compact.p) {
+        compact.p = normalizePart(compact.p, 12);
+      }
+      token = encodePayload(compact);
+      if (token.length <= 64) return token;
+
+      delete compact.p;
+      token = encodePayload(compact);
+      if (token.length <= 64) return token;
+
+      return encodePayload({});
+    }
+
+    function buildPayload() {
+      var params = new URLSearchParams(window.location.search);
+      return buildToken({
+        brand: BRAND,
+        source: "site",
+        page: window.location.pathname || "/",
+        utm_source: params.get("utm_source"),
+        utm_medium: params.get("utm_medium"),
+        utm_campaign: params.get("utm_campaign"),
+      });
+    }
+
+    var link = document.getElementById("sales-agent-link");
+    if (!link) return;
+
+    var payload = buildPayload();
+    link.href = "https://t.me/" + BOT_USERNAME + "?start=" + encodeURIComponent(payload);
+  })();
+</script>

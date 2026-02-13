@@ -25,6 +25,30 @@ class _MockHTTPResponse:
         return False
 
 
+class _MockAsyncResponse:
+    def __init__(self, status_code: int, payload: dict) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = "{}"
+
+    def json(self):
+        return self._payload
+
+
+class _MockAsyncClient:
+    def __init__(self, response: _MockAsyncResponse) -> None:
+        self.response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, *args, **kwargs):
+        return self.response
+
+
 @unittest.skipUnless(HAS_TALLANTO_DEPS, "tallanto dependencies are not installed")
 class TallantoClientTests(unittest.TestCase):
     def test_set_entry_returns_error_when_not_configured(self) -> None:
@@ -78,6 +102,26 @@ class TallantoClientTests(unittest.TestCase):
             self.assertEqual(kwargs["module"], "leads")
             self.assertEqual(kwargs["fields_values"]["phone"], "+70000000000")
             self.assertEqual(kwargs["fields_values"]["brand"], "kmipt")
+
+
+@unittest.skipUnless(HAS_TALLANTO_DEPS, "tallanto dependencies are not installed")
+class TallantoClientAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_set_entry_async_parses_success(self) -> None:
+        client = TallantoClient(base_url="https://crm.example/api", api_key="key", mock_mode=False)
+        response = _MockAsyncResponse(200, {"success": True, "result": {"id": "async-1"}})
+        with patch(
+            "sales_agent.sales_core.tallanto_client.httpx.AsyncClient",
+            return_value=_MockAsyncClient(response),
+        ):
+            result = await client.set_entry_async("leads", {"phone": "+70000000000"})
+        self.assertTrue(result.success)
+        self.assertEqual(result.entry_id, "async-1")
+
+    async def test_create_lead_async_in_mock_mode(self) -> None:
+        client = TallantoClient(base_url="https://crm.example/api", api_key="key", mock_mode=True)
+        result = await client.create_lead_async(phone="+70000000000", brand="kmipt")
+        self.assertTrue(result.success)
+        self.assertTrue((result.entry_id or "").startswith("mock-"))
 
 
 if __name__ == "__main__":

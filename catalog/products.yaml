@@ -1,54 +1,52 @@
 products:
   - id: kmipt-camp-winter-math-2026
     brand: kmipt
-    title: "Зимний математический лагерь KMIPT"
-    url: "https://kmipt.example/camps/winter-math-2026"
+    title: "Зимняя ФизМат и IT школа KMIPT 2026"
+    url: "https://kmipt.ru/courses/Zimnyaya_shkola/"
     category: camp
-    grade_min: 6
-    grade_max: 10
+    grade_min: 5
+    grade_max: 11
     subjects:
       - math
+      - physics
+      - informatics
     format: offline
     sessions:
-      - name: "Январская смена"
-        start_date: "2026-01-03"
-        end_date: "2026-01-10"
-        price_rub: 52900
+      - name: "Зимняя смена"
+        start_date: "2026-01-02"
+        end_date: "2026-01-09"
+        price_rub: 88200
     usp:
-      - "Ежедневные разборы олимпиадных задач"
-      - "Кураторы из топовых технических вузов"
-      - "Фокус на росте результата за одну смену"
+      - "Выездной интенсив с предметными треками"
+      - "Подходит для школьников 5-11 классов"
+      - "Данные по цене взяты с публичной страницы, уточняются перед оплатой"
 
   - id: kmipt-camp-summer-stem-2026
     brand: kmipt
-    title: "Летний STEM-лагерь KMIPT"
-    url: "https://kmipt.example/camps/summer-stem-2026"
+    title: "Летняя выездная школа KMIPT 2026"
+    url: "https://kmipt.ru/courses/Letnyaya_shkola/"
     category: camp
     grade_min: 5
-    grade_max: 9
+    grade_max: 11
     subjects:
       - math
       - physics
       - informatics
     format: offline
     sessions:
-      - name: "Июньская смена"
-        start_date: "2026-06-08"
-        end_date: "2026-06-21"
-        price_rub: 64900
-      - name: "Июльская смена"
-        start_date: "2026-07-06"
-        end_date: "2026-07-19"
-        price_rub: 67900
+      - name: "Летняя смена"
+        start_date: "2026-06-20"
+        end_date: "2026-07-03"
+        price_rub: 83300
     usp:
-      - "Проекты по физике и программированию"
-      - "Тренировка учебной самостоятельности"
-      - "Баланс учебы, спорта и командной работы"
+      - "Выездной формат с учебной и проектной программой"
+      - "Для учеников с разным уровнем подготовки"
+      - "Итоговая стоимость и смена подтверждаются менеджером"
 
   - id: kmipt-ege-math-pro
     brand: kmipt
-    title: "ЕГЭ Математика Профиль 80+"
-    url: "https://kmipt.example/courses/ege-math-pro"
+    title: "Подготовка к ЕГЭ по математике"
+    url: "https://kmipt.ru/courses/EGE/matematika_ege/"
     category: ege
     grade_min: 10
     grade_max: 11
@@ -56,19 +54,19 @@ products:
       - math
     format: hybrid
     sessions:
-      - name: "Осенний поток"
-        start_date: "2025-09-15"
-        end_date: "2026-05-20"
-        price_rub: 89000
+      - name: "Учебный год 2025/2026"
+        start_date: "2025-09-01"
+        end_date: "2026-05-31"
+        price_rub: 82000
     usp:
-      - "Системная программа под структуру ЕГЭ"
-      - "Еженедельные пробники с разбором"
-      - "Персональный план закрытия пробелов"
+      - "Годовой трек подготовки к ЕГЭ"
+      - "Семестровый и годовой форматы обучения"
+      - "Есть офлайн и онлайн варианты"
 
   - id: kmipt-ege-physics-pro
     brand: kmipt
-    title: "ЕГЭ Физика 75+"
-    url: "https://kmipt.example/courses/ege-physics-pro"
+    title: "Подготовка к ЕГЭ по физике"
+    url: "https://kmipt.ru/courses/EGE/fizika_ege/"
     category: ege
     grade_min: 10
     grade_max: 11
@@ -76,306 +74,393 @@ products:
       - physics
     format: hybrid
     sessions:
-      - name: "Осенний поток"
-        start_date: "2025-09-18"
-        end_date: "2026-05-25"
-        price_rub: 86000
+      - name: "Учебный год 2025/2026"
+        start_date: "2025-09-01"
+        end_date: "2026-05-31"
+        price_rub: 82000
     usp:
-      - "Акцент на расчетные и качественные задачи"
-      - "База формул и логики решения в одном треке"
-      - "Контроль прогресса по каждой теме"
+      - "Системная подготовка под формат ЕГЭ"
+      - "Есть выбор семестр/год"
+      - "Поддержка в офлайн и онлайн форматах"
 
   - id: kmipt-ege-informatics-pro
     brand: kmipt
-    title: "ЕГЭ Информатика 85+"
-    url: "https://kmipt.example/courses/ege-informatics-pro"
+    title: "Подготовка к ЕГЭ по информатике"
+    url: "https://kmipt.ru/courses/EGE/informatika_ege/"
     category: ege
     grade_min: 10
     grade_max: 11
     subjects:
       - informatics
-    format: online
+    format: hybrid
     sessions:
-      - name: "Осенний поток"
-        start_date: "2025-09-20"
-        end_date: "2026-05-30"
-        price_rub: 92000
+      - name: "Учебный год 2025/2026"
+        start_date: "2025-09-01"
+        end_date: "2026-05-31"
+        price_rub: 82000
     usp:
-      - "Разбор всех типов задач ЕГЭ"
-      - "Практика на Python и алгоритмах"
-      - "Отработка тайминга под экзамен"
+      - "Фокус на экзаменационных задачах и алгоритмах"
+      - "Гибкий формат обучения"
+      - "Стоимость подтверждается на странице записи"
 
   - id: kmipt-oge-math-start
     brand: kmipt
-    title: "ОГЭ Математика: уверенный старт"
-    url: "https://kmipt.example/courses/oge-math-start"
+    title: "Подготовка к ОГЭ по математике"
+    url: "https://kmipt.ru/courses/9_klass/matematika_9/"
     category: oge
     grade_min: 8
     grade_max: 9
     subjects:
       - math
-    format: online
+    format: hybrid
     sessions:
-      - name: "Годовой поток"
-        start_date: "2025-10-01"
-        end_date: "2026-05-15"
-        price_rub: 54000
+      - name: "Учебный год 2025/2026"
+        start_date: "2025-09-01"
+        end_date: "2026-05-31"
+        price_rub: 82000
     usp:
-      - "Пошаговый маршрут подготовки"
-      - "Простые объяснения сложных тем"
-      - "Регулярная практика в формате ОГЭ"
+      - "Подготовка под структуру ОГЭ"
+      - "Для 8-9 классов"
+      - "Регулярные контрольные точки"
 
-  - id: kmipt-olymp-math-8-9
+  - id: kmipt-oge-physics-start
     brand: kmipt
-    title: "Олимпиадная математика 8-9 класс"
-    url: "https://kmipt.example/courses/olymp-math-8-9"
-    category: olympiad
+    title: "Подготовка к ОГЭ по физике"
+    url: "https://kmipt.ru/courses/9_klass/fizika_9/"
+    category: oge
     grade_min: 8
     grade_max: 9
     subjects:
-      - math
-    format: offline
+      - physics
+    format: hybrid
     sessions:
-      - name: "Сентябрь-май"
-        start_date: "2025-09-10"
-        end_date: "2026-05-20"
-        price_rub: 99000
+      - name: "Учебный год 2025/2026"
+        start_date: "2025-09-01"
+        end_date: "2026-05-31"
+        price_rub: 82000
     usp:
-      - "Сложные задачи с поэтапным разбором"
-      - "Подготовка к муниципальному и региональному этапам"
-      - "Малые группы и персональная обратная связь"
+      - "Охват всей школьной базы для ОГЭ"
+      - "Офлайн и онлайн обучение"
+      - "Стоимость уточняется по действующему прайсу"
 
-  - id: kmipt-olymp-physics-9-10
+  - id: kmipt-oge-informatics-start
     brand: kmipt
-    title: "Олимпиадная физика 9-10 класс"
-    url: "https://kmipt.example/courses/olymp-physics-9-10"
+    title: "Подготовка к ОГЭ по информатике"
+    url: "https://kmipt.ru/courses/9_klass/informatika_9/"
+    category: oge
+    grade_min: 8
+    grade_max: 9
+    subjects:
+      - informatics
+    format: hybrid
+    sessions:
+      - name: "Учебный год 2025/2026"
+        start_date: "2025-09-01"
+        end_date: "2026-05-31"
+        price_rub: 82000
+    usp:
+      - "Пошаговая подготовка к экзамену"
+      - "Тренировка в экзаменационном формате"
+      - "Есть онлайн формат"
+
+  - id: kmipt-olymp-math-8-11
+    brand: kmipt
+    title: "Олимпиадная математика"
+    url: "https://kmipt.ru/courses/olimpiads/olimpiad_matematika/"
     category: olympiad
-    grade_min: 9
-    grade_max: 10
+    grade_min: 8
+    grade_max: 11
+    subjects:
+      - math
+    format: hybrid
+    usp:
+      - "Подготовка к олимпиадным этапам"
+      - "Разбор сложных нестандартных задач"
+      - "Индивидуальная траектория в группе"
+
+  - id: kmipt-olymp-physics-8-11
+    brand: kmipt
+    title: "Олимпиадная физика"
+    url: "https://kmipt.ru/courses/olimpiads/olimpiad_fizika/"
+    category: olympiad
+    grade_min: 8
+    grade_max: 11
     subjects:
       - physics
-    format: offline
-    sessions:
-      - name: "Сентябрь-май"
-        start_date: "2025-09-12"
-        end_date: "2026-05-22"
-        price_rub: 102000
+    format: hybrid
     usp:
-      - "Тренировка экспериментальных задач"
-      - "Развитие физического мышления"
-      - "Подготовка к перечневым олимпиадам"
+      - "Развитие олимпиадного мышления"
+      - "Подготовка к задачам повышенной сложности"
+      - "Формат офлайн и онлайн"
 
-  - id: kmipt-base-math-7-8
+  - id: kmipt-base-math-5-8
     brand: kmipt
-    title: "База по математике 7-8 класс"
-    url: "https://kmipt.example/courses/base-math-7-8"
+    title: "Математика 5-8 класс"
+    url: "https://kmipt.ru/courses/5_8_klass/matematika_5_8/"
     category: base
-    grade_min: 7
+    grade_min: 5
     grade_max: 8
     subjects:
       - math
     format: hybrid
     sessions:
-      - name: "Осенний модуль"
-        start_date: "2025-10-05"
-        end_date: "2026-01-25"
-        price_rub: 39000
+      - name: "Учебный год 2025/2026"
+        start_date: "2025-09-01"
+        end_date: "2026-05-31"
+        price_rub: 82000
     usp:
-      - "Закрытие ключевых пробелов по алгебре и геометрии"
-      - "Формирование устойчивой учебной базы"
-      - "Контрольные точки для родителей"
+      - "Углубленное изучение школьной программы"
+      - "Устранение пробелов и развитие базы"
+      - "Доступен выбор формата"
 
-  - id: kmipt-base-informatics-6-7
+  - id: kmipt-base-informatics-5-8
     brand: kmipt
-    title: "База по информатике 6-7 класс"
-    url: "https://kmipt.example/courses/base-informatics-6-7"
+    title: "Информатика 5-8 класс"
+    url: "https://kmipt.ru/courses/5_8_klass/informatika_5_8/"
     category: base
-    grade_min: 6
-    grade_max: 7
+    grade_min: 5
+    grade_max: 8
     subjects:
       - informatics
-    format: online
+    format: hybrid
     sessions:
-      - name: "Осенний модуль"
-        start_date: "2025-10-07"
-        end_date: "2026-02-10"
-        price_rub: 42000
+      - name: "Учебный год 2025/2026"
+        start_date: "2025-09-01"
+        end_date: "2026-05-31"
+        price_rub: 82000
     usp:
-      - "Алгоритмическое мышление с раннего возраста"
-      - "Практика в визуальном и текстовом программировании"
-      - "Доступные домашние задания с проверкой"
+      - "Основа программирования и алгоритмов"
+      - "Подходит для старта и систематизации"
+      - "Гибридный формат обучения"
 
-  - id: foton-camp-summer-engineering-2026
+  - id: foton-camp-winter-2026
     brand: foton
-    title: "Летний инженерный лагерь ФОТОН"
-    url: "https://foton.example/camps/summer-engineering-2026"
+    title: "Зимняя выездная ФизМат и IT школа ФОТОН 2026"
+    url: "https://cdpofoton.ru/courses/zimnyaya-shkola-2026/"
     category: camp
-    grade_min: 6
-    grade_max: 10
-    subjects:
-      - physics
-      - informatics
-    format: offline
-    sessions:
-      - name: "Июньская смена"
-        start_date: "2026-06-15"
-        end_date: "2026-06-28"
-        price_rub: 61900
-      - name: "Августовская смена"
-        start_date: "2026-08-03"
-        end_date: "2026-08-16"
-        price_rub: 61900
-    usp:
-      - "Инженерные проекты в командах"
-      - "Наставники из индустрии и вузов"
-      - "Финальная защита проекта"
-
-  - id: foton-camp-autumn-project-2026
-    brand: foton
-    title: "Осенний проектный интенсив ФОТОН"
-    url: "https://foton.example/camps/autumn-project-2026"
-    category: camp
-    grade_min: 7
+    grade_min: 5
     grade_max: 11
     subjects:
+      - math
       - physics
       - informatics
-      - math
     format: offline
     sessions:
-      - name: "Ноябрьская смена"
-        start_date: "2026-11-02"
-        end_date: "2026-11-08"
-        price_rub: 44900
+      - name: "Зимняя смена"
+        start_date: "2026-01-02"
+        end_date: "2026-01-09"
+        price_rub: 58900
     usp:
-      - "Короткий интенсив с измеримым результатом"
-      - "Индивидуальная траектория по уровням"
-      - "Подготовка портфолио проекта"
+      - "Выездная школа с предметными треками"
+      - "Комбинация обучения и командных активностей"
+      - "Цена по публичной карточке, финальные условия подтверждает менеджер"
 
-  - id: foton-ege-math-focus
+  - id: foton-camp-summer-2026
     brand: foton
-    title: "ЕГЭ Математика: фокус на вторую часть"
-    url: "https://foton.example/courses/ege-math-focus"
+    title: "Летняя выездная школа ФОТОН 2026"
+    url: "https://cdpofoton.ru/courses/letnyaya-shkola-2026/"
+    category: camp
+    grade_min: 5
+    grade_max: 10
+    subjects:
+      - math
+      - physics
+      - informatics
+    format: offline
+    sessions:
+      - name: "Летняя смена"
+        start_date: "2026-06-20"
+        end_date: "2026-07-03"
+        price_rub: 68900
+    usp:
+      - "Выездной формат для 5-10 классов"
+      - "Упор на предметную прокачку и мотивацию"
+      - "Параметры смены уточняются перед бронированием"
+
+  - id: foton-ege-math
+    brand: foton
+    title: "Подготовка к ЕГЭ по математике (ФОТОН)"
+    url: "https://cdpofoton.ru/courses/podgotovka-k-ege-po-matematike/"
     category: ege
     grade_min: 10
     grade_max: 11
     subjects:
       - math
-    format: online
-    sessions:
-      - name: "Годовой поток"
-        start_date: "2025-09-22"
-        end_date: "2026-05-25"
-        price_rub: 83000
+    format: hybrid
     usp:
-      - "Отработка задач 13-19"
-      - "Системный разбор ошибок"
-      - "Фокус на стабильный высокий балл"
+      - "Подготовка к ЕГЭ 10-11 класс"
+      - "Возможны разные форматы участия"
+      - "Стоимость на сайте указана от базового тарифа"
 
-  - id: foton-ege-physics-lab
+  - id: foton-ege-physics
     brand: foton
-    title: "ЕГЭ Физика: лаборатория задач"
-    url: "https://foton.example/courses/ege-physics-lab"
+    title: "Подготовка к ЕГЭ по физике (ФОТОН)"
+    url: "https://cdpofoton.ru/courses/podgotovka-k-ege-po-fizike/"
     category: ege
     grade_min: 10
     grade_max: 11
     subjects:
       - physics
     format: hybrid
-    sessions:
-      - name: "Годовой поток"
-        start_date: "2025-09-24"
-        end_date: "2026-05-28"
-        price_rub: 87000
     usp:
-      - "Много практики на экзаменационных заданиях"
-      - "Еженедельный разбор пробников"
-      - "Усиленная подготовка к сложным темам"
+      - "ЕГЭ-трек для 10-11 классов"
+      - "Фокус на экзаменационных задачах"
+      - "Точные тарифы подтверждаются менеджером"
 
-  - id: foton-oge-physics-core
+  - id: foton-ege-informatics
     brand: foton
-    title: "ОГЭ Физика: базовый курс"
-    url: "https://foton.example/courses/oge-physics-core"
+    title: "Подготовка к ЕГЭ по информатике (ФОТОН)"
+    url: "https://cdpofoton.ru/courses/podgotovka-k-ege-po-informatike/"
+    category: ege
+    grade_min: 10
+    grade_max: 11
+    subjects:
+      - informatics
+    format: hybrid
+    usp:
+      - "Подготовка к задачам ЕГЭ по информатике"
+      - "Подходит для учеников 10-11 классов"
+      - "Актуальные условия указываются при записи"
+
+  - id: foton-oge-math
+    brand: foton
+    title: "Подготовка к ОГЭ по математике (ФОТОН)"
+    url: "https://cdpofoton.ru/courses/podgotovka-k-oge-po-matematike/"
+    category: oge
+    grade_min: 8
+    grade_max: 9
+    subjects:
+      - math
+    format: hybrid
+    usp:
+      - "ОГЭ-трек для 8-9 классов"
+      - "Системный разбор тем и практики"
+      - "Тарифы и расписание подтверждаются перед стартом"
+
+  - id: foton-oge-physics
+    brand: foton
+    title: "Подготовка к ОГЭ по физике (ФОТОН)"
+    url: "https://cdpofoton.ru/courses/podgotovka-k-oge-po-fizike/"
     category: oge
     grade_min: 8
     grade_max: 9
     subjects:
       - physics
-    format: online
-    sessions:
-      - name: "Годовой поток"
-        start_date: "2025-10-03"
-        end_date: "2026-05-12"
-        price_rub: 52000
+    format: hybrid
     usp:
-      - "Доступное объяснение школьной программы"
-      - "Регулярные мини-тесты"
-      - "Подготовка к формату ОГЭ без стресса"
+      - "Подготовка по ключевым темам ОГЭ"
+      - "Для учеников 8-9 классов"
+      - "Есть очный и дистанционный формат"
+
+  - id: foton-oge-informatics
+    brand: foton
+    title: "Подготовка к ОГЭ по информатике (ФОТОН)"
+    url: "https://cdpofoton.ru/courses/podgotovka-k-oge-po-informatike/"
+    category: oge
+    grade_min: 8
+    grade_max: 9
+    subjects:
+      - informatics
+    format: hybrid
+    usp:
+      - "Подготовка к формату экзамена"
+      - "Тренировка типовых заданий"
+      - "Актуальные условия по запросу"
+
+  - id: foton-olymp-math-8-11
+    brand: foton
+    title: "Подготовка к олимпиадам по математике (ФОТОН)"
+    url: "https://cdpofoton.ru/courses/podgotovka-k-olimpiadam-po-matematike/"
+    category: olympiad
+    grade_min: 8
+    grade_max: 11
+    subjects:
+      - math
+    format: hybrid
+    usp:
+      - "Олимпиадные треки для 8-11 классов"
+      - "Разбор нестандартных задач"
+      - "Подготовка к этапам олимпиад"
+
+  - id: foton-olymp-physics-8-11
+    brand: foton
+    title: "Подготовка к олимпиадам по физике (ФОТОН)"
+    url: "https://cdpofoton.ru/courses/podgotovka-k-olimpiadam-po-fizike/"
+    category: olympiad
+    grade_min: 8
+    grade_max: 11
+    subjects:
+      - physics
+    format: hybrid
+    usp:
+      - "Предметная олимпиадная подготовка"
+      - "Развитие аналитического мышления"
+      - "Группы по уровню"
 
   - id: foton-olymp-informatics-8-11
     brand: foton
-    title: "Олимпиадная информатика 8-11"
-    url: "https://foton.example/courses/olymp-informatics-8-11"
+    title: "Подготовка к олимпиадам по информатике (ФОТОН)"
+    url: "https://cdpofoton.ru/courses/podgotovka-k-olimpiadam-po-informatike/"
     category: olympiad
     grade_min: 8
     grade_max: 11
     subjects:
       - informatics
-    format: online
-    sessions:
-      - name: "Сентябрь-май"
-        start_date: "2025-09-14"
-        end_date: "2026-05-30"
-        price_rub: 118000
+    format: hybrid
     usp:
-      - "Алгоритмы и структуры данных в олимпиадном формате"
-      - "Подготовка к ВСОШ и перечневым олимпиадам"
-      - "Индивидуальная трекинг-система прогресса"
+      - "Алгоритмы и олимпиадные задачи"
+      - "Подготовка к соревнованиям и этапам"
+      - "Форматы обучения зависят от потока"
 
-  - id: foton-base-physics-7-8
+  - id: foton-base-math-5-8
     brand: foton
-    title: "Физика без пробелов 7-8 класс"
-    url: "https://foton.example/courses/base-physics-7-8"
+    title: "Углубленное изучение математики 5-8 класс (ФОТОН)"
+    url: "https://cdpofoton.ru/courses/uglublyonnoe-izuchenie-matematiki-5-8-k/"
     category: base
-    grade_min: 7
+    grade_min: 5
+    grade_max: 8
+    subjects:
+      - math
+    format: hybrid
+    usp:
+      - "Усиление школьной базы по математике"
+      - "Подходит для регулярной работы в течение года"
+      - "Стоимость стартует от базового тарифа"
+
+  - id: foton-base-physics-5-8
+    brand: foton
+    title: "Углубленное изучение физики 5-8 класс (ФОТОН)"
+    url: "https://cdpofoton.ru/courses/uglublyonnoe-izuchenie-fiziki-5-8-k/"
+    category: base
+    grade_min: 5
     grade_max: 8
     subjects:
       - physics
     format: hybrid
-    sessions:
-      - name: "Осенний модуль"
-        start_date: "2025-10-09"
-        end_date: "2026-02-12"
-        price_rub: 41000
     usp:
-      - "Понимание физики через жизненные примеры"
-      - "Практикум с домашними экспериментами"
-      - "Регулярная обратная связь родителям"
+      - "Физика для системной школьной подготовки"
+      - "Наращивание предметной уверенности"
+      - "Формат и расписание подтверждаются по потоку"
 
-  - id: foton-base-math-5-6
+  - id: foton-base-informatics-5-8
     brand: foton
-    title: "Математическая база 5-6 класс"
-    url: "https://foton.example/courses/base-math-5-6"
+    title: "Программирование для 5-8 классов (ФОТОН)"
+    url: "https://cdpofoton.ru/courses/programmirovanie-dlya-5-8-k/"
     category: base
     grade_min: 5
-    grade_max: 6
+    grade_max: 8
     subjects:
-      - math
-    format: online
-    sessions:
-      - name: "Осенний модуль"
-        start_date: "2025-10-11"
-        end_date: "2026-02-14"
-        price_rub: 36000
+      - informatics
+    format: hybrid
     usp:
-      - "Развитие математической грамотности"
-      - "Упор на уверенное решение задач"
-      - "Комфортный темп для младших школьников"
+      - "Базовый трек программирования для школьников"
+      - "Практика и развитие алгоритмического мышления"
+      - "Актуальные условия доступны при записи"
 
-  - id: foton-intensive-exam-sprint
+  - id: foton-online-courses-9-11
     brand: foton
-    title: "Exam Sprint: интенсив перед экзаменом"
-    url: "https://foton.example/courses/intensive-exam-sprint"
+    title: "Онлайн-курсы 9-11 классы (ФОТОН)"
+    url: "https://cdpofoton.ru/courses/online-kursy-9-11/"
     category: intensive
     grade_min: 9
     grade_max: 11
@@ -385,33 +470,15 @@ products:
       - informatics
     format: online
     sessions:
-      - name: "Весенний интенсив"
-        start_date: "2026-04-01"
-        end_date: "2026-05-25"
-        price_rub: 28000
+      - name: "Семестр"
+        start_date: "2025-09-01"
+        end_date: "2026-01-31"
+        price_rub: 36700
+      - name: "Год"
+        start_date: "2025-09-01"
+        end_date: "2026-05-31"
+        price_rub: 71400
     usp:
-      - "Короткий цикл повторения"
-      - "Фокус на типовых ошибках"
-      - "Максимум практики в ограниченный срок"
-
-  - id: kmipt-intensive-olymp-sprint
-    brand: kmipt
-    title: "Олимпиадный Sprint перед этапом"
-    url: "https://kmipt.example/courses/intensive-olymp-sprint"
-    category: intensive
-    grade_min: 8
-    grade_max: 11
-    subjects:
-      - math
-      - physics
-      - informatics
-    format: hybrid
-    sessions:
-      - name: "Ноябрьский интенсив"
-        start_date: "2025-11-01"
-        end_date: "2025-11-20"
-        price_rub: 33000
-    usp:
-      - "Фокус на олимпиадной стратегии"
-      - "Разбор нестандартных задач"
-      - "Индивидуальные рекомендации перед этапом"
+      - "Онлайн-формат для 9-11 классов"
+      - "Есть семестровый и годовой тариф"
+      - "Стоимость взята с публичной страницы онлайн-курсов"

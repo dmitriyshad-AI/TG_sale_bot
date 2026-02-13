@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+import httpx
+
 from sales_agent.sales_core.catalog import Product, SearchCriteria
 
 
@@ -15,6 +17,14 @@ class SalesReply:
     next_question: Optional[str]
     call_to_action: str
     recommended_product_ids: List[str]
+    used_fallback: bool
+    error: Optional[str] = None
+
+
+@dataclass
+class KnowledgeReply:
+    answer_text: str
+    sources: List[str]
     used_fallback: bool
     error: Optional[str] = None
 
@@ -50,35 +60,14 @@ class LLMClient:
             fallback.error = "OPENAI_API_KEY is not configured"
             return fallback
 
-        payload = self._build_payload(criteria, top_products)
-        request = Request(
-            self.endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                body = response.read().decode("utf-8")
-                raw = json.loads(body) if body else {}
-        except HTTPError as exc:
+        payload = self._build_sales_payload(criteria, top_products)
+        raw, error = self._send_request(payload)
+        if error:
             fallback = self._fallback_reply(criteria, top_products)
-            fallback.error = f"OpenAI HTTP error: {exc.code}"
-            return fallback
-        except URLError as exc:
-            fallback = self._fallback_reply(criteria, top_products)
-            fallback.error = f"OpenAI connection error: {exc.reason}"
-            return fallback
-        except json.JSONDecodeError:
-            fallback = self._fallback_reply(criteria, top_products)
-            fallback.error = "OpenAI response is not valid JSON"
+            fallback.error = error
             return fallback
 
-        parsed = self._parse_openai_reply(raw, allowed_ids=[product.id for product in top_products])
+        parsed = self._parse_openai_sales_reply(raw or {}, allowed_ids=[product.id for product in top_products])
         if parsed is None:
             fallback = self._fallback_reply(criteria, top_products)
             fallback.error = "Could not parse structured LLM response"
@@ -86,7 +75,171 @@ class LLMClient:
 
         return parsed
 
-    def _build_payload(self, criteria: SearchCriteria, top_products: List[Product]) -> Dict[str, Any]:
+    async def build_sales_reply_async(
+        self,
+        criteria: SearchCriteria,
+        top_products: List[Product],
+    ) -> SalesReply:
+        if not top_products:
+            return SalesReply(
+                answer_text="Пока не вижу подходящих программ по этим параметрам.",
+                next_question="Уточните, пожалуйста, класс или предмет.",
+                call_to_action="Оставьте телефон, и менеджер подберет варианты вручную.",
+                recommended_product_ids=[],
+                used_fallback=True,
+            )
+
+        if not self.is_configured():
+            fallback = self._fallback_reply(criteria, top_products)
+            fallback.error = "OPENAI_API_KEY is not configured"
+            return fallback
+
+        payload = self._build_sales_payload(criteria, top_products)
+        raw, error = await self._send_request_async(payload)
+        if error:
+            fallback = self._fallback_reply(criteria, top_products)
+            fallback.error = error
+            return fallback
+
+        parsed = self._parse_openai_sales_reply(raw or {}, allowed_ids=[product.id for product in top_products])
+        if parsed is None:
+            fallback = self._fallback_reply(criteria, top_products)
+            fallback.error = "Could not parse structured LLM response"
+            return fallback
+
+        return parsed
+
+    def answer_knowledge_question(
+        self,
+        question: str,
+        vector_store_id: Optional[str],
+    ) -> KnowledgeReply:
+        if not question.strip():
+            return KnowledgeReply(
+                answer_text="Задайте вопрос по условиям, документам или оплате.",
+                sources=[],
+                used_fallback=True,
+            )
+
+        if not self.is_configured():
+            return KnowledgeReply(
+                answer_text=(
+                    "LLM не настроен. Заполните OPENAI_API_KEY и повторите запрос."
+                ),
+                sources=[],
+                used_fallback=True,
+                error="OPENAI_API_KEY is not configured",
+            )
+
+        if not vector_store_id:
+            return KnowledgeReply(
+                answer_text=(
+                    "База знаний пока не подключена. Запустите синхронизацию: "
+                    "python3 scripts/sync_vector_store.py"
+                ),
+                sources=[],
+                used_fallback=True,
+                error="vector_store_id is not configured",
+            )
+
+        payload = self._build_knowledge_payload(question=question, vector_store_id=vector_store_id)
+        raw, error = self._send_request(payload)
+        if error:
+            return KnowledgeReply(
+                answer_text=(
+                    "Не удалось обратиться к knowledge-базе. "
+                    "Попробуйте позже или уточните вопрос менеджеру."
+                ),
+                sources=[],
+                used_fallback=True,
+                error=error,
+            )
+
+        text = self._extract_text(raw or {})
+        if not text:
+            return KnowledgeReply(
+                answer_text=(
+                    "Не удалось получить ответ из knowledge-базы. "
+                    "Попробуйте переформулировать вопрос."
+                ),
+                sources=[],
+                used_fallback=True,
+                error="empty response text",
+            )
+
+        sources = self._extract_source_names(raw or {})
+        return KnowledgeReply(
+            answer_text=text,
+            sources=sources,
+            used_fallback=False,
+        )
+
+    async def answer_knowledge_question_async(
+        self,
+        question: str,
+        vector_store_id: Optional[str],
+    ) -> KnowledgeReply:
+        if not question.strip():
+            return KnowledgeReply(
+                answer_text="Задайте вопрос по условиям, документам или оплате.",
+                sources=[],
+                used_fallback=True,
+            )
+
+        if not self.is_configured():
+            return KnowledgeReply(
+                answer_text=(
+                    "LLM не настроен. Заполните OPENAI_API_KEY и повторите запрос."
+                ),
+                sources=[],
+                used_fallback=True,
+                error="OPENAI_API_KEY is not configured",
+            )
+
+        if not vector_store_id:
+            return KnowledgeReply(
+                answer_text=(
+                    "База знаний пока не подключена. Запустите синхронизацию: "
+                    "python3 scripts/sync_vector_store.py"
+                ),
+                sources=[],
+                used_fallback=True,
+                error="vector_store_id is not configured",
+            )
+
+        payload = self._build_knowledge_payload(question=question, vector_store_id=vector_store_id)
+        raw, error = await self._send_request_async(payload)
+        if error:
+            return KnowledgeReply(
+                answer_text=(
+                    "Не удалось обратиться к knowledge-базе. "
+                    "Попробуйте позже или уточните вопрос менеджеру."
+                ),
+                sources=[],
+                used_fallback=True,
+                error=error,
+            )
+
+        text = self._extract_text(raw or {})
+        if not text:
+            return KnowledgeReply(
+                answer_text=(
+                    "Не удалось получить ответ из knowledge-базы. "
+                    "Попробуйте переформулировать вопрос."
+                ),
+                sources=[],
+                used_fallback=True,
+                error="empty response text",
+            )
+
+        sources = self._extract_source_names(raw or {})
+        return KnowledgeReply(
+            answer_text=text,
+            sources=sources,
+            used_fallback=False,
+        )
+
+    def _build_sales_payload(self, criteria: SearchCriteria, top_products: List[Product]) -> Dict[str, Any]:
         criteria_payload = {
             "brand": criteria.brand,
             "grade": criteria.grade,
@@ -119,16 +272,112 @@ class LLMClient:
             "input": [
                 {
                     "role": "system",
-                    "content": [{"type": "text", "text": system_prompt}],
+                    "content": [{"type": "input_text", "text": system_prompt}],
                 },
                 {
                     "role": "user",
-                    "content": [{"type": "text", "text": user_prompt}],
+                    "content": [{"type": "input_text", "text": user_prompt}],
                 },
             ],
             "temperature": 0.2,
             "max_output_tokens": 600,
         }
+
+    def _build_knowledge_payload(self, question: str, vector_store_id: str) -> Dict[str, Any]:
+        system_prompt = (
+            "Ты консультант по условиям образовательных программ. "
+            "Отвечай строго на основе найденных документов из file_search. "
+            "Если фактов недостаточно, честно скажи, что нужно уточнить у менеджера. "
+            "Не придумывай юридические и финансовые условия."
+        )
+        user_prompt = (
+            "Вопрос клиента:\n"
+            f"{question.strip()}\n\n"
+            "Дай короткий, понятный ответ и укажи, что уточнить при нехватке данных."
+        )
+        return {
+            "model": self.model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": user_prompt}],
+                },
+            ],
+            "tools": [
+                {
+                    "type": "file_search",
+                    "vector_store_ids": [vector_store_id],
+                }
+            ],
+            "tool_choice": "auto",
+            "temperature": 0.2,
+            "max_output_tokens": 700,
+        }
+
+    def _send_request(self, payload: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        request = Request(
+            self.endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                body = response.read().decode("utf-8")
+                raw = json.loads(body) if body else {}
+        except HTTPError as exc:
+            details = ""
+            try:
+                body = exc.read().decode("utf-8", errors="ignore")
+                if body:
+                    details = body[:500]
+            except Exception:
+                details = ""
+            if details:
+                return None, f"OpenAI HTTP error: {exc.code}. {details}"
+            return None, f"OpenAI HTTP error: {exc.code}"
+        except URLError as exc:
+            return None, f"OpenAI connection error: {exc.reason}"
+        except json.JSONDecodeError:
+            return None, "OpenAI response is not valid JSON"
+
+        return raw, None
+
+    async def _send_request_async(self, payload: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(
+                    self.endpoint,
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                )
+        except httpx.RequestError as exc:
+            return None, f"OpenAI connection error: {exc}"
+
+        if response.status_code >= 400:
+            details = (response.text or "").strip()
+            if details:
+                details = details[:500]
+                return None, f"OpenAI HTTP error: {response.status_code}. {details}"
+            return None, f"OpenAI HTTP error: {response.status_code}"
+
+        try:
+            raw = response.json() if response.text else {}
+        except ValueError:
+            return None, "OpenAI response is not valid JSON"
+
+        return raw, None
 
     def _product_payload(self, product: Product) -> Dict[str, Any]:
         sessions = []
@@ -177,6 +426,32 @@ class LLMClient:
                     chunks.append(text_value)
         return "\n".join(chunks).strip()
 
+    def _extract_source_names(self, response: Dict[str, Any]) -> List[str]:
+        output = response.get("output")
+        if not isinstance(output, list):
+            return []
+
+        names: List[str] = []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if not isinstance(content, list):
+                continue
+            for piece in content:
+                if not isinstance(piece, dict):
+                    continue
+                annotations = piece.get("annotations")
+                if not isinstance(annotations, list):
+                    continue
+                for annotation in annotations:
+                    if not isinstance(annotation, dict):
+                        continue
+                    filename = annotation.get("filename")
+                    if isinstance(filename, str) and filename and filename not in names:
+                        names.append(filename)
+        return names
+
     def _extract_json_object(self, text: str) -> Optional[Dict[str, Any]]:
         if not text:
             return None
@@ -206,7 +481,7 @@ class LLMClient:
             return None
         return candidate if isinstance(candidate, dict) else None
 
-    def _parse_openai_reply(
+    def _parse_openai_sales_reply(
         self,
         response: Dict[str, Any],
         allowed_ids: List[str],

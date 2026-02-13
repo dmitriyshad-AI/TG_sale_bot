@@ -45,9 +45,11 @@ API будет доступен на `localhost:8000`, бот используе
 /sales_agent
   sales_api/       # FastAPI
   sales_bot/       # Telegram-бот
-  sales_core/      # конфиг, БД, каталог
+  sales_core/      # конфиг, БД, каталог, LLM/RAG
 catalog/           # products.yaml
+knowledge/         # документы базы знаний
 scripts/           # служебные скрипты
+docs/              # HTML snippets для сайта
 data/              # SQLite (игнорируется в git)
 tests/             # unit tests
 ```
@@ -59,14 +61,19 @@ tests/             # unit tests
 TELEGRAM_BOT_TOKEN=
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1
+OPENAI_VECTOR_STORE_ID=
 TALLANTO_API_URL=
 TALLANTO_API_KEY=
 TALLANTO_MOCK_MODE=false
 BRAND_DEFAULT=kmipt
+ADMIN_USER=
+ADMIN_PASS=
 
 # Optional overrides
 DATABASE_PATH=
 CATALOG_PATH=
+KNOWLEDGE_PATH=
+VECTOR_STORE_META_PATH=
 ```
 
 ## Команды обслуживания
@@ -79,13 +86,42 @@ CATALOG_PATH=
 - Проверка создания лида в Telegram:
   - `/leadtest +79991234567` (одной командой), или
   - `/leadtest`, затем отправить номер отдельным сообщением.
+- Проверка knowledge-базы в Telegram:
+  - `/kbtest Какие условия возврата?`, или
+  - `/kbtest`, затем отправить вопрос отдельным сообщением.
+- Генерация deep-link для сайта:
+  ```bash
+  python3 scripts/generate_deeplink.py --bot-username YOUR_BOT --brand kmipt --page /courses/ege --utm-source google --utm-medium cpc
+  ```
+  - Готовый HTML-фрагмент: `docs/widget_snippet.html`
+  - В `/start` бот распознаёт payload и сохраняет `source/page/utm_*` в `sessions.meta_json`.
 - Для локальной проверки без CRM включить mock-режим:
   - `TALLANTO_MOCK_MODE=true`
+- Мини-админка (FastAPI, Basic Auth):
+  - Заполнить в `.env`: `ADMIN_USER` и `ADMIN_PASS`.
+  - `GET /admin/leads` — последние лиды.
+  - `GET /admin/conversations` — последние диалоги.
+  - `GET /admin/conversations/{user_id}` — история пользователя.
+  - `POST /admin/copilot/import` — импорт WhatsApp `.txt` или Telegram `.json`,
+    возврат `summary + customer_profile + draft_reply` (без автоотправки).
+    Опционально: `?create_task=true` для создания задачи в Tallanto.
 - Если `OPENAI_API_KEY` не задан, бот использует детерминированный fallback для текста рекомендаций.
+- Синхронизация knowledge-файлов в OpenAI Vector Store:
+  ```bash
+  python3 scripts/sync_vector_store.py
+  ```
+  - Скрипт сохранит `vector_store_id` в `data/vector_store.json`.
+  - Можно зафиксировать ID вручную через `OPENAI_VECTOR_STORE_ID`.
 - Валидация каталога:
   ```bash
   python3 scripts/validate_catalog.py
   ```
+- Автогенерация чернового каталога с публичных страниц kmipt.ru + cdpofoton.ru:
+  ```bash
+  python3 scripts/build_catalog_draft.py
+  python3 scripts/validate_catalog.py --path catalog/products.auto_draft.yaml
+  ```
+  - Важно: это черновик, перед продом нужна ручная верификация цен/дат/условий.
 - Запуск тестов:
   ```bash
   python3 -m unittest discover -s tests -v
@@ -97,8 +133,5 @@ CATALOG_PATH=
 
 ## Следующие шаги (по плану)
 
-1. LLM-ответы через OpenAI Responses API
-2. RAG через File Search (knowledge base)
-3. Сайт → Telegram deep-links + UTM
-4. Мини-админка лидов/диалогов
-5. Copilot для старых диалогов
+1. UI-слой для админки (HTML/Jinja) и метрики конверсии
+2. Полевая валидация каталога и юридических условий перед продом

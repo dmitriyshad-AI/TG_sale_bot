@@ -14,9 +14,11 @@ from telegram.ext import (
 from sales_agent.sales_core import db as db_module
 from sales_agent.sales_core.catalog import SearchCriteria, explain_match, select_top_products
 from sales_agent.sales_core.config import get_settings
+from sales_agent.sales_core.deeplink import build_greeting_hint, parse_start_payload
 from sales_agent.sales_core.flow import STATE_ASK_CONTACT, advance_flow, build_prompt, ensure_state
 from sales_agent.sales_core.llm_client import LLMClient
 from sales_agent.sales_core.tallanto_client import TallantoClient
+from sales_agent.sales_core.vector_store import load_vector_store_id
 
 
 logging.basicConfig(
@@ -27,6 +29,25 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 db_module.init_db(settings.database_path)
 LEADTEST_WAITING_PHONE_KEY = "leadtest_waiting_phone"
+KBTEST_WAITING_QUESTION_KEY = "kbtest_waiting_question"
+
+KNOWLEDGE_QUERY_KEYWORDS = {
+    "договор",
+    "документ",
+    "оплата",
+    "оплат",
+    "рассрочка",
+    "рассроч",
+    "возврат",
+    "вычет",
+    "маткапитал",
+    "безопасность",
+    "проживание",
+    "питание",
+    "условия",
+    "как оплатить",
+    "перенос",
+}
 
 
 def _user_meta(update: Update) -> Dict[str, Optional[str]]:
@@ -70,6 +91,19 @@ def _build_user_name(update: Update) -> str:
     return " ".join(chunk for chunk in chunks if chunk).strip()
 
 
+def _resolve_vector_store_id() -> Optional[str]:
+    if settings.openai_vector_store_id:
+        return settings.openai_vector_store_id
+    return load_vector_store_id(settings.vector_store_meta_path)
+
+
+def _is_knowledge_query(text: str) -> bool:
+    normalized = text.strip().lower()
+    if not normalized:
+        return False
+    return any(keyword in normalized for keyword in KNOWLEDGE_QUERY_KEYWORDS)
+
+
 def _build_inline_keyboard(layout):
     if not layout:
         return None
@@ -90,6 +124,15 @@ def _criteria_from_state(state_data: Dict[str, object]) -> SearchCriteria:
         subject=criteria.get("subject") if isinstance(criteria, dict) else None,
         format=criteria.get("format") if isinstance(criteria, dict) else None,
     )
+
+
+def _apply_start_meta_to_state(state_data: Dict[str, object], meta: Dict[str, str]) -> Dict[str, object]:
+    criteria = state_data.get("criteria") if isinstance(state_data.get("criteria"), dict) else {}
+    brand = meta.get("brand", "").strip().lower()
+    if brand in {"kmipt", "foton"}:
+        criteria["brand"] = brand
+    state_data["criteria"] = criteria
+    return state_data
 
 
 def _select_products(criteria: SearchCriteria):
@@ -149,7 +192,7 @@ async def _create_lead_from_phone(
     try:
         user_id = _get_or_create_user_id(update, conn)
         tallanto = TallantoClient.from_settings(settings)
-        result = tallanto.create_lead(
+        result = await tallanto.create_lead_async(
             phone=phone,
             brand=settings.brand_default,
             name=_build_user_name(update),
@@ -185,6 +228,43 @@ async def _create_lead_from_phone(
             "outbound",
             reply,
             {"handler": "leadtest", "status": status, **_user_meta(update)},
+        )
+    finally:
+        conn.close()
+
+
+async def _answer_knowledge_question(update: Update, question: str) -> None:
+    target = _target_message(update)
+    if not target:
+        return
+
+    llm_client = LLMClient(api_key=settings.openai_api_key, model=settings.openai_model)
+    knowledge_reply = await llm_client.answer_knowledge_question_async(
+        question=question,
+        vector_store_id=_resolve_vector_store_id(),
+    )
+
+    text = knowledge_reply.answer_text
+    if knowledge_reply.sources:
+        sources = ", ".join(knowledge_reply.sources)
+        text = f"{text}\n\nИсточники: {sources}"
+
+    await target.reply_text(text)
+
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        db_module.log_message(
+            conn,
+            user_id,
+            "outbound",
+            text,
+            {
+                "handler": "kb",
+                "used_fallback": knowledge_reply.used_fallback,
+                "error": knowledge_reply.error,
+                **_user_meta(update),
+            },
         )
     finally:
         conn.close()
@@ -229,7 +309,10 @@ async def _handle_flow_step(
             products_block = _format_product_blurb(criteria, products)
 
             llm_client = LLMClient(api_key=settings.openai_api_key, model=settings.openai_model)
-            sales_reply = llm_client.build_sales_reply(criteria=criteria, top_products=products)
+            sales_reply = await llm_client.build_sales_reply_async(
+                criteria=criteria,
+                top_products=products,
+            )
 
             extra = []
             if sales_reply.next_question:
@@ -276,7 +359,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     context.user_data.pop(LEADTEST_WAITING_PHONE_KEY, None)
+    context.user_data.pop(KBTEST_WAITING_QUESTION_KEY, None)
     state = ensure_state(None, brand_default=settings.brand_default)
+    start_payload = context.args[0] if context.args else ""
+    start_meta = parse_start_payload(start_payload)
+    state = _apply_start_meta_to_state(state, start_meta)
     prompt = build_prompt(state)
 
     conn = db_module.get_connection(settings.database_path)
@@ -286,13 +373,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         db_module.log_message(
             conn, user_id, "inbound", incoming_text, {"type": "command", **_user_meta(update)}
         )
-        db_module.upsert_session_state(conn, user_id=user_id, state=state)
+        db_module.upsert_session_state(conn, user_id=user_id, state=state, meta=start_meta or None)
     finally:
         conn.close()
 
+    hint = build_greeting_hint(start_meta)
+    hint_block = f"{hint}\n\n" if hint else ""
     greeting = (
         "Привет! Я помогу подобрать курс или лагерь для KMIPT/ФОТОН.\n\n"
-        f"{prompt.message}"
+        f"{hint_block}{prompt.message}"
     )
     await _reply(update, greeting, keyboard_layout=prompt.keyboard)
 
@@ -341,11 +430,45 @@ async def leadtest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(reply)
 
 
+async def kbtest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+
+    question_from_args = " ".join(context.args).strip() if context.args else ""
+    if question_from_args:
+        await _answer_knowledge_question(update, question=question_from_args)
+        return
+
+    context.user_data[KBTEST_WAITING_QUESTION_KEY] = True
+    await update.message.reply_text(
+        "Команда /kbtest запущена. Напишите вопрос по условиям, оплате или документам."
+    )
+
+
 async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
 
     text = update.message.text or ""
+    if context.user_data.get(KBTEST_WAITING_QUESTION_KEY):
+        context.user_data.pop(KBTEST_WAITING_QUESTION_KEY, None)
+
+        conn = db_module.get_connection(settings.database_path)
+        try:
+            user_id = _get_or_create_user_id(update, conn)
+            db_module.log_message(
+                conn,
+                user_id,
+                "inbound",
+                text,
+                {"type": "message", "handler": "kbtest", **_user_meta(update)},
+            )
+        finally:
+            conn.close()
+
+        await _answer_knowledge_question(update, question=text)
+        return
+
     if context.user_data.get(LEADTEST_WAITING_PHONE_KEY):
         context.user_data.pop(LEADTEST_WAITING_PHONE_KEY, None)
 
@@ -369,6 +492,23 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    if _is_knowledge_query(text):
+        conn = db_module.get_connection(settings.database_path)
+        try:
+            user_id = _get_or_create_user_id(update, conn)
+            db_module.log_message(
+                conn,
+                user_id,
+                "inbound",
+                text,
+                {"type": "message", "handler": "kb-auto", **_user_meta(update)},
+            )
+        finally:
+            conn.close()
+
+        await _answer_knowledge_question(update, question=text)
+        return
+
     await _handle_flow_step(update=update, message_text=text)
 
 
@@ -385,6 +525,7 @@ def main() -> None:
     application = ApplicationBuilder().token(settings.telegram_bot_token).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("leadtest", leadtest))
+    application.add_handler(CommandHandler("kbtest", kbtest))
     application.add_handler(CallbackQueryHandler(on_callback_query))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
     logger.info("Starting Telegram bot polling...")

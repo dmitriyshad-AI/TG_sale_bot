@@ -1,0 +1,379 @@
+products:
+- id: kmipt-courses-nabor_online-olimp_math_phys
+  brand: kmipt
+  title: Подготовка к олимпиадам по математике и физике очно
+  url: https://kmipt.ru/courses/nabor_online/olimp_math_phys/
+  category: olympiad
+  grade_min: 5
+  grade_max: 11
+  subjects:
+  - math
+  - physics
+  format: offline
+  sessions: []
+  usp:
+  - Преподаватели МФТИ, члены жюри олимпиад помогут стать победителем олимпиад по
+    Математике и Физике. Эффективнее чем репетитор. От 600р/час. Записывайся сейчас!
+  - Подходит для 5-11 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: kmipt-courses-ege-matematika_ege
+  brand: kmipt
+  title: Математика ЕГЭ
+  url: https://kmipt.ru/courses/EGE/Matematika_EGE/
+  category: ege
+  grade_min: 10
+  grade_max: 11
+  subjects:
+  - math
+  format: offline
+  sessions: []
+  usp:
+  - Преподаватели - эксперты ЕГЭ и олимпиад помогут успешно сдать ЕГЭ 2025 по Профильной
+    Математике. Мини-группы 7-9 человек. Лучше чем репетитор. От 500р/час. Записывайся
+    сейчас!
+  - Подходит для 10-11 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: kmipt-courses-ege-fizika_ege
+  brand: kmipt
+  title: Физика ЕГЭ
+  url: https://kmipt.ru/courses/EGE/Fizika_EGE/
+  category: ege
+  grade_min: 10
+  grade_max: 11
+  subjects:
+  - physics
+  format: offline
+  sessions: []
+  usp:
+  - Преподаватели - эксперты ЕГЭ и олимпиад помогут успешно сдать ЕГЭ 2025 по Физике.
+    Мини-группы 7-9 человек. Удобное место и время занятий. От 500р/час. Записывайся
+    сейчас!
+  - Подходит для 10-11 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: kmipt-courses-ege-informatika_ege
+  brand: kmipt
+  title: Информатика ЕГЭ
+  url: https://kmipt.ru/courses/EGE/Informatika_EGE/
+  category: ege
+  grade_min: 10
+  grade_max: 11
+  subjects:
+  - informatics
+  format: offline
+  sessions: []
+  usp:
+  - Преподаватели - эксперты ЕГЭ и олимпиад помогут успешно сдать ЕГЭ 2025 по Информатике.
+    Мини-группы 7-9 человек. Удобное место и время занятий. От 500р/час. Записывайся
+    сейчас!
+  - Подходит для 10-11 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: kmipt-courses-ege-russkiy_yazyk_ege
+  brand: kmipt
+  title: Русский язык ЕГЭ
+  url: https://kmipt.ru/courses/EGE/Russkiy_yazyk_EGE/
+  category: ege
+  grade_min: 10
+  grade_max: 11
+  subjects:
+  - russian
+  format: offline
+  sessions: []
+  usp:
+  - Лингвисты и эксперты ЕГЭ и олимпиад помогут успешно сдать ЕГЭ. Мини-группы 7-9
+    человек. Более 25 лет в сфере образования. Лучше чем репетитор. От 600р/час. Записывайся
+    сейчас!
+  - Подходит для 10-11 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: kmipt-courses-zhukovskiy-ochnie
+  brand: kmipt
+  title: Очные курсы по математике, физике, информатике и русскому языку в г. Жуковский
+  url: https://kmipt.ru/courses/zhukovskiy/ochnie/
+  category: base
+  grade_min: 5
+  grade_max: 11
+  subjects:
+  - math
+  - physics
+  - informatics
+  - russian
+  format: offline
+  sessions: []
+  usp:
+  - УНПК МФТИ объявляет набор на 2025-2026 год! Подготовка к ЕГЭ, ОГЭ и Олимпиадам
+    с преподавателями МГУ и МФТИ! Звони и записывайся!
+  - Подходит для 5-11 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: kmipt-courses-ege_10-ege_matematika_10
+  brand: kmipt
+  title: Математика 10 класс
+  url: https://kmipt.ru/courses/EGE_10/EGE_Matematika_10/
+  category: ege
+  grade_min: 10
+  grade_max: 10
+  subjects:
+  - math
+  format: offline
+  sessions: []
+  usp:
+  - Преподаватели - эксперты ЕГЭ и олимпиад подготовят к сдаче ЕГЭ по Математике.
+    Углубленный курс на 2 года. Мини-группы. Эффективнее чем репетитор. От 600р/час.
+    Записывайся!
+  - Подходит для 10-10 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: kmipt-courses-ege_10-fizika_10
+  brand: kmipt
+  title: Физика 10 класс
+  url: https://kmipt.ru/courses/EGE_10/Fizika_10/
+  category: ege
+  grade_min: 10
+  grade_max: 10
+  subjects:
+  - physics
+  format: offline
+  sessions: []
+  usp:
+  - Преподаватели - эксперты ЕГЭ и олимпиад подготовят к сдаче ЕГЭ по Физике. Углубленный
+    курс на 2 года. Мини-группы. Эффективнее чем репетитор. От 600р/час. Записывайся!
+  - Подходит для 10-10 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: kmipt-courses-ege_10-informatika_10
+  brand: kmipt
+  title: Информатика 10 класс
+  url: https://kmipt.ru/courses/EGE_10/Informatika_10/
+  category: ege
+  grade_min: 10
+  grade_max: 10
+  subjects:
+  - informatics
+  format: offline
+  sessions: []
+  usp:
+  - Преподаватели - эксперты ЕГЭ и олимпиад подготовят к сдаче ЕГЭ по Информатике.
+    Углубленный курс на 2 года. Мини-группы. Эффективнее чем репетитор. От 600р/час.
+    Записывайся!
+  - Подходит для 10-10 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: foton-courses-vyezdnye-shkoly
+  brand: foton
+  title: Летняя Выездная школа 2026 для 5 — 10 кл.
+  url: https://cdpofoton.ru/courses/vyezdnye-shkoly/
+  category: camp
+  grade_min: 5
+  grade_max: 10
+  subjects:
+  - physics
+  format: hybrid
+  sessions:
+  - name: Даты уточняются
+    start_date: '2026-02-13'
+    end_date: null
+    price_rub: 83300
+  usp:
+  - '2 направления: ФизМат и IT'
+  - 72 ак.ч. занятий и настоящая атмосфера лагеря
+  - Преподаватели из МФТИ, МГУ, ВШЭ
+  - Проживание по 2-3 человека в номерах-студиях
+- id: foton-courses-kursy-ochnye-5-8
+  brand: foton
+  title: Поднимем оценку с «4» до «5» за 3 месяца
+  url: https://cdpofoton.ru/courses/kursy-ochnye-5-8/
+  category: base
+  grade_min: 5
+  grade_max: 8
+  subjects:
+  - math
+  - physics
+  - informatics
+  format: offline
+  sessions: []
+  usp:
+  - ✓ Лидер отрасли в сфере дополнительного образования по международному рейтингу
+    в 2025 году
+  - ✓ За 7 лет более 20 000 родителей доверили поступление в профильный класс или
+    лицей «Фотону»
+  - ✓ Повышаем успеваемость и готовим к олимпиадам с учителями высшей категории в
+    центре Москвы
+  - Занятия по математике, физике и информатике
+- id: foton-courses-zimnyaya-vyezdnaya-shkola
+  brand: foton
+  title: Зимняя Выездная ФизМат и IT школа 2026 с преподавателями МФТИ и МГУ
+  url: https://cdpofoton.ru/courses/zimnyaya-vyezdnaya-shkola/
+  category: camp
+  grade_min: 5
+  grade_max: 11
+  subjects:
+  - math
+  - physics
+  format: offline
+  sessions:
+  - name: Смена
+    start_date: '2026-01-03'
+    end_date: '2026-01-11'
+    price_rub: 88200
+  usp:
+  - Зимний лагерь с 3 по 11 января 2026 г.
+  - Зимний лагерь для детей 2026. Выездные физико-математические и IT школы для 5
+    - 11 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: foton-courses-kursy-online-5-8
+  brand: foton
+  title: Поднимем оценку с «4» до «5» за 3 месяца
+  url: https://cdpofoton.ru/courses/kursy-online-5-8/
+  category: base
+  grade_min: 5
+  grade_max: 8
+  subjects:
+  - math
+  - physics
+  - informatics
+  - russian
+  format: online
+  sessions: []
+  usp:
+  - ✓ Лидер отрасли в сфере дополнительного образования по международному рейтингу
+    в 2025 году
+  - ✓ За 7 лет более 20 000 родителей доверили поступление в профильный класс или
+    лицей «Фотону»
+  - ✓ Улучшаем оценки и готовим к олимпиадам в онлайн-формате без потери качества
+  - Занятия по математике, физике и информатике
+- id: foton-courses-podgotovka-k-ege-po-matematike
+  brand: foton
+  title: Подготовка к ЕГЭ по математике
+  url: https://cdpofoton.ru/courses/podgotovka-k-ege-po-matematike/
+  category: ege
+  grade_min: 11
+  grade_max: 11
+  subjects:
+  - math
+  - informatics
+  format: offline
+  sessions: []
+  usp:
+  - Лидер отрасли в сфере дополнительного образования по международному рейтингу в
+    2025 году
+  - Подходит для 11-11 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: foton-courses-podgotovka-k-ege-po-matematike-online
+  brand: foton
+  title: Подготовка к ЕГЭ по математике
+  url: https://cdpofoton.ru/courses/podgotovka-k-ege-po-matematike-online/
+  category: ege
+  grade_min: 11
+  grade_max: 11
+  subjects:
+  - math
+  - informatics
+  format: online
+  sessions: []
+  usp:
+  - Лидер отрасли в сфере дополнительного образования по международному рейтингу в
+    2025 году
+  - Подходит для 11-11 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: foton-courses-podgotovka-k-ege-po-fizike
+  brand: foton
+  title: Подготовка к ЕГЭ по физике
+  url: https://cdpofoton.ru/courses/podgotovka-k-ege-po-fizike/
+  category: ege
+  grade_min: 11
+  grade_max: 11
+  subjects:
+  - physics
+  - informatics
+  format: offline
+  sessions: []
+  usp:
+  - Лидер отрасли в сфере дополнительного образования по международному рейтингу в
+    2025 году
+  - Очный курс по физике для школьников 11 класса от ЦДПО ФОТОН. Комплексная учебная
+    программа по подготовке к ЕГЭ по физике с результатами с первых занятий. Комфортное
+    обучение учеников опытными преподавателями ЦДПО ФОТОН.
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: foton-courses-podgotovka-k-ege-po-fizike-online
+  brand: foton
+  title: Подготовка к ЕГЭ по физике
+  url: https://cdpofoton.ru/courses/podgotovka-k-ege-po-fizike-online/
+  category: ege
+  grade_min: 11
+  grade_max: 11
+  subjects:
+  - physics
+  - informatics
+  format: online
+  sessions: []
+  usp:
+  - Лидер отрасли в сфере дополнительного образования по международному рейтингу в
+    2025 году
+  - Онлайн курс по физике для школьников 11 класса от ЦДПО ФОТОН. Комплексная учебная
+    программа по подготовке к ЕГЭ по физике с результатами с первых занятий. Комфортное
+    обучение учеников опытными преподавателями ЦДПО ФОТОН.
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: foton-courses-podgotovka-k-oge-po-matematike-online
+  brand: foton
+  title: Подготовка к ОГЭ по математике
+  url: https://cdpofoton.ru/courses/podgotovka-k-oge-po-matematike-online/
+  category: oge
+  grade_min: 9
+  grade_max: 9
+  subjects:
+  - math
+  - informatics
+  format: online
+  sessions: []
+  usp:
+  - Лидер отрасли в сфере дополнительного образования по международному рейтингу в
+    2025 году
+  - Подходит для 9-9 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: foton-courses-podgotovka-k-oge-po-fizike-online
+  brand: foton
+  title: Подготовка к ОГЭ по физике
+  url: https://cdpofoton.ru/courses/podgotovka-k-oge-po-fizike-online/
+  category: oge
+  grade_min: 9
+  grade_max: 9
+  subjects:
+  - physics
+  - informatics
+  format: online
+  sessions: []
+  usp:
+  - Лидер отрасли в сфере дополнительного образования по международному рейтингу в
+    2025 году
+  - Онлайн курс по физике для школьников 9 класса от ЦДПО ФОТОН. Комплексная учебная
+    программа по подготовке к ОГЭ по физике с результатами с первых занятий. Комфортное
+    обучение учеников опытными преподавателями ЦДПО ФОТОН.
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: foton-courses-podgotovka-k-oge-po-informatike-online
+  brand: foton
+  title: Подготовка к ОГЭ по информатике
+  url: https://cdpofoton.ru/courses/podgotovka-k-oge-po-informatike-online/
+  category: oge
+  grade_min: 9
+  grade_max: 9
+  subjects:
+  - informatics
+  format: online
+  sessions: []
+  usp:
+  - Лидер отрасли в сфере дополнительного образования по международному рейтингу в
+    2025 году
+  - Подходит для 9-9 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка
+- id: foton-courses-podgotovka-k-oge-po-matematike
+  brand: foton
+  title: Подготовка к ОГЭ по математике
+  url: https://cdpofoton.ru/courses/podgotovka-k-oge-po-matematike/
+  category: oge
+  grade_min: 9
+  grade_max: 9
+  subjects:
+  - math
+  - informatics
+  format: offline
+  sessions: []
+  usp:
+  - Лидер отрасли в сфере дополнительного образования по международному рейтингу в
+    2025 году
+  - Подходит для 9-9 классов
+  - Данные собраны автоматически с публичного сайта, нужна ручная проверка

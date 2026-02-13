@@ -117,6 +117,11 @@ class DatabaseTests(unittest.TestCase):
         self.assertIsInstance(row, sqlite3.Row)
         self.assertEqual(row["one"], 1)
 
+    def test_db_connection_enables_foreign_keys(self) -> None:
+        row = self.conn.execute("PRAGMA foreign_keys").fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], 1)
+
     def test_create_lead_record_persists_contact_json(self) -> None:
         user_id = db.get_or_create_user(self.conn, "telegram", "555")
         lead_row_id = db.create_lead_record(
@@ -144,6 +149,106 @@ class DatabaseTests(unittest.TestCase):
     def test_get_session_returns_empty_when_absent(self) -> None:
         session = db.get_session(self.conn, user_id=999999)
         self.assertEqual(session, {"state": {}, "meta": {}})
+
+    def test_list_recent_leads_returns_joined_user_and_contact(self) -> None:
+        user_id = db.get_or_create_user(
+            self.conn,
+            channel="telegram",
+            external_id="701",
+            username="lead_user",
+            first_name="Lead",
+            last_name="User",
+        )
+        db.create_lead_record(
+            conn=self.conn,
+            user_id=user_id,
+            status="created",
+            tallanto_entry_id="tl-1",
+            contact={"phone": "+79990000001", "source": "test"},
+        )
+
+        leads = db.list_recent_leads(self.conn, limit=10)
+        self.assertGreaterEqual(len(leads), 1)
+        first = leads[0]
+        self.assertEqual(first["user_id"], user_id)
+        self.assertEqual(first["contact"]["phone"], "+79990000001")
+        self.assertEqual(first["username"], "lead_user")
+
+    def test_list_recent_conversations_and_messages(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="702")
+        db.log_message(
+            conn=self.conn,
+            user_id=user_id,
+            direction="inbound",
+            text="Привет",
+            meta={"m": 1},
+        )
+        db.log_message(
+            conn=self.conn,
+            user_id=user_id,
+            direction="outbound",
+            text="Здравствуйте",
+            meta={"m": 2},
+        )
+
+        conversations = db.list_recent_conversations(self.conn, limit=10)
+        self.assertGreaterEqual(len(conversations), 1)
+        self.assertEqual(conversations[0]["user_id"], user_id)
+        self.assertEqual(conversations[0]["messages_count"], 2)
+
+        messages = db.list_conversation_messages(self.conn, user_id=user_id, limit=10)
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0]["direction"], "inbound")
+        self.assertEqual(messages[1]["direction"], "outbound")
+        self.assertEqual(messages[0]["meta"]["m"], 1)
+
+    def test_init_db_migrates_duplicate_sessions_and_enforces_unique_index(self) -> None:
+        legacy_path = Path(self.tempdir.name) / "legacy_sessions.db"
+        with sqlite3.connect(legacy_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel TEXT NOT NULL,
+                    external_id TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    state_json TEXT DEFAULT '{}',
+                    meta_json TEXT,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO users (channel, external_id) VALUES ('telegram', 'legacy-user')"
+            )
+            conn.execute(
+                "INSERT INTO sessions (user_id, state_json) VALUES (1, '{\"step\":\"ask_grade\"}')"
+            )
+            conn.execute(
+                "INSERT INTO sessions (user_id, state_json) VALUES (1, '{\"step\":\"ask_goal\"}')"
+            )
+            conn.commit()
+
+        db.init_db(legacy_path)
+        conn = db.get_connection(legacy_path)
+        try:
+            count = conn.execute("SELECT COUNT(*) AS cnt FROM sessions WHERE user_id = 1").fetchone()["cnt"]
+            self.assertEqual(count, 1)
+
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO sessions (user_id, state_json) VALUES (?, ?)",
+                    (1, '{"step":"duplicate"}'),
+                )
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

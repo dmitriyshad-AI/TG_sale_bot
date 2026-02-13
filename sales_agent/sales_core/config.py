@@ -18,6 +18,11 @@ class Settings:
     brand_default: str
     database_path: Path
     catalog_path: Path
+    knowledge_path: Path
+    vector_store_meta_path: Path
+    openai_vector_store_id: str
+    admin_user: str
+    admin_pass: str
 
 
 def project_root() -> Path:
@@ -31,6 +36,14 @@ def get_settings() -> Settings:
     db_path = Path(database_path) if database_path else root / "data" / "sales_agent.db"
     catalog_path = os.getenv("CATALOG_PATH")
     catalog = Path(catalog_path) if catalog_path else root / "catalog" / "products.yaml"
+    knowledge_path = os.getenv("KNOWLEDGE_PATH")
+    knowledge = Path(knowledge_path) if knowledge_path else root / "knowledge"
+    vector_store_meta_path = os.getenv("VECTOR_STORE_META_PATH")
+    vector_meta = (
+        Path(vector_store_meta_path)
+        if vector_store_meta_path
+        else root / "data" / "vector_store.json"
+    )
     return Settings(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
@@ -40,4 +53,9 @@ def get_settings() -> Settings:
         brand_default=os.getenv("BRAND_DEFAULT", "kmipt").strip() or "kmipt",
         database_path=db_path,
         catalog_path=catalog,
+        knowledge_path=knowledge,
+        vector_store_meta_path=vector_meta,
+        openai_vector_store_id=os.getenv("OPENAI_VECTOR_STORE_ID", "").strip(),
+        admin_user=os.getenv("ADMIN_USER", "").strip(),
+        admin_pass=os.getenv("ADMIN_PASS", "").strip(),
     )

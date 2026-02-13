@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 
-CREATE_STATEMENTS = [
+CREATE_TABLE_STATEMENTS = [
     """
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -24,7 +24,8 @@ CREATE_STATEMENTS = [
         state_json TEXT DEFAULT '{}',
         meta_json TEXT,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id)
+        FOREIGN KEY(user_id) REFERENCES users(id),
+        UNIQUE(user_id)
     );
     """,
     """
@@ -51,17 +52,46 @@ CREATE_STATEMENTS = [
     """,
 ]
 
+CREATE_INDEX_STATEMENTS = [
+    "CREATE INDEX IF NOT EXISTS idx_messages_user_created ON messages(user_id, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_leads_user_created ON leads(user_id, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_users_channel_external ON users(channel, external_id);",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_user_unique ON sessions(user_id);",
+]
+
+
+def _apply_pragmas(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA foreign_keys = ON;")
+
+
+def _migrate_sessions_uniqueness(conn: sqlite3.Connection) -> None:
+    # Keep the latest row per user if legacy DB contains duplicates.
+    conn.execute(
+        """
+        DELETE FROM sessions
+        WHERE id NOT IN (
+            SELECT MAX(id) FROM sessions GROUP BY user_id
+        )
+        """
+    )
+
 
 def init_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
-        for stmt in CREATE_STATEMENTS:
+        _apply_pragmas(conn)
+        for stmt in CREATE_TABLE_STATEMENTS:
+            conn.execute(stmt)
+        _migrate_sessions_uniqueness(conn)
+        for stmt in CREATE_INDEX_STATEMENTS:
             conn.execute(stmt)
         conn.commit()
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, check_same_thread=False)
+    _apply_pragmas(conn)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -184,3 +214,79 @@ def create_lead_record(
     )
     conn.commit()
     return int(cursor.lastrowid)
+
+
+def list_recent_leads(conn: sqlite3.Connection, limit: int = 100) -> list[Dict[str, Any]]:
+    cursor = conn.execute(
+        """
+        SELECT
+            l.lead_id,
+            l.user_id,
+            l.status,
+            l.tallanto_entry_id,
+            l.contact_json,
+            l.created_at,
+            u.channel,
+            u.external_id,
+            u.username,
+            u.first_name,
+            u.last_name
+        FROM leads l
+        JOIN users u ON u.id = l.user_id
+        ORDER BY l.created_at DESC, l.lead_id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    rows = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["contact"] = json.loads(item.pop("contact_json") or "{}")
+        rows.append(item)
+    return rows
+
+
+def list_recent_conversations(conn: sqlite3.Connection, limit: int = 100) -> list[Dict[str, Any]]:
+    cursor = conn.execute(
+        """
+        SELECT
+            u.id AS user_id,
+            u.channel,
+            u.external_id,
+            u.username,
+            u.first_name,
+            u.last_name,
+            COUNT(m.id) AS messages_count,
+            MAX(m.created_at) AS last_message_at
+        FROM users u
+        LEFT JOIN messages m ON m.user_id = u.id
+        GROUP BY u.id, u.channel, u.external_id, u.username, u.first_name, u.last_name
+        ORDER BY (MAX(m.created_at) IS NULL), MAX(m.created_at) DESC, u.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def list_conversation_messages(
+    conn: sqlite3.Connection,
+    user_id: int,
+    limit: int = 500,
+) -> list[Dict[str, Any]]:
+    cursor = conn.execute(
+        """
+        SELECT id, direction, text, meta_json, created_at
+        FROM messages
+        WHERE user_id = ?
+        ORDER BY id ASC
+        LIMIT ?
+        """,
+        (user_id, limit),
+    )
+    messages = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["meta"] = json.loads(item.pop("meta_json") or "{}")
+        messages.append(item)
+    return messages
