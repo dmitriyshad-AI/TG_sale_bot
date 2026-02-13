@@ -1,0 +1,417 @@
+products:
+  - id: kmipt-camp-winter-math-2026
+    brand: kmipt
+    title: "Зимний математический лагерь KMIPT"
+    url: "https://kmipt.example/camps/winter-math-2026"
+    category: camp
+    grade_min: 6
+    grade_max: 10
+    subjects:
+      - math
+    format: offline
+    sessions:
+      - name: "Январская смена"
+        start_date: "2026-01-03"
+        end_date: "2026-01-10"
+        price_rub: 52900
+    usp:
+      - "Ежедневные разборы олимпиадных задач"
+      - "Кураторы из топовых технических вузов"
+      - "Фокус на росте результата за одну смену"
+
+  - id: kmipt-camp-summer-stem-2026
+    brand: kmipt
+    title: "Летний STEM-лагерь KMIPT"
+    url: "https://kmipt.example/camps/summer-stem-2026"
+    category: camp
+    grade_min: 5
+    grade_max: 9
+    subjects:
+      - math
+      - physics
+      - informatics
+    format: offline
+    sessions:
+      - name: "Июньская смена"
+        start_date: "2026-06-08"
+        end_date: "2026-06-21"
+        price_rub: 64900
+      - name: "Июльская смена"
+        start_date: "2026-07-06"
+        end_date: "2026-07-19"
+        price_rub: 67900
+    usp:
+      - "Проекты по физике и программированию"
+      - "Тренировка учебной самостоятельности"
+      - "Баланс учебы, спорта и командной работы"
+
+  - id: kmipt-ege-math-pro
+    brand: kmipt
+    title: "ЕГЭ Математика Профиль 80+"
+    url: "https://kmipt.example/courses/ege-math-pro"
+    category: ege
+    grade_min: 10
+    grade_max: 11
+    subjects:
+      - math
+    format: hybrid
+    sessions:
+      - name: "Осенний поток"
+        start_date: "2025-09-15"
+        end_date: "2026-05-20"
+        price_rub: 89000
+    usp:
+      - "Системная программа под структуру ЕГЭ"
+      - "Еженедельные пробники с разбором"
+      - "Персональный план закрытия пробелов"
+
+  - id: kmipt-ege-physics-pro
+    brand: kmipt
+    title: "ЕГЭ Физика 75+"
+    url: "https://kmipt.example/courses/ege-physics-pro"
+    category: ege
+    grade_min: 10
+    grade_max: 11
+    subjects:
+      - physics
+    format: hybrid
+    sessions:
+      - name: "Осенний поток"
+        start_date: "2025-09-18"
+        end_date: "2026-05-25"
+        price_rub: 86000
+    usp:
+      - "Акцент на расчетные и качественные задачи"
+      - "База формул и логики решения в одном треке"
+      - "Контроль прогресса по каждой теме"
+
+  - id: kmipt-ege-informatics-pro
+    brand: kmipt
+    title: "ЕГЭ Информатика 85+"
+    url: "https://kmipt.example/courses/ege-informatics-pro"
+    category: ege
+    grade_min: 10
+    grade_max: 11
+    subjects:
+      - informatics
+    format: online
+    sessions:
+      - name: "Осенний поток"
+        start_date: "2025-09-20"
+        end_date: "2026-05-30"
+        price_rub: 92000
+    usp:
+      - "Разбор всех типов задач ЕГЭ"
+      - "Практика на Python и алгоритмах"
+      - "Отработка тайминга под экзамен"
+
+  - id: kmipt-oge-math-start
+    brand: kmipt
+    title: "ОГЭ Математика: уверенный старт"
+    url: "https://kmipt.example/courses/oge-math-start"
+    category: oge
+    grade_min: 8
+    grade_max: 9
+    subjects:
+      - math
+    format: online
+    sessions:
+      - name: "Годовой поток"
+        start_date: "2025-10-01"
+        end_date: "2026-05-15"
+        price_rub: 54000
+    usp:
+      - "Пошаговый маршрут подготовки"
+      - "Простые объяснения сложных тем"
+      - "Регулярная практика в формате ОГЭ"
+
+  - id: kmipt-olymp-math-8-9
+    brand: kmipt
+    title: "Олимпиадная математика 8-9 класс"
+    url: "https://kmipt.example/courses/olymp-math-8-9"
+    category: olympiad
+    grade_min: 8
+    grade_max: 9
+    subjects:
+      - math
+    format: offline
+    sessions:
+      - name: "Сентябрь-май"
+        start_date: "2025-09-10"
+        end_date: "2026-05-20"
+        price_rub: 99000
+    usp:
+      - "Сложные задачи с поэтапным разбором"
+      - "Подготовка к муниципальному и региональному этапам"
+      - "Малые группы и персональная обратная связь"
+
+  - id: kmipt-olymp-physics-9-10
+    brand: kmipt
+    title: "Олимпиадная физика 9-10 класс"
+    url: "https://kmipt.example/courses/olymp-physics-9-10"
+    category: olympiad
+    grade_min: 9
+    grade_max: 10
+    subjects:
+      - physics
+    format: offline
+    sessions:
+      - name: "Сентябрь-май"
+        start_date: "2025-09-12"
+        end_date: "2026-05-22"
+        price_rub: 102000
+    usp:
+      - "Тренировка экспериментальных задач"
+      - "Развитие физического мышления"
+      - "Подготовка к перечневым олимпиадам"
+
+  - id: kmipt-base-math-7-8
+    brand: kmipt
+    title: "База по математике 7-8 класс"
+    url: "https://kmipt.example/courses/base-math-7-8"
+    category: base
+    grade_min: 7
+    grade_max: 8
+    subjects:
+      - math
+    format: hybrid
+    sessions:
+      - name: "Осенний модуль"
+        start_date: "2025-10-05"
+        end_date: "2026-01-25"
+        price_rub: 39000
+    usp:
+      - "Закрытие ключевых пробелов по алгебре и геометрии"
+      - "Формирование устойчивой учебной базы"
+      - "Контрольные точки для родителей"
+
+  - id: kmipt-base-informatics-6-7
+    brand: kmipt
+    title: "База по информатике 6-7 класс"
+    url: "https://kmipt.example/courses/base-informatics-6-7"
+    category: base
+    grade_min: 6
+    grade_max: 7
+    subjects:
+      - informatics
+    format: online
+    sessions:
+      - name: "Осенний модуль"
+        start_date: "2025-10-07"
+        end_date: "2026-02-10"
+        price_rub: 42000
+    usp:
+      - "Алгоритмическое мышление с раннего возраста"
+      - "Практика в визуальном и текстовом программировании"
+      - "Доступные домашние задания с проверкой"
+
+  - id: foton-camp-summer-engineering-2026
+    brand: foton
+    title: "Летний инженерный лагерь ФОТОН"
+    url: "https://foton.example/camps/summer-engineering-2026"
+    category: camp
+    grade_min: 6
+    grade_max: 10
+    subjects:
+      - physics
+      - informatics
+    format: offline
+    sessions:
+      - name: "Июньская смена"
+        start_date: "2026-06-15"
+        end_date: "2026-06-28"
+        price_rub: 61900
+      - name: "Августовская смена"
+        start_date: "2026-08-03"
+        end_date: "2026-08-16"
+        price_rub: 61900
+    usp:
+      - "Инженерные проекты в командах"
+      - "Наставники из индустрии и вузов"
+      - "Финальная защита проекта"
+
+  - id: foton-camp-autumn-project-2026
+    brand: foton
+    title: "Осенний проектный интенсив ФОТОН"
+    url: "https://foton.example/camps/autumn-project-2026"
+    category: camp
+    grade_min: 7
+    grade_max: 11
+    subjects:
+      - physics
+      - informatics
+      - math
+    format: offline
+    sessions:
+      - name: "Ноябрьская смена"
+        start_date: "2026-11-02"
+        end_date: "2026-11-08"
+        price_rub: 44900
+    usp:
+      - "Короткий интенсив с измеримым результатом"
+      - "Индивидуальная траектория по уровням"
+      - "Подготовка портфолио проекта"
+
+  - id: foton-ege-math-focus
+    brand: foton
+    title: "ЕГЭ Математика: фокус на вторую часть"
+    url: "https://foton.example/courses/ege-math-focus"
+    category: ege
+    grade_min: 10
+    grade_max: 11
+    subjects:
+      - math
+    format: online
+    sessions:
+      - name: "Годовой поток"
+        start_date: "2025-09-22"
+        end_date: "2026-05-25"
+        price_rub: 83000
+    usp:
+      - "Отработка задач 13-19"
+      - "Системный разбор ошибок"
+      - "Фокус на стабильный высокий балл"
+
+  - id: foton-ege-physics-lab
+    brand: foton
+    title: "ЕГЭ Физика: лаборатория задач"
+    url: "https://foton.example/courses/ege-physics-lab"
+    category: ege
+    grade_min: 10
+    grade_max: 11
+    subjects:
+      - physics
+    format: hybrid
+    sessions:
+      - name: "Годовой поток"
+        start_date: "2025-09-24"
+        end_date: "2026-05-28"
+        price_rub: 87000
+    usp:
+      - "Много практики на экзаменационных заданиях"
+      - "Еженедельный разбор пробников"
+      - "Усиленная подготовка к сложным темам"
+
+  - id: foton-oge-physics-core
+    brand: foton
+    title: "ОГЭ Физика: базовый курс"
+    url: "https://foton.example/courses/oge-physics-core"
+    category: oge
+    grade_min: 8
+    grade_max: 9
+    subjects:
+      - physics
+    format: online
+    sessions:
+      - name: "Годовой поток"
+        start_date: "2025-10-03"
+        end_date: "2026-05-12"
+        price_rub: 52000
+    usp:
+      - "Доступное объяснение школьной программы"
+      - "Регулярные мини-тесты"
+      - "Подготовка к формату ОГЭ без стресса"
+
+  - id: foton-olymp-informatics-8-11
+    brand: foton
+    title: "Олимпиадная информатика 8-11"
+    url: "https://foton.example/courses/olymp-informatics-8-11"
+    category: olympiad
+    grade_min: 8
+    grade_max: 11
+    subjects:
+      - informatics
+    format: online
+    sessions:
+      - name: "Сентябрь-май"
+        start_date: "2025-09-14"
+        end_date: "2026-05-30"
+        price_rub: 118000
+    usp:
+      - "Алгоритмы и структуры данных в олимпиадном формате"
+      - "Подготовка к ВСОШ и перечневым олимпиадам"
+      - "Индивидуальная трекинг-система прогресса"
+
+  - id: foton-base-physics-7-8
+    brand: foton
+    title: "Физика без пробелов 7-8 класс"
+    url: "https://foton.example/courses/base-physics-7-8"
+    category: base
+    grade_min: 7
+    grade_max: 8
+    subjects:
+      - physics
+    format: hybrid
+    sessions:
+      - name: "Осенний модуль"
+        start_date: "2025-10-09"
+        end_date: "2026-02-12"
+        price_rub: 41000
+    usp:
+      - "Понимание физики через жизненные примеры"
+      - "Практикум с домашними экспериментами"
+      - "Регулярная обратная связь родителям"
+
+  - id: foton-base-math-5-6
+    brand: foton
+    title: "Математическая база 5-6 класс"
+    url: "https://foton.example/courses/base-math-5-6"
+    category: base
+    grade_min: 5
+    grade_max: 6
+    subjects:
+      - math
+    format: online
+    sessions:
+      - name: "Осенний модуль"
+        start_date: "2025-10-11"
+        end_date: "2026-02-14"
+        price_rub: 36000
+    usp:
+      - "Развитие математической грамотности"
+      - "Упор на уверенное решение задач"
+      - "Комфортный темп для младших школьников"
+
+  - id: foton-intensive-exam-sprint
+    brand: foton
+    title: "Exam Sprint: интенсив перед экзаменом"
+    url: "https://foton.example/courses/intensive-exam-sprint"
+    category: intensive
+    grade_min: 9
+    grade_max: 11
+    subjects:
+      - math
+      - physics
+      - informatics
+    format: online
+    sessions:
+      - name: "Весенний интенсив"
+        start_date: "2026-04-01"
+        end_date: "2026-05-25"
+        price_rub: 28000
+    usp:
+      - "Короткий цикл повторения"
+      - "Фокус на типовых ошибках"
+      - "Максимум практики в ограниченный срок"
+
+  - id: kmipt-intensive-olymp-sprint
+    brand: kmipt
+    title: "Олимпиадный Sprint перед этапом"
+    url: "https://kmipt.example/courses/intensive-olymp-sprint"
+    category: intensive
+    grade_min: 8
+    grade_max: 11
+    subjects:
+      - math
+      - physics
+      - informatics
+    format: hybrid
+    sessions:
+      - name: "Ноябрьский интенсив"
+        start_date: "2025-11-01"
+        end_date: "2025-11-20"
+        price_rub: 33000
+    usp:
+      - "Фокус на олимпиадной стратегии"
+      - "Разбор нестандартных задач"
+      - "Индивидуальные рекомендации перед этапом"

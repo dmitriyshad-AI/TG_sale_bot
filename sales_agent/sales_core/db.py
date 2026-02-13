@@ -38,6 +38,17 @@ CREATE_STATEMENTS = [
         FOREIGN KEY(user_id) REFERENCES users(id)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS leads (
+        lead_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        tallanto_entry_id TEXT,
+        contact_json TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+    """,
 ]
 
 
@@ -113,14 +124,24 @@ def upsert_session_state(
     )
     row = cursor.fetchone()
     if row:
-        conn.execute(
-            """
-            UPDATE sessions
-            SET state_json = ?, meta_json = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ?
-            """,
-            (state_json, meta_json, user_id),
-        )
+        if meta_json is None:
+            conn.execute(
+                """
+                UPDATE sessions
+                SET state_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+                """,
+                (state_json, user_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE sessions
+                SET state_json = ?, meta_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+                """,
+                (state_json, meta_json, user_id),
+            )
     else:
         conn.execute(
             """
@@ -131,3 +152,35 @@ def upsert_session_state(
         )
     conn.commit()
 
+
+def get_session(conn: sqlite3.Connection, user_id: int) -> Dict[str, Any]:
+    cursor = conn.execute(
+        "SELECT state_json, meta_json FROM sessions WHERE user_id = ?",
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return {"state": {}, "meta": {}}
+
+    state = json.loads(row["state_json"] or "{}")
+    meta = json.loads(row["meta_json"]) if row["meta_json"] else {}
+    return {"state": state, "meta": meta}
+
+
+def create_lead_record(
+    conn: sqlite3.Connection,
+    user_id: int,
+    status: str,
+    contact: Dict[str, Any],
+    tallanto_entry_id: Optional[str] = None,
+) -> int:
+    contact_json = json.dumps(contact or {}, ensure_ascii=False)
+    cursor = conn.execute(
+        """
+        INSERT INTO leads (user_id, status, tallanto_entry_id, contact_json)
+        VALUES (?, ?, ?, ?)
+        """,
+        (user_id, status, tallanto_entry_id, contact_json),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
