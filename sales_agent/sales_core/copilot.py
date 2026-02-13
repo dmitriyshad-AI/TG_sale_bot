@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from sales_agent.sales_core.crm import CRMClient, CRMResult
 from sales_agent.sales_core.tallanto_client import TallantoClient, TallantoResult
 
 
@@ -301,6 +302,15 @@ def create_tallanto_copilot_task(
         "contact": contact or "",
     }
     return tallanto.set_entry(module="tasks", fields_values=payload)
+
+
+def create_crm_copilot_task(
+    crm: CRMClient,
+    summary: str,
+    draft_reply: str,
+    contact: Optional[str] = None,
+) -> CRMResult:
+    return crm.create_copilot_task(summary=summary, draft_reply=draft_reply, contact=contact)
 
 
 def run_copilot_from_file(

@@ -9,7 +9,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from sales_agent.sales_core.config import Settings, get_settings
-from sales_agent.sales_core.copilot import create_tallanto_copilot_task, run_copilot_from_file
+from sales_agent.sales_core.copilot import run_copilot_from_file
+from sales_agent.sales_core.crm import build_crm_client
 from sales_agent.sales_core.db import (
     get_connection,
     init_db,
@@ -17,7 +18,6 @@ from sales_agent.sales_core.db import (
     list_recent_conversations,
     list_recent_leads,
 )
-from sales_agent.sales_core.tallanto_client import TallantoClient
 
 
 security = HTTPBasic()
@@ -278,9 +278,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         task_html = ""
         if create_task:
-            tallanto = TallantoClient.from_settings(cfg)
-            task_result = create_tallanto_copilot_task(
-                tallanto=tallanto,
+            crm = build_crm_client(cfg)
+            task_result = crm.create_copilot_task(
                 summary=result.summary,
                 draft_reply=result.draft_reply,
             )
@@ -335,9 +334,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
         if create_task:
-            tallanto = TallantoClient.from_settings(cfg)
-            task_result = create_tallanto_copilot_task(
-                tallanto=tallanto,
+            crm = build_crm_client(cfg)
+            task_result = crm.create_copilot_task(
                 summary=result.summary,
                 draft_reply=result.draft_reply,
             )

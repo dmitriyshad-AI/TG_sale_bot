@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    command: uvicorn sales_agent.sales_api.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  bot:
+    build: .
+    command: python -m sales_agent.sales_bot.bot
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    restart: unless-stopped

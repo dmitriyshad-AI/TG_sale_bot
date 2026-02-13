@@ -54,6 +54,16 @@ def parse_args() -> argparse.Namespace:
         default="sales-agent-knowledge",
         help="Name for a new vector store",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print planned actions without uploading, deleting, or writing metadata",
+    )
+    parser.add_argument(
+        "--prune-missing",
+        action="store_true",
+        help="Delete files from vector store if they are no longer present in knowledge directory",
+    )
     return parser.parse_args()
 
 
@@ -121,6 +131,16 @@ def _create_vector_store(api_key: str, name: str) -> str:
     if not isinstance(vector_store_id, str) or not vector_store_id:
         raise RuntimeError(f"Vector store creation failed: {response}")
     return vector_store_id
+
+
+def _delete_file_from_vector_store(api_key: str, vector_store_id: str, file_id: str, timeout: float = 30.0) -> None:
+    request = Request(
+        f"{API_BASE}/vector_stores/{vector_store_id}/files/{file_id}",
+        headers={"Authorization": f"Bearer {api_key}"},
+        method="DELETE",
+    )
+    with urlopen(request, timeout=timeout):
+        return None
 
 
 def _file_sha256(file_path: Path) -> str:
@@ -199,15 +219,22 @@ def main() -> int:
 
     try:
         if not vector_store_id:
-            vector_store_id = _create_vector_store(api_key=api_key, name=args.name)
-            print(f"[INFO] created vector store: {vector_store_id}")
+            if args.dry_run:
+                vector_store_id = "dry_run_new_vector_store"
+                print(f"[DRY-RUN] would create vector store with name: {args.name}")
+            else:
+                vector_store_id = _create_vector_store(api_key=api_key, name=args.name)
+                print(f"[INFO] created vector store: {vector_store_id}")
         else:
             print(f"[INFO] using vector store: {vector_store_id}")
 
         existing_file_map = _index_existing_files(existing_meta, vector_store_id=vector_store_id)
         uploaded_files = 0
         skipped_files = 0
+        removed_files = 0
         synced_files: List[Dict[str, object]] = []
+        current_names = {path.name for path in knowledge_files}
+
         for file_path in knowledge_files:
             sha256 = _file_sha256(file_path)
             previous = existing_file_map.get(file_path.name)
@@ -217,15 +244,21 @@ def main() -> int:
                 status = "reused"
                 print(f"[SKIP] unchanged {file_path.name} -> {file_id}")
             else:
-                file_id = _upload_file(api_key=api_key, file_path=file_path)
-                _attach_file_to_vector_store(
-                    api_key=api_key,
-                    vector_store_id=vector_store_id,
-                    file_id=file_id,
-                )
-                uploaded_files += 1
-                status = "uploaded"
-                print(f"[OK] uploaded {file_path.name} -> {file_id}")
+                if args.dry_run:
+                    file_id = str(previous["file_id"]) if previous else "<new-file-id>"
+                    status = "would_upload"
+                    uploaded_files += 1
+                    print(f"[DRY-RUN] would upload {file_path.name}")
+                else:
+                    file_id = _upload_file(api_key=api_key, file_path=file_path)
+                    _attach_file_to_vector_store(
+                        api_key=api_key,
+                        vector_store_id=vector_store_id,
+                        file_id=file_id,
+                    )
+                    uploaded_files += 1
+                    status = "uploaded"
+                    print(f"[OK] uploaded {file_path.name} -> {file_id}")
 
             synced_files.append(
                 {
@@ -237,6 +270,43 @@ def main() -> int:
                 }
             )
 
+        stale_entries = [name for name in existing_file_map if name not in current_names]
+        for stale_name in stale_entries:
+            stale_file = existing_file_map[stale_name]
+            stale_file_id = stale_file["file_id"]
+            if not args.prune_missing:
+                synced_files.append(
+                    {
+                        "name": stale_name,
+                        "file_id": stale_file_id,
+                        "sha256": stale_file["sha256"],
+                        "status": "orphaned",
+                    }
+                )
+                print(f"[WARN] stale file left in vector store: {stale_name} -> {stale_file_id}")
+                continue
+
+            if args.dry_run:
+                removed_files += 1
+                print(f"[DRY-RUN] would remove stale file from vector store: {stale_name} -> {stale_file_id}")
+                continue
+
+            _delete_file_from_vector_store(
+                api_key=api_key,
+                vector_store_id=vector_store_id,
+                file_id=stale_file_id,
+            )
+            removed_files += 1
+            print(f"[OK] removed stale file from vector store: {stale_name} -> {stale_file_id}")
+
+        if args.dry_run:
+            print(
+                f"[INFO] dry-run complete: upload={uploaded_files}, reused={skipped_files}, "
+                f"remove={removed_files}, total={len(synced_files)}"
+            )
+            print("[INFO] metadata is not written in dry-run mode")
+            return 0
+
         write_vector_store_meta(
             path=meta_path,
             payload={
@@ -247,12 +317,14 @@ def main() -> int:
                 "stats": {
                     "uploaded": uploaded_files,
                     "reused": skipped_files,
+                    "removed": removed_files,
                     "total": len(synced_files),
                 },
             },
         )
         print(
-            f"[INFO] sync complete: uploaded={uploaded_files}, reused={skipped_files}, total={len(synced_files)}"
+            f"[INFO] sync complete: uploaded={uploaded_files}, reused={skipped_files}, "
+            f"removed={removed_files}, total={len(synced_files)}"
         )
         print(f"[OK] metadata saved to {meta_path}")
         return 0

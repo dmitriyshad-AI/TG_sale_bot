@@ -34,10 +34,16 @@ MVP-каркас для sales-бота (KMIPT + ФОТОН): FastAPI API, Telegr
 ## Docker / Compose
 
 ```bash
-docker compose up --build
+docker compose -f docker-compose.dev.yml up --build
 ```
 
 API будет доступен на `localhost:8000`, бот использует тот же образ.
+
+Для production-профиля:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
 
 ## Структура
 
@@ -65,6 +71,9 @@ OPENAI_VECTOR_STORE_ID=
 TALLANTO_API_URL=
 TALLANTO_API_KEY=
 TALLANTO_MOCK_MODE=false
+CRM_PROVIDER=tallanto
+AMO_API_URL=
+AMO_ACCESS_TOKEN=
 BRAND_DEFAULT=kmipt
 ADMIN_USER=
 ADMIN_PASS=
@@ -97,6 +106,10 @@ VECTOR_STORE_META_PATH=
   - В `/start` бот распознаёт payload и сохраняет `source/page/utm_*` в `sessions.meta_json`.
 - Для локальной проверки без CRM включить mock-режим:
   - `TALLANTO_MOCK_MODE=true`
+- Выбор CRM-провайдера:
+  - `CRM_PROVIDER=tallanto` — текущая рабочая интеграция.
+  - `CRM_PROVIDER=amo` — подготовленный adapter-слой (боевой AMO-клиент пока не реализован).
+  - `CRM_PROVIDER=none` — отключить запись лидов/задач в CRM.
 - Мини-админка (FastAPI, Basic Auth):
   - Заполнить в `.env`: `ADMIN_USER` и `ADMIN_PASS`.
   - `GET /admin` — HTML dashboard.
@@ -118,10 +131,17 @@ VECTOR_STORE_META_PATH=
   ```
   - Скрипт сохранит `vector_store_id` в `data/vector_store.json`.
   - Повторный запуск идемпотентный: неизменённые файлы будут переиспользованы без повторной загрузки.
+  - Режим предпросмотра: `python3 scripts/sync_vector_store.py --dry-run`
+  - Очистка устаревших файлов в vector store:
+    `python3 scripts/sync_vector_store.py --prune-missing`
   - Можно зафиксировать ID вручную через `OPENAI_VECTOR_STORE_ID`.
 - Валидация каталога:
   ```bash
   python3 scripts/validate_catalog.py
+  ```
+- Проверка свежести каталога (обязательная в CI):
+  ```bash
+  python3 scripts/check_catalog_freshness.py
   ```
 - Автогенерация чернового каталога с публичных страниц kmipt.ru + cdpofoton.ru:
   ```bash
@@ -140,7 +160,7 @@ VECTOR_STORE_META_PATH=
 
 - Точечные тесты CLI-утилит:
   ```bash
-  python3 -m pytest tests/test_sync_vector_store_script.py tests/test_generate_deeplink_script.py -q
+  python3 -m pytest tests/test_sync_vector_store_script.py tests/test_generate_deeplink_script.py tests/test_catalog_freshness_script.py -q
   ```
 
 ## Следующие шаги (по плану)

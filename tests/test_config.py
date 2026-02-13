@@ -34,6 +34,9 @@ class ConfigTests(unittest.TestCase):
             "OPENAI_VECTOR_STORE_ID": "vs_test_123",
             "ADMIN_USER": "admin",
             "ADMIN_PASS": "secret",
+            "CRM_PROVIDER": "amo",
+            "AMO_API_URL": "https://amo.example/api",
+            "AMO_ACCESS_TOKEN": "amo-token",
         },
         clear=True,
     )
@@ -52,6 +55,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.openai_vector_store_id, "vs_test_123")
         self.assertEqual(settings.admin_user, "admin")
         self.assertEqual(settings.admin_pass, "secret")
+        self.assertEqual(settings.crm_provider, "amo")
+        self.assertEqual(settings.amo_api_url, "https://amo.example/api")
+        self.assertEqual(settings.amo_access_token, "amo-token")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_get_settings_uses_defaults(self) -> None:
@@ -66,6 +72,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.openai_vector_store_id, "")
         self.assertEqual(settings.admin_user, "")
         self.assertEqual(settings.admin_pass, "")
+        self.assertEqual(settings.crm_provider, "tallanto")
+        self.assertEqual(settings.amo_api_url, "")
+        self.assertEqual(settings.amo_access_token, "")
 
     @patch.dict(
         os.environ,

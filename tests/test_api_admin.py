@@ -183,13 +183,18 @@ class ApiAdminTests(unittest.TestCase):
             self.assertEqual(response.status_code, 400)
             self.assertIn("empty", response.json()["detail"].lower())
 
-    @patch("sales_agent.sales_api.main.create_tallanto_copilot_task")
-    def test_admin_copilot_import_with_create_task(self, mock_create_task) -> None:
-        mock_create_task.return_value = type(
-            "Result",
-            (),
-            {"success": True, "entry_id": "task-1", "error": None},
-        )()
+    @patch("sales_agent.sales_api.main.build_crm_client")
+    def test_admin_copilot_import_with_create_task(self, mock_build_crm_client) -> None:
+        class _MockCRMClient:
+            def create_copilot_task(self, summary, draft_reply, contact=None):
+                return type(
+                    "Result",
+                    (),
+                    {"success": True, "entry_id": "task-1", "error": None},
+                )()
+
+        mock_client = _MockCRMClient()
+        mock_build_crm_client.return_value = mock_client
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"
             app = create_app(self._settings(db_path))

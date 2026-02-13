@@ -138,15 +138,15 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_create_lead_from_phone_success_path(self) -> None:
         update = _make_update_with_message("ok")
-        tallanto_result = SimpleNamespace(success=True, entry_id="lead-42", error=None)
-        tallanto_client = SimpleNamespace(create_lead_async=AsyncMock(return_value=tallanto_result))
+        crm_result = SimpleNamespace(success=True, entry_id="lead-42", error=None)
+        crm_client = SimpleNamespace(create_lead_async=AsyncMock(return_value=crm_result))
 
         with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
             bot, "_get_or_create_user_id", return_value=1
         ), patch.object(bot, "_build_user_name", return_value="Ivan Petrov"), patch.object(
             bot.db_module, "create_lead_record"
         ) as mock_create_record, patch.object(bot.db_module, "log_message") as mock_log, patch.object(
-            bot.TallantoClient, "from_settings", return_value=tallanto_client
+            bot, "build_crm_client", return_value=crm_client
         ):
             await bot._create_lead_from_phone(
                 update=update,
@@ -161,15 +161,15 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_create_lead_from_phone_failure_path(self) -> None:
         update = _make_update_with_message("ok")
-        tallanto_result = SimpleNamespace(success=False, entry_id=None, error="bad request")
-        tallanto_client = SimpleNamespace(create_lead_async=AsyncMock(return_value=tallanto_result))
+        crm_result = SimpleNamespace(success=False, entry_id=None, error="bad request")
+        crm_client = SimpleNamespace(create_lead_async=AsyncMock(return_value=crm_result))
 
         with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
             bot, "_get_or_create_user_id", return_value=1
         ), patch.object(bot, "_build_user_name", return_value="Ivan Petrov"), patch.object(
             bot.db_module, "create_lead_record"
         ), patch.object(bot.db_module, "log_message"), patch.object(
-            bot.TallantoClient, "from_settings", return_value=tallanto_client
+            bot, "build_crm_client", return_value=crm_client
         ):
             await bot._create_lead_from_phone(
                 update=update,

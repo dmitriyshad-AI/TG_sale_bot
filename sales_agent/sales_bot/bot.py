@@ -14,10 +14,10 @@ from telegram.ext import (
 from sales_agent.sales_core import db as db_module
 from sales_agent.sales_core.catalog import SearchCriteria, explain_match, select_top_products
 from sales_agent.sales_core.config import get_settings
+from sales_agent.sales_core.crm import build_crm_client
 from sales_agent.sales_core.deeplink import build_greeting_hint, parse_start_payload
 from sales_agent.sales_core.flow import STATE_ASK_CONTACT, advance_flow, build_prompt, ensure_state
 from sales_agent.sales_core.llm_client import LLMClient
-from sales_agent.sales_core.tallanto_client import TallantoClient
 from sales_agent.sales_core.vector_store import load_vector_store_id
 
 
@@ -191,8 +191,8 @@ async def _create_lead_from_phone(
     conn = db_module.get_connection(settings.database_path)
     try:
         user_id = _get_or_create_user_id(update, conn)
-        tallanto = TallantoClient.from_settings(settings)
-        result = await tallanto.create_lead_async(
+        crm = build_crm_client(settings)
+        result = await crm.create_lead_async(
             phone=phone,
             brand=settings.brand_default,
             name=_build_user_name(update),
@@ -217,7 +217,7 @@ async def _create_lead_from_phone(
             reply = f"Лид создан: {result.entry_id or 'без id в ответе'}"
         else:
             reply = (
-                "Не удалось создать лид в Tallanto. "
+                "Не удалось создать лид в CRM. "
                 f"Причина: {result.error or 'неизвестная ошибка'}."
             )
 

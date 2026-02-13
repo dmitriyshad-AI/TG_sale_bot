@@ -23,6 +23,9 @@ class Settings:
     openai_vector_store_id: str
     admin_user: str
     admin_pass: str
+    crm_provider: str = "tallanto"
+    amo_api_url: str = ""
+    amo_access_token: str = ""
 
 
 def project_root() -> Path:
@@ -58,4 +61,7 @@ def get_settings() -> Settings:
         openai_vector_store_id=os.getenv("OPENAI_VECTOR_STORE_ID", "").strip(),
         admin_user=os.getenv("ADMIN_USER", "").strip(),
         admin_pass=os.getenv("ADMIN_PASS", "").strip(),
+        crm_provider=os.getenv("CRM_PROVIDER", "tallanto").strip().lower() or "tallanto",
+        amo_api_url=os.getenv("AMO_API_URL", "").strip(),
+        amo_access_token=os.getenv("AMO_ACCESS_TOKEN", "").strip(),
     )
