@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import html
+import json
 import secrets
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from sales_agent.sales_core.config import Settings, get_settings
@@ -43,6 +46,84 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return credentials.username
 
+    def render_page(title: str, body_html: str) -> HTMLResponse:
+        page = f"""
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{html.escape(title)}</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #1f2937; }}
+    h1, h2 {{ margin: 0 0 12px; }}
+    .muted {{ color: #6b7280; }}
+    nav {{ margin-bottom: 16px; }}
+    nav a {{ margin-right: 12px; }}
+    table {{ border-collapse: collapse; width: 100%; margin-top: 12px; }}
+    th, td {{ border: 1px solid #d1d5db; padding: 8px; text-align: left; vertical-align: top; }}
+    th {{ background: #f3f4f6; }}
+    .card {{ border: 1px solid #d1d5db; border-radius: 8px; padding: 12px; margin-bottom: 12px; }}
+    .badge {{ display: inline-block; padding: 2px 8px; border-radius: 999px; background: #eef2ff; }}
+    pre {{ white-space: pre-wrap; word-break: break-word; background: #f9fafb; padding: 10px; border-radius: 6px; }}
+    input, button {{ font-size: 14px; }}
+    button {{ padding: 8px 12px; cursor: pointer; }}
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/admin">Dashboard</a>
+    <a href="/admin/ui/leads">Leads</a>
+    <a href="/admin/ui/conversations">Conversations</a>
+    <a href="/admin/ui/copilot">Copilot</a>
+  </nav>
+  {body_html}
+</body>
+</html>
+"""
+        return HTMLResponse(page)
+
+    @app.get("/admin", response_class=HTMLResponse)
+    async def admin_home(_: str = Depends(require_admin)):
+        conn = get_connection(cfg.database_path)
+        try:
+            leads_count = int(conn.execute("SELECT COUNT(*) AS cnt FROM leads").fetchone()["cnt"])
+            users_count = int(conn.execute("SELECT COUNT(*) AS cnt FROM users").fetchone()["cnt"])
+            messages_count = int(conn.execute("SELECT COUNT(*) AS cnt FROM messages").fetchone()["cnt"])
+            recent_conversations = list_recent_conversations(conn, limit=5)
+        finally:
+            conn.close()
+
+        rows: list[str] = []
+        for item in recent_conversations:
+            user_id = int(item["user_id"])
+            rows.append(
+                "<tr>"
+                f"<td>{user_id}</td>"
+                f"<td>{html.escape(str(item.get('channel', '')))}</td>"
+                f"<td>{html.escape(str(item.get('external_id', '')))}</td>"
+                f"<td>{int(item.get('messages_count') or 0)}</td>"
+                f"<td>{html.escape(str(item.get('last_message_at') or '-'))}</td>"
+                f"<td><a href='/admin/ui/conversations/{user_id}'>Открыть</a></td>"
+                "</tr>"
+            )
+
+        body = (
+            "<h1>Sales Agent Admin</h1>"
+            "<p class='muted'>Оперативный контроль лидов и диалогов</p>"
+            "<div class='card'>"
+            f"<b>Users:</b> {users_count} &nbsp; | &nbsp; "
+            f"<b>Messages:</b> {messages_count} &nbsp; | &nbsp; "
+            f"<b>Leads:</b> {leads_count}"
+            "</div>"
+            "<h2>Последние диалоги</h2>"
+            "<table>"
+            "<thead><tr><th>User ID</th><th>Channel</th><th>External ID</th><th>Messages</th><th>Last Message</th><th></th></tr></thead>"
+            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=6>Нет данных</td></tr>'}</tbody>"
+            "</table>"
+        )
+        return render_page("Sales Agent Admin", body)
+
     @app.get("/api/health")
     async def health():
         return {"status": "ok", "service": "sales-agent"}
@@ -55,6 +136,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             conn.close()
 
+    @app.get("/admin/ui/leads", response_class=HTMLResponse)
+    async def admin_leads_ui(_: str = Depends(require_admin), limit: int = 100):
+        conn = get_connection(cfg.database_path)
+        try:
+            items = list_recent_leads(conn, limit=max(1, min(limit, 500)))
+        finally:
+            conn.close()
+
+        rows: list[str] = []
+        for item in items:
+            contact = item.get("contact") if isinstance(item.get("contact"), dict) else {}
+            rows.append(
+                "<tr>"
+                f"<td>{int(item['lead_id'])}</td>"
+                f"<td>{int(item['user_id'])}</td>"
+                f"<td>{html.escape(str(item.get('status') or ''))}</td>"
+                f"<td>{html.escape(str(item.get('tallanto_entry_id') or '-'))}</td>"
+                f"<td>{html.escape(str(contact.get('phone') or '-'))}</td>"
+                f"<td>{html.escape(str(contact.get('source') or '-'))}</td>"
+                f"<td>{html.escape(str(item.get('created_at') or '-'))}</td>"
+                "</tr>"
+            )
+
+        body = (
+            "<h1>Leads</h1>"
+            "<table>"
+            "<thead><tr><th>Lead ID</th><th>User ID</th><th>Status</th><th>CRM ID</th><th>Phone</th><th>Source</th><th>Created At</th></tr></thead>"
+            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=7>Нет лидов</td></tr>'}</tbody>"
+            "</table>"
+        )
+        return render_page("Leads", body)
+
     @app.get("/admin/conversations")
     async def admin_conversations(_: str = Depends(require_admin), limit: int = 100):
         conn = get_connection(cfg.database_path)
@@ -62,6 +175,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"items": list_recent_conversations(conn, limit=max(1, min(limit, 500)))}
         finally:
             conn.close()
+
+    @app.get("/admin/ui/conversations", response_class=HTMLResponse)
+    async def admin_conversations_ui(_: str = Depends(require_admin), limit: int = 100):
+        conn = get_connection(cfg.database_path)
+        try:
+            items = list_recent_conversations(conn, limit=max(1, min(limit, 500)))
+        finally:
+            conn.close()
+
+        rows: list[str] = []
+        for item in items:
+            user_id = int(item["user_id"])
+            rows.append(
+                "<tr>"
+                f"<td>{user_id}</td>"
+                f"<td>{html.escape(str(item.get('channel') or ''))}</td>"
+                f"<td>{html.escape(str(item.get('external_id') or ''))}</td>"
+                f"<td>{int(item.get('messages_count') or 0)}</td>"
+                f"<td>{html.escape(str(item.get('last_message_at') or '-'))}</td>"
+                f"<td><a href='/admin/ui/conversations/{user_id}'>История</a></td>"
+                "</tr>"
+            )
+
+        body = (
+            "<h1>Conversations</h1>"
+            "<table>"
+            "<thead><tr><th>User ID</th><th>Channel</th><th>External ID</th><th>Messages</th><th>Last Message</th><th></th></tr></thead>"
+            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=6>Нет диалогов</td></tr>'}</tbody>"
+            "</table>"
+        )
+        return render_page("Conversations", body)
 
     @app.get("/admin/conversations/{user_id}")
     async def admin_conversation_history(user_id: int, _: str = Depends(require_admin), limit: int = 500):
@@ -71,6 +215,98 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"user_id": user_id, "messages": messages}
         finally:
             conn.close()
+
+    @app.get("/admin/ui/conversations/{user_id}", response_class=HTMLResponse)
+    async def admin_conversation_history_ui(user_id: int, _: str = Depends(require_admin), limit: int = 500):
+        conn = get_connection(cfg.database_path)
+        try:
+            messages = list_conversation_messages(conn, user_id=user_id, limit=max(1, min(limit, 2000)))
+        finally:
+            conn.close()
+
+        rows: list[str] = []
+        for item in messages:
+            direction = str(item.get("direction") or "")
+            text = str(item.get("text") or "")
+            created_at = str(item.get("created_at") or "-")
+            meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+            rows.append(
+                "<tr>"
+                f"<td><span class='badge'>{html.escape(direction)}</span></td>"
+                f"<td>{html.escape(created_at)}</td>"
+                f"<td><pre>{html.escape(text)}</pre></td>"
+                f"<td><pre>{html.escape(json.dumps(meta, ensure_ascii=False, indent=2))}</pre></td>"
+                "</tr>"
+            )
+
+        body = (
+            f"<h1>Conversation #{user_id}</h1>"
+            "<table>"
+            "<thead><tr><th>Direction</th><th>Created At</th><th>Text</th><th>Meta</th></tr></thead>"
+            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=4>Нет сообщений</td></tr>'}</tbody>"
+            "</table>"
+        )
+        return render_page(f"Conversation {user_id}", body)
+
+    @app.get("/admin/ui/copilot", response_class=HTMLResponse)
+    async def admin_copilot_ui(_: str = Depends(require_admin)):
+        body = (
+            "<h1>Copilot Import</h1>"
+            "<p class='muted'>Загрузите WhatsApp .txt или Telegram export .json</p>"
+            "<form method='post' action='/admin/ui/copilot/import' enctype='multipart/form-data'>"
+            "<p><input type='file' name='file' required></p>"
+            "<p><label><input type='checkbox' name='create_task' value='true'> Создать задачу в CRM (если настроено)</label></p>"
+            "<p><button type='submit'>Импортировать</button></p>"
+            "</form>"
+        )
+        return render_page("Copilot", body)
+
+    @app.post("/admin/ui/copilot/import", response_class=HTMLResponse)
+    async def admin_copilot_import_ui(
+        _: str = Depends(require_admin),
+        file: UploadFile = File(...),
+        create_task: bool = Form(False),
+    ):
+        content = await file.read()
+        if not content:
+            return render_page("Copilot Error", "<h1>Ошибка</h1><p>Файл пустой.</p>")
+
+        try:
+            result = run_copilot_from_file(filename=file.filename or "dialog.txt", content=content)
+        except ValueError as exc:
+            return render_page("Copilot Error", f"<h1>Ошибка</h1><p>{html.escape(str(exc))}</p>")
+
+        task_html = ""
+        if create_task:
+            tallanto = TallantoClient.from_settings(cfg)
+            task_result = create_tallanto_copilot_task(
+                tallanto=tallanto,
+                summary=result.summary,
+                draft_reply=result.draft_reply,
+            )
+            task_html = (
+                "<h2>CRM Task</h2>"
+                f"<p><b>Success:</b> {html.escape(str(task_result.success))}</p>"
+                f"<p><b>Entry ID:</b> {html.escape(str(task_result.entry_id or '-'))}</p>"
+                f"<p><b>Error:</b> {html.escape(str(task_result.error or '-'))}</p>"
+            )
+
+        profile_json = html.escape(json.dumps(result.customer_profile, ensure_ascii=False, indent=2))
+        draft_text = html.escape(result.draft_reply)
+        body = (
+            "<h1>Copilot Result</h1>"
+            f"<p><b>Source format:</b> {html.escape(result.source_format)}</p>"
+            f"<p><b>Message count:</b> {int(result.message_count)}</p>"
+            "<h2>Summary</h2>"
+            f"<pre>{html.escape(result.summary)}</pre>"
+            "<h2>Customer profile</h2>"
+            f"<pre>{profile_json}</pre>"
+            "<h2>Draft reply</h2>"
+            f"<pre id='draft_reply'>{draft_text}</pre>"
+            "<button type='button' onclick='navigator.clipboard.writeText(document.getElementById(\"draft_reply\").innerText)'>Скопировать черновик</button>"
+            f"{task_html}"
+        )
+        return render_page("Copilot Result", body)
 
     @app.post("/admin/copilot/import")
     async def admin_copilot_import(

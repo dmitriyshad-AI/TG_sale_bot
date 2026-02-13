@@ -42,6 +42,8 @@ class ApiAdminTests(unittest.TestCase):
 
             response = client.get("/admin/leads")
             self.assertEqual(response.status_code, 401)
+            response_ui = client.get("/admin")
+            self.assertEqual(response_ui.status_code, 401)
 
     def test_admin_returns_503_when_not_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -98,6 +100,24 @@ class ApiAdminTests(unittest.TestCase):
             self.assertEqual(len(history), 1)
             self.assertEqual(history[0]["text"], "hi")
 
+            dashboard_ui = client.get("/admin", auth=auth)
+            self.assertEqual(dashboard_ui.status_code, 200)
+            self.assertIn("Sales Agent Admin", dashboard_ui.text)
+
+            leads_ui = client.get("/admin/ui/leads", auth=auth)
+            self.assertEqual(leads_ui.status_code, 200)
+            self.assertIn("Leads", leads_ui.text)
+            self.assertIn("+79990000001", leads_ui.text)
+
+            conv_ui = client.get("/admin/ui/conversations", auth=auth)
+            self.assertEqual(conv_ui.status_code, 200)
+            self.assertIn("Conversations", conv_ui.text)
+
+            conv_detail_ui = client.get(f"/admin/ui/conversations/{conv_items[0]['user_id']}", auth=auth)
+            self.assertEqual(conv_detail_ui.status_code, 200)
+            self.assertIn("Conversation #", conv_detail_ui.text)
+            self.assertIn("hi", conv_detail_ui.text)
+
     def test_admin_copilot_import_returns_summary_and_draft(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"
@@ -119,6 +139,19 @@ class ApiAdminTests(unittest.TestCase):
             self.assertIn("summary", data)
             self.assertIn("draft_reply", data)
             self.assertFalse(data["auto_send"])
+
+            form_response = client.get("/admin/ui/copilot", auth=auth)
+            self.assertEqual(form_response.status_code, 200)
+            self.assertIn("Copilot Import", form_response.text)
+
+            ui_response = client.post(
+                "/admin/ui/copilot/import",
+                auth=auth,
+                files={"file": ("dialog.txt", payload.encode("utf-8"), "text/plain")},
+            )
+            self.assertEqual(ui_response.status_code, 200)
+            self.assertIn("Copilot Result", ui_response.text)
+            self.assertIn("Summary", ui_response.text)
 
     def test_admin_copilot_import_rejects_invalid_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

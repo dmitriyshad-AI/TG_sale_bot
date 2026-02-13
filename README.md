@@ -99,6 +99,12 @@ VECTOR_STORE_META_PATH=
   - `TALLANTO_MOCK_MODE=true`
 - Мини-админка (FastAPI, Basic Auth):
   - Заполнить в `.env`: `ADMIN_USER` и `ADMIN_PASS`.
+  - `GET /admin` — HTML dashboard.
+  - `GET /admin/ui/leads` — HTML список лидов.
+  - `GET /admin/ui/conversations` — HTML список диалогов.
+  - `GET /admin/ui/conversations/{user_id}` — HTML история пользователя.
+  - `GET /admin/ui/copilot` — HTML форма импорта диалога.
+  - `POST /admin/ui/copilot/import` — HTML результат (`summary + draft_reply`).
   - `GET /admin/leads` — последние лиды.
   - `GET /admin/conversations` — последние диалоги.
   - `GET /admin/conversations/{user_id}` — история пользователя.
