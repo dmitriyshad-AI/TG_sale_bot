@@ -63,6 +63,29 @@ class DeepLinkTests(unittest.TestCase):
         self.assertEqual(parsed.get("brand"), "kmipt")
         self.assertEqual(parsed.get("source"), "site")
 
+    def test_long_camp_page_keeps_page_hint_when_full_page_drops(self) -> None:
+        token = encode_start_payload(
+            DeepLinkMeta(
+                brand="kmipt",
+                source="site",
+                page="/courses/camp/very/long/path/that/definitely/will/be/compressed",
+                utm_source="a" * 24,
+                utm_medium="b" * 24,
+                utm_campaign="c" * 24,
+            ),
+            max_len=64,
+        )
+        parsed = parse_start_payload(token)
+        self.assertEqual(parsed.get("brand"), "kmipt")
+        self.assertEqual(parsed.get("source"), "site")
+        self.assertIn(parsed.get("page"), {"/camp", "/courses/camp"})
+
+    def test_parse_plain_query_payload_uses_page_hint(self) -> None:
+        parsed = parse_start_payload("brand=kmipt&source=site&page_hint=oge")
+        self.assertEqual(parsed.get("brand"), "kmipt")
+        self.assertEqual(parsed.get("source"), "site")
+        self.assertEqual(parsed.get("page"), "/oge")
+
     def test_encode_payload_falls_back_to_minimal_when_max_len_too_small(self) -> None:
         token = encode_start_payload(
             DeepLinkMeta(

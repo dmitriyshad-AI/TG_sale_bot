@@ -104,11 +104,12 @@ VECTOR_STORE_META_PATH=
   ```
   - Готовый HTML-фрагмент: `docs/widget_snippet.html`
   - В `/start` бот распознаёт payload и сохраняет `source/page/utm_*` в `sessions.meta_json`.
+  - При превышении лимита 64 символа бот старается сохранить хотя бы категорию страницы (`camp/ege/oge/olymp`), чтобы не терять контекст приветствия.
 - Для локальной проверки без CRM включить mock-режим:
   - `TALLANTO_MOCK_MODE=true`
 - Выбор CRM-провайдера:
   - `CRM_PROVIDER=tallanto` — текущая рабочая интеграция.
-  - `CRM_PROVIDER=amo` — подготовленный adapter-слой (боевой AMO-клиент пока не реализован).
+  - `CRM_PROVIDER=amo` — минимальная рабочая AMO-интеграция (`/api/v4/leads` + заметка с контактом).
   - `CRM_PROVIDER=none` — отключить запись лидов/задач в CRM.
 - Мини-админка (FastAPI, Basic Auth):
   - Заполнить в `.env`: `ADMIN_USER` и `ADMIN_PASS`.
@@ -134,6 +135,7 @@ VECTOR_STORE_META_PATH=
   - Режим предпросмотра: `python3 scripts/sync_vector_store.py --dry-run`
   - Очистка устаревших файлов в vector store:
     `python3 scripts/sync_vector_store.py --prune-missing`
+    (удаляет как файлы, удаленные локально, так и старые версии после перезагрузки обновленного файла)
   - Можно зафиксировать ID вручную через `OPENAI_VECTOR_STORE_ID`.
 - Валидация каталога:
   ```bash

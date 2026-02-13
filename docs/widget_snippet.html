@@ -31,6 +31,18 @@
     }
 
     function buildToken(meta) {
+      var pageHint = null;
+      var normalizedPage = String(meta.page || "").toLowerCase();
+      if (normalizedPage.indexOf("camp") >= 0 || normalizedPage.indexOf("kanikul") >= 0 || normalizedPage.indexOf("лагер") >= 0) {
+        pageHint = "camp";
+      } else if (normalizedPage.indexOf("ege") >= 0) {
+        pageHint = "ege";
+      } else if (normalizedPage.indexOf("oge") >= 0) {
+        pageHint = "oge";
+      } else if (normalizedPage.indexOf("olymp") >= 0 || normalizedPage.indexOf("olimp") >= 0 || normalizedPage.indexOf("олимп") >= 0) {
+        pageHint = "olymp";
+      }
+
       var compact = {
         b: normalizePart(meta.brand, 10),
         s: normalizePart(meta.source, 14),
@@ -38,6 +50,7 @@
         us: normalizePart(meta.utm_source, 14),
         um: normalizePart(meta.utm_medium, 14),
         uc: normalizePart(meta.utm_campaign, 14),
+        ph: pageHint,
       };
 
       Object.keys(compact).forEach(function (key) {
@@ -59,7 +72,13 @@
       token = encodePayload(compact);
       if (token.length <= 64) return token;
 
-      delete compact.p;
+      if (compact.p) {
+        delete compact.p;
+      }
+      token = encodePayload(compact);
+      if (token.length <= 64) return token;
+
+      delete compact.ph;
       token = encodePayload(compact);
       if (token.length <= 64) return token;
 

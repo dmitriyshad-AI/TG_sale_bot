@@ -81,6 +81,16 @@ def _request_json(url: str, api_key: str, payload: Dict, timeout: float = 30.0) 
         return json.loads(response.read().decode("utf-8"))
 
 
+def _request_json_get(url: str, api_key: str, timeout: float = 30.0) -> Dict:
+    request = Request(
+        url,
+        headers={"Authorization": f"Bearer {api_key}"},
+        method="GET",
+    )
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def _upload_file(api_key: str, file_path: Path) -> str:
     boundary = f"----sales-agent-{uuid.uuid4().hex}"
     mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
@@ -141,6 +151,46 @@ def _delete_file_from_vector_store(api_key: str, vector_store_id: str, file_id: 
     )
     with urlopen(request, timeout=timeout):
         return None
+
+
+def _list_vector_store_files(
+    api_key: str,
+    vector_store_id: str,
+    *,
+    timeout: float = 30.0,
+    page_size: int = 100,
+) -> List[Dict[str, str]]:
+    items: List[Dict[str, str]] = []
+    after: Optional[str] = None
+    while True:
+        url = f"{API_BASE}/vector_stores/{vector_store_id}/files?limit={page_size}"
+        if after:
+            url = f"{url}&after={after}"
+        payload = _request_json_get(url, api_key, timeout=timeout)
+        data = payload.get("data", [])
+        if not isinstance(data, list):
+            break
+
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            file_id = entry.get("id") or entry.get("file_id")
+            if not isinstance(file_id, str) or not file_id.strip():
+                continue
+            name = entry.get("filename")
+            if not isinstance(name, str):
+                name = ""
+            items.append({"file_id": file_id.strip(), "name": name.strip()})
+
+        has_more = bool(payload.get("has_more"))
+        if not has_more:
+            break
+        last_id = payload.get("last_id")
+        if not isinstance(last_id, str) or not last_id.strip():
+            break
+        after = last_id.strip()
+
+    return items
 
 
 def _file_sha256(file_path: Path) -> str:
@@ -233,6 +283,7 @@ def main() -> int:
         skipped_files = 0
         removed_files = 0
         synced_files: List[Dict[str, object]] = []
+        replaced_file_refs: List[Dict[str, str]] = []
         current_names = {path.name for path in knowledge_files}
 
         for file_path in knowledge_files:
@@ -259,6 +310,15 @@ def main() -> int:
                     uploaded_files += 1
                     status = "uploaded"
                     print(f"[OK] uploaded {file_path.name} -> {file_id}")
+                if previous and previous.get("file_id") and previous.get("file_id") != file_id:
+                    replaced_file_refs.append(
+                        {
+                            "name": file_path.name,
+                            "file_id": str(previous["file_id"]),
+                            "sha256": str(previous.get("sha256") or ""),
+                            "reason": "replaced",
+                        }
+                    )
 
             synced_files.append(
                 {
@@ -270,10 +330,47 @@ def main() -> int:
                 }
             )
 
-        stale_entries = [name for name in existing_file_map if name not in current_names]
-        for stale_name in stale_entries:
+        stale_file_candidates: Dict[str, Dict[str, str]] = {}
+        for stale_name in (name for name in existing_file_map if name not in current_names):
             stale_file = existing_file_map[stale_name]
             stale_file_id = stale_file["file_id"]
+            stale_file_candidates[stale_file_id] = {
+                "name": stale_name,
+                "file_id": stale_file_id,
+                "sha256": stale_file["sha256"],
+                "reason": "missing_local_file",
+            }
+
+        for replaced in replaced_file_refs:
+            stale_file_candidates[replaced["file_id"]] = replaced
+
+        if args.prune_missing:
+            try:
+                remote_files = _list_vector_store_files(api_key=api_key, vector_store_id=vector_store_id)
+                known_ids = {
+                    str(item.get("file_id"))
+                    for item in synced_files
+                    if isinstance(item.get("file_id"), str) and item.get("file_id")
+                }
+                for remote in remote_files:
+                    remote_id = remote["file_id"]
+                    if remote_id in known_ids:
+                        continue
+                    if remote_id in stale_file_candidates:
+                        continue
+                    stale_file_candidates[remote_id] = {
+                        "name": remote.get("name") or "<unknown>",
+                        "file_id": remote_id,
+                        "sha256": "",
+                        "reason": "not_in_synced_set",
+                    }
+            except Exception as exc:
+                print(f"[WARN] failed to list remote vector store files: {exc}")
+
+        for stale_file in stale_file_candidates.values():
+            stale_name = stale_file["name"]
+            stale_file_id = stale_file["file_id"]
+            stale_reason = stale_file.get("reason") or "stale"
             if not args.prune_missing:
                 synced_files.append(
                     {
@@ -281,14 +378,21 @@ def main() -> int:
                         "file_id": stale_file_id,
                         "sha256": stale_file["sha256"],
                         "status": "orphaned",
+                        "reason": stale_reason,
                     }
                 )
-                print(f"[WARN] stale file left in vector store: {stale_name} -> {stale_file_id}")
+                print(
+                    f"[WARN] stale file left in vector store: {stale_name} -> "
+                    f"{stale_file_id} ({stale_reason})"
+                )
                 continue
 
             if args.dry_run:
                 removed_files += 1
-                print(f"[DRY-RUN] would remove stale file from vector store: {stale_name} -> {stale_file_id}")
+                print(
+                    f"[DRY-RUN] would remove stale file from vector store: {stale_name} -> "
+                    f"{stale_file_id} ({stale_reason})"
+                )
                 continue
 
             _delete_file_from_vector_store(
@@ -297,7 +401,10 @@ def main() -> int:
                 file_id=stale_file_id,
             )
             removed_files += 1
-            print(f"[OK] removed stale file from vector store: {stale_name} -> {stale_file_id}")
+            print(
+                f"[OK] removed stale file from vector store: {stale_name} -> "
+                f"{stale_file_id} ({stale_reason})"
+            )
 
         if args.dry_run:
             print(

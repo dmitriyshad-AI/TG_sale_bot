@@ -33,6 +33,14 @@ class DeepLinkMeta:
         return payload
 
 
+PAGE_HINT_MAP = {
+    "camp": "/camp",
+    "ege": "/ege",
+    "oge": "/oge",
+    "olymp": "/olymp",
+}
+
+
 def _shorten(value: Optional[str], limit: int) -> Optional[str]:
     if value is None:
         return None
@@ -42,11 +50,30 @@ def _shorten(value: Optional[str], limit: int) -> Optional[str]:
     return cleaned[:limit]
 
 
+def _derive_page_hint(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if "camp" in normalized or "kanikul" in normalized or "лагер" in normalized:
+        return "camp"
+    if "ege" in normalized:
+        return "ege"
+    if "oge" in normalized:
+        return "oge"
+    if "olimp" in normalized or "olymp" in normalized or "олимп" in normalized:
+        return "olymp"
+    return None
+
+
 def encode_start_payload(meta: DeepLinkMeta, max_len: int = 64) -> str:
+    page_raw = _shorten(meta.page, 24)
+    page_hint = _derive_page_hint(page_raw or meta.page)
     compact = {
         "b": _shorten(meta.brand, 10),
         "s": _shorten(meta.source, 14),
-        "p": _shorten(meta.page, 24),
+        "p": page_raw,
         "us": _shorten(meta.utm_source, 14),
         "um": _shorten(meta.utm_medium, 14),
         "uc": _shorten(meta.utm_campaign, 14),
@@ -70,12 +97,24 @@ def encode_start_payload(meta: DeepLinkMeta, max_len: int = 64) -> str:
     if len(token) <= max_len:
         return token
 
-    compact["p"] = _shorten(compact.get("p"), 12)
+    shortened_page = _shorten(compact.get("p"), 12)
+    if page_hint and shortened_page and page_hint not in shortened_page.lower():
+        compact["p"] = PAGE_HINT_MAP.get(page_hint, shortened_page)
+    else:
+        compact["p"] = shortened_page
     token = _encode(compact)
     if len(token) <= max_len:
         return token
 
-    compact.pop("p", None)
+    if compact.get("p"):
+        if page_hint:
+            compact["ph"] = page_hint
+        compact.pop("p", None)
+    token = _encode(compact)
+    if len(token) <= max_len:
+        return token
+
+    compact.pop("ph", None)
     token = _encode(compact)
     if len(token) <= max_len:
         return token
@@ -91,10 +130,14 @@ def _decode_payload_token(token: str) -> Dict[str, str]:
     data = json.loads(decoded)
     if not isinstance(data, dict):
         return {}
+    page = str(data.get("p", "")).strip()
+    if not page:
+        page_hint = str(data.get("ph", "")).strip().lower()
+        page = PAGE_HINT_MAP.get(page_hint, "")
     result = {
         "brand": str(data.get("b", "")).strip(),
         "source": str(data.get("s", "")).strip(),
-        "page": str(data.get("p", "")).strip(),
+        "page": page,
         "utm_source": str(data.get("us", "")).strip(),
         "utm_medium": str(data.get("um", "")).strip(),
         "utm_campaign": str(data.get("uc", "")).strip(),
@@ -124,6 +167,13 @@ def parse_start_payload(payload: Optional[str]) -> Dict[str, str]:
             value = values[0].strip()
             if value:
                 result[key] = value
+    if "page" not in result:
+        page_hint_values = parsed.get("page_hint")
+        if page_hint_values:
+            page_hint = page_hint_values[0].strip().lower()
+            mapped = PAGE_HINT_MAP.get(page_hint)
+            if mapped:
+                result["page"] = mapped
     return result
 
 

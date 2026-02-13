@@ -63,6 +63,39 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
                 result = sync_vector_store.main()
             self.assertEqual(result, 1)
 
+    def test_index_existing_files_only_returns_valid_items(self) -> None:
+        meta = {
+            "vector_store_id": "vs_1",
+            "files": [
+                {"name": "faq.md", "file_id": "file_1", "sha256": "abc"},
+                {"name": "", "file_id": "file_bad", "sha256": "x"},
+                {"name": "payments.md", "file_id": "", "sha256": "y"},
+                {"name": "camp.md", "file_id": "file_3", "sha256": ""},
+                "invalid",
+            ],
+        }
+        indexed = sync_vector_store._index_existing_files(meta, vector_store_id="vs_1")
+        self.assertEqual(indexed, {"faq.md": {"file_id": "file_1", "sha256": "abc"}})
+
+    def test_list_vector_store_files_handles_pagination(self) -> None:
+        responses = [
+            {"data": [{"id": "file_1", "filename": "faq.md"}], "has_more": True, "last_id": "cursor_1"},
+            {"data": [{"file_id": "file_2", "filename": "payments.md"}], "has_more": False},
+        ]
+        with patch.object(sync_vector_store, "_request_json_get", side_effect=responses) as get_mock:
+            items = sync_vector_store._list_vector_store_files(
+                api_key="key",
+                vector_store_id="vs_1",
+            )
+        self.assertEqual(
+            items,
+            [
+                {"file_id": "file_1", "name": "faq.md"},
+                {"file_id": "file_2", "name": "payments.md"},
+            ],
+        )
+        self.assertEqual(get_mock.call_count, 2)
+
     def test_main_reuses_unchanged_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -265,6 +298,8 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
             ), patch.object(sync_vector_store, "_upload_file") as upload_mock, patch.object(
                 sync_vector_store, "_attach_file_to_vector_store"
             ) as attach_mock, patch.object(
+                sync_vector_store, "_list_vector_store_files", return_value=[]
+            ) as list_mock, patch.object(
                 sync_vector_store, "_delete_file_from_vector_store"
             ) as delete_mock:
                 result = sync_vector_store.main()
@@ -272,6 +307,7 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
             self.assertEqual(result, 0)
             upload_mock.assert_not_called()
             attach_mock.assert_not_called()
+            list_mock.assert_called_once_with(api_key="test-key", vector_store_id="vs_existing")
             delete_mock.assert_called_once_with(
                 api_key="test-key",
                 vector_store_id="vs_existing",
@@ -282,6 +318,137 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
             self.assertEqual(meta.get("stats"), {"uploaded": 0, "reused": 1, "removed": 1, "total": 1})
             names = {item["name"] for item in meta["files"]}
             self.assertEqual(names, {"faq_general.md"})
+
+    def test_main_prunes_replaced_file_ids_when_content_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            knowledge_dir = root / "knowledge"
+            knowledge_dir.mkdir(parents=True, exist_ok=True)
+            faq = knowledge_dir / "faq_general.md"
+            faq.write_text("FAQ NEW", encoding="utf-8")
+
+            meta_path = root / "data" / "vector_store.json"
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "vector_store_id": "vs_existing",
+                        "files": [
+                            {"name": "faq_general.md", "file_id": "file_old_faq", "sha256": "old-sha"}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            args = argparse.Namespace(
+                knowledge_dir=knowledge_dir,
+                meta_path=meta_path,
+                vector_store_id=None,
+                name="sales-agent-knowledge",
+                dry_run=False,
+                prune_missing=True,
+            )
+            settings = self._settings(
+                root=root,
+                knowledge_path=knowledge_dir,
+                meta_path=meta_path,
+                openai_api_key="test-key",
+            )
+
+            with patch.object(sync_vector_store, "parse_args", return_value=args), patch.object(
+                sync_vector_store, "get_settings", return_value=settings
+            ), patch.object(
+                sync_vector_store, "_upload_file", return_value="file_new_faq"
+            ) as upload_mock, patch.object(
+                sync_vector_store, "_attach_file_to_vector_store"
+            ) as attach_mock, patch.object(
+                sync_vector_store, "_list_vector_store_files", return_value=[{"file_id": "file_old_faq", "name": "faq_general.md"}]
+            ), patch.object(
+                sync_vector_store, "_delete_file_from_vector_store"
+            ) as delete_mock:
+                result = sync_vector_store.main()
+
+            self.assertEqual(result, 0)
+            upload_mock.assert_called_once_with(api_key="test-key", file_path=faq)
+            attach_mock.assert_called_once_with(
+                api_key="test-key",
+                vector_store_id="vs_existing",
+                file_id="file_new_faq",
+            )
+            delete_mock.assert_called_once_with(
+                api_key="test-key",
+                vector_store_id="vs_existing",
+                file_id="file_old_faq",
+            )
+
+            meta = read_vector_store_meta(meta_path)
+            self.assertEqual(meta.get("stats"), {"uploaded": 1, "reused": 0, "removed": 1, "total": 1})
+            files = meta.get("files", [])
+            self.assertEqual(len(files), 1)
+            self.assertEqual(files[0]["file_id"], "file_new_faq")
+
+    def test_main_prunes_remote_files_not_in_local_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            knowledge_dir = root / "knowledge"
+            knowledge_dir.mkdir(parents=True, exist_ok=True)
+            faq = knowledge_dir / "faq_general.md"
+            faq.write_text("FAQ", encoding="utf-8")
+            faq_sha = sync_vector_store._file_sha256(faq)
+
+            meta_path = root / "data" / "vector_store.json"
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "vector_store_id": "vs_existing",
+                        "files": [
+                            {"name": "faq_general.md", "file_id": "file_faq", "sha256": faq_sha}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            args = argparse.Namespace(
+                knowledge_dir=knowledge_dir,
+                meta_path=meta_path,
+                vector_store_id=None,
+                name="sales-agent-knowledge",
+                dry_run=False,
+                prune_missing=True,
+            )
+            settings = self._settings(
+                root=root,
+                knowledge_path=knowledge_dir,
+                meta_path=meta_path,
+                openai_api_key="test-key",
+            )
+
+            with patch.object(sync_vector_store, "parse_args", return_value=args), patch.object(
+                sync_vector_store, "get_settings", return_value=settings
+            ), patch.object(sync_vector_store, "_upload_file") as upload_mock, patch.object(
+                sync_vector_store, "_attach_file_to_vector_store"
+            ) as attach_mock, patch.object(
+                sync_vector_store, "_list_vector_store_files", return_value=[{"file_id": "file_faq", "name": "faq_general.md"}, {"file_id": "file_unknown", "name": "other.md"}]
+            ) as list_mock, patch.object(
+                sync_vector_store, "_delete_file_from_vector_store"
+            ) as delete_mock:
+                result = sync_vector_store.main()
+
+            self.assertEqual(result, 0)
+            upload_mock.assert_not_called()
+            attach_mock.assert_not_called()
+            list_mock.assert_called_once_with(api_key="test-key", vector_store_id="vs_existing")
+            delete_mock.assert_called_once_with(
+                api_key="test-key",
+                vector_store_id="vs_existing",
+                file_id="file_unknown",
+            )
+
+            meta = read_vector_store_meta(meta_path)
+            self.assertEqual(meta.get("stats"), {"uploaded": 0, "reused": 1, "removed": 1, "total": 1})
 
 
 if __name__ == "__main__":
