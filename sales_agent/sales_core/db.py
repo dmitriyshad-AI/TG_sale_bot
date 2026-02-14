@@ -291,3 +291,27 @@ def list_conversation_messages(
         item["meta"] = json.loads(item.pop("meta_json") or "{}")
         messages.append(item)
     return messages
+
+
+def list_recent_messages(
+    conn: sqlite3.Connection,
+    user_id: int,
+    limit: int = 8,
+) -> list[Dict[str, Any]]:
+    cursor = conn.execute(
+        """
+        SELECT id, direction, text, meta_json, created_at
+        FROM messages
+        WHERE user_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (user_id, limit),
+    )
+    rows: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["meta"] = json.loads(item.pop("meta_json") or "{}")
+        rows.append(item)
+    rows.reverse()
+    return rows

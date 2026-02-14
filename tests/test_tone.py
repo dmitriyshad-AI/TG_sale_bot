@@ -60,6 +60,11 @@ class ToneTests(unittest.TestCase):
         self.assertLessEqual(low_pressure["pressure_score"], high_pressure["pressure_score"])
         self.assertGreaterEqual(low_pressure["friendliness_score"], high_pressure["friendliness_score"])
 
+    def test_apply_tone_guardrails_collapses_duplicate_polite_prefix(self) -> None:
+        text = "Если вам удобно, Если вам удобно, оставьте телефон."
+        sanitized = apply_tone_guardrails(text, DEFAULT_TONE_PROFILE)
+        self.assertEqual(sanitized, "Если вам удобно, оставьте телефон.")
+
 
 if __name__ == "__main__":
     unittest.main()

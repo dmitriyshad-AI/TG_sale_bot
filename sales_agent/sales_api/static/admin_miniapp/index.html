@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KMIPT Admin Mini App</title>
+  <link rel="stylesheet" href="/admin/miniapp/static/styles.css">
+</head>
+<body>
+  <div class="aurora a1"></div>
+  <div class="aurora a2"></div>
+  <div class="aurora a3"></div>
+
+  <main class="layout">
+    <header class="glass hero">
+      <div>
+        <p class="kicker">KMIPT Sales Agent</p>
+        <h1>Admin Mini App</h1>
+        <p class="subtitle">Лиды, диалоги и история обращений в прозрачном live-интерфейсе.</p>
+      </div>
+      <div class="status-badges">
+        <span class="badge" id="authStatus">Авторизация...</span>
+        <span class="badge" id="userStatus">Пользователь: -</span>
+      </div>
+    </header>
+
+    <nav class="tabs glass">
+      <button class="tab active" data-tab="leads">Лиды</button>
+      <button class="tab" data-tab="conversations">Диалоги</button>
+      <button class="tab" data-tab="history">История</button>
+    </nav>
+
+    <section id="panel-leads" class="panel active">
+      <div class="glass panel-head">
+        <h2>Последние лиды</h2>
+        <button class="glass-btn" id="refreshLeads">Обновить</button>
+      </div>
+      <div class="glass panel-body">
+        <div class="list" id="leadsList"></div>
+      </div>
+    </section>
+
+    <section id="panel-conversations" class="panel">
+      <div class="glass panel-head">
+        <h2>Последние диалоги</h2>
+        <button class="glass-btn" id="refreshConversations">Обновить</button>
+      </div>
+      <div class="glass panel-body">
+        <div class="list" id="conversationsList"></div>
+      </div>
+    </section>
+
+    <section id="panel-history" class="panel">
+      <div class="glass panel-head">
+        <h2>История пользователя</h2>
+        <label class="input-wrap">
+          <span>User ID</span>
+          <input id="historyUserId" type="number" min="1" placeholder="Введите user_id">
+        </label>
+        <button class="glass-btn" id="loadHistory">Загрузить</button>
+      </div>
+      <div class="glass panel-body">
+        <div class="list" id="historyList"></div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <p>Для доступа используется Telegram WebApp initData + allowlist администраторов.</p>
+    </footer>
+  </main>
+
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="/admin/miniapp/static/app.js"></script>
+</body>
+</html>

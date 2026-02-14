@@ -144,6 +144,7 @@ def apply_tone_guardrails(text: str, profile: Optional[ToneProfile] = None) -> s
     for source, target in profile.substitutions.items():
         normalized = _replace_insensitive(normalized, source, target)
 
+    normalized = re.sub(r"(если вам удобно,\s*){2,}", "Если вам удобно, ", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"!{2,}", "!", normalized)
     normalized = re.sub(r"[ \t]+", " ", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)

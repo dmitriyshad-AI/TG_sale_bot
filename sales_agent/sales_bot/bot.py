@@ -2,7 +2,7 @@ import logging
 import re
 from typing import Dict, List, Optional
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update, WebAppInfo
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -24,6 +24,7 @@ from sales_agent.sales_core.flow import (
     STATE_ASK_GOAL,
     STATE_ASK_GRADE,
     STATE_ASK_SUBJECT,
+    STATE_DONE,
     STATE_SUGGEST_PRODUCTS,
     advance_flow,
     build_prompt,
@@ -91,6 +92,88 @@ CONSULTATIVE_CONTEXT_KEYWORDS = {
     "план",
 }
 
+GENERAL_EDU_QUERY_TERMS = {
+    "косинус",
+    "синус",
+    "тангенс",
+    "тригоном",
+    "логарифм",
+    "производн",
+    "интеграл",
+    "дискриминант",
+    "геометр",
+    "алгебр",
+    "физик",
+    "географ",
+    "математ",
+    "формула",
+    "задач",
+    "теорем",
+    "уравнени",
+}
+
+GENERAL_EDU_QUERY_PREFIXES = (
+    "что такое",
+    "что значит",
+    "как решать",
+    "как найти",
+    "как считается",
+    "объясни",
+    "объясните",
+    "почему",
+)
+
+PRODUCT_INTENT_KEYWORDS = {
+    "курс",
+    "программа",
+    "подберите",
+    "подобрать",
+    "вариант",
+    "стоимость",
+    "цена",
+    "расписание",
+    "группа",
+    "занятия",
+}
+
+FLOW_SELECTION_TOKENS = {
+    "онлайн",
+    "очно",
+    "смешанный",
+    "гибрид",
+    "не важно",
+    "егэ",
+    "огэ",
+    "олимпиада",
+    "лагерь",
+    "успеваемость",
+    "математика",
+    "физика",
+    "информатика",
+}
+
+SMALL_TALK_EXACT = {
+    "спасибо",
+    "благодарю",
+    "ок",
+    "окей",
+    "хорошо",
+    "понял",
+    "поняла",
+    "ясно",
+    "добрый день",
+    "добрый вечер",
+    "привет",
+    "здравствуйте",
+}
+
+SMALL_TALK_PREFIXES = (
+    "спасибо",
+    "благодар",
+    "понятно",
+    "ясно",
+)
+
 GOAL_HINTS = {
     "еге": "ege",
     "огэ": "oge",
@@ -116,6 +199,10 @@ def _user_meta(update: Update) -> Dict[str, Optional[str]]:
         "last_name": getattr(user, "last_name", None),
         "chat_id": update.effective_chat.id if update.effective_chat else None,
     }
+
+
+def _is_admin_user(telegram_user_id: int) -> bool:
+    return telegram_user_id in set(settings.admin_telegram_ids)
 
 
 def _sanitize_phone(raw_value: str) -> Optional[str]:
@@ -185,6 +272,74 @@ def _is_consultative_query(text: str) -> bool:
 
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def _has_explicit_product_intent(text: str) -> bool:
+    normalized = _normalize_text(text)
+    return any(keyword in normalized for keyword in PRODUCT_INTENT_KEYWORDS)
+
+
+def _is_general_education_query(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+
+    if normalized in FLOW_SELECTION_TOKENS:
+        return False
+    if normalized.isdigit() and 1 <= int(normalized) <= 11:
+        return False
+    if _is_knowledge_query(normalized):
+        return False
+    if _is_consultative_query(normalized):
+        return False
+
+    has_question_signal = (
+        "?" in text
+        or normalized.startswith(("что ", "как ", "почему ", "зачем ", "объясни", "объясните"))
+    )
+    if not has_question_signal:
+        return False
+
+    if normalized.startswith(GENERAL_EDU_QUERY_PREFIXES):
+        return True
+    return any(term in normalized for term in GENERAL_EDU_QUERY_TERMS)
+
+
+def _is_small_talk_message(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    if _is_knowledge_query(normalized):
+        return False
+    if _is_consultative_query(normalized):
+        return False
+    if normalized in FLOW_SELECTION_TOKENS:
+        return False
+    if normalized.isdigit() and 1 <= int(normalized) <= 11:
+        return False
+    if "?" in normalized:
+        return False
+    if len(normalized) > 48 or len(normalized.split()) > 8:
+        return False
+    if normalized in SMALL_TALK_EXACT:
+        return True
+    return normalized.startswith(SMALL_TALK_PREFIXES)
+
+
+def _recent_dialogue_for_llm(conn, user_id: int, limit: int = 8) -> List[Dict[str, str]]:
+    history: List[Dict[str, str]] = []
+    for item in db_module.list_recent_messages(conn, user_id=user_id, limit=limit):
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        direction = str(item.get("direction") or "")
+        if direction not in {"inbound", "outbound"}:
+            continue
+        if direction == "inbound" and text.startswith("/"):
+            continue
+        role = "assistant" if direction == "outbound" else "user"
+        history.append({"role": role, "text": text[:400]})
+    return history[-limit:]
 
 
 def _extract_grade_hint(text: str) -> Optional[int]:
@@ -281,6 +436,70 @@ def _quality_meta(text: object) -> Dict[str, int]:
     return assess_response_quality(text)
 
 
+def _is_active_flow_state(state_name: Optional[str]) -> bool:
+    return state_name in {
+        STATE_ASK_GRADE,
+        STATE_ASK_GOAL,
+        STATE_ASK_SUBJECT,
+        STATE_ASK_FORMAT,
+        STATE_SUGGEST_PRODUCTS,
+        STATE_ASK_CONTACT,
+    }
+
+
+def _should_offer_products(
+    *,
+    state_name: Optional[str],
+    missing_fields: List[str],
+    user_text: str,
+) -> bool:
+    if state_name == STATE_SUGGEST_PRODUCTS:
+        return True
+    if not missing_fields:
+        return True
+    if len(missing_fields) <= 1 and _has_explicit_product_intent(user_text):
+        return True
+    return False
+
+
+def _load_current_state_payload(update: Update) -> Dict[str, object]:
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        session = db_module.get_session(conn, user_id)
+        return ensure_state(session.get("state"), brand_default=settings.brand_default)
+    finally:
+        conn.close()
+
+
+def _load_current_state_name(update: Update) -> Optional[str]:
+    state_payload = _load_current_state_payload(update)
+    state_name = state_payload.get("state")
+    return str(state_name) if isinstance(state_name, str) else None
+
+
+def _is_duplicate_update(update: Update) -> bool:
+    update_id = getattr(update, "update_id", None)
+    if not isinstance(update_id, int):
+        return False
+
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        session = db_module.get_session(conn, user_id)
+        state_payload = ensure_state(session.get("state"), brand_default=settings.brand_default)
+        runtime = state_payload.get("_runtime") if isinstance(state_payload.get("_runtime"), dict) else {}
+        last_update_id = runtime.get("last_update_id")
+        if isinstance(last_update_id, int) and last_update_id == update_id:
+            return True
+        runtime["last_update_id"] = update_id
+        state_payload["_runtime"] = runtime
+        db_module.upsert_session_state(conn, user_id=user_id, state=state_payload)
+        return False
+    finally:
+        conn.close()
+
+
 def _select_recommended_products(products: List[object], recommended_ids: List[str]) -> List[object]:
     if not products or not recommended_ids:
         return products
@@ -326,8 +545,13 @@ def _build_consultative_fallback_text(
                 example = "Например: «ЕГЭ по математике»."
 
         extra = f"\n\n{example}" if example else ""
+        opening = "Понял вас."
+        if "мфти" in normalized:
+            opening = "Понял вас, цель поступить в МФТИ."
+        elif "мгу" in normalized:
+            opening = "Понял вас, цель поступить в МГУ."
         return (
-            "Понял вас, цель поступить в МФТИ.\n\n"
+            f"{opening}\n\n"
             f"{emphasis} уточню один пункт:\n"
             f"{next_question}\n\n"
             "Можно ответить коротко, в 1-2 словах, и я сразу дам конкретный маршрут."
@@ -534,13 +758,139 @@ async def _answer_knowledge_question(update: Update, question: str) -> None:
         conn.close()
 
 
-async def _handle_consultative_query(update: Update, text: str) -> bool:
-    if not _is_consultative_query(text):
+async def _answer_general_education_question(
+    update: Update,
+    question: str,
+    *,
+    current_state: Optional[str],
+) -> bool:
+    target = _target_message(update)
+    if not target:
         return False
+
+    recent_history: List[Dict[str, str]] = []
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        recent_history = _recent_dialogue_for_llm(conn, user_id=user_id, limit=8)
+        db_module.log_message(
+            conn,
+            user_id,
+            "inbound",
+            question,
+            {"type": "message", "handler": "general-help", "state": current_state, **_user_meta(update)},
+        )
+    finally:
+        conn.close()
+
+    llm_client = LLMClient(api_key=settings.openai_api_key, model=settings.openai_model)
+    general_reply = await llm_client.build_general_help_reply_async(
+        user_message=question,
+        dialogue_state=current_state,
+        recent_history=recent_history,
+    )
+
+    answer = general_reply.answer_text.strip()
+    if _is_active_flow_state(current_state):
+        answer = (
+            f"{answer}\n\n"
+            "Если хотите, после этого вернемся к вашему плану подготовки и продолжим с текущего шага."
+        )
+
+    safe_text = apply_tone_guardrails(answer)
+    await target.reply_text(safe_text)
 
     conn = db_module.get_connection(settings.database_path)
     try:
         user_id = _get_or_create_user_id(update, conn)
+        db_module.log_message(
+            conn,
+            user_id,
+            "outbound",
+            safe_text,
+            {
+                "handler": "general-help",
+                "state": current_state,
+                "used_fallback": general_reply.used_fallback,
+                "error": general_reply.error,
+                "quality": _quality_meta(safe_text),
+                **_user_meta(update),
+            },
+        )
+    finally:
+        conn.close()
+
+    return True
+
+
+async def _answer_small_talk(
+    update: Update,
+    text: str,
+    *,
+    current_state_payload: Dict[str, object],
+) -> bool:
+    if not _is_small_talk_message(text):
+        return False
+
+    normalized = _normalize_text(text)
+    opening = "Понял вас."
+    if normalized.startswith(("привет", "здрав", "добрый")):
+        opening = "Здравствуйте! Рад помочь."
+    elif normalized.startswith(("спасибо", "благодар")):
+        opening = "Пожалуйста, рад помочь."
+
+    state_name = (
+        str(current_state_payload.get("state"))
+        if isinstance(current_state_payload.get("state"), str)
+        else None
+    )
+
+    keyboard_layout = None
+    response_text = opening
+    if state_name and _is_active_flow_state(state_name):
+        prompt = build_prompt(current_state_payload)
+        response_text = f"{opening}\n\n{prompt.message}"
+        keyboard_layout = prompt.keyboard
+
+    delivered_text = await _reply(update, response_text, keyboard_layout=keyboard_layout)
+
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        db_module.log_message(
+            conn,
+            user_id,
+            "inbound",
+            text,
+            {"type": "message", "handler": "small-talk", "state": state_name, **_user_meta(update)},
+        )
+        db_module.log_message(
+            conn,
+            user_id,
+            "outbound",
+            delivered_text,
+            {
+                "handler": "small-talk",
+                "state": state_name,
+                "quality": _quality_meta(delivered_text),
+                **_user_meta(update),
+            },
+        )
+    finally:
+        conn.close()
+
+    return True
+
+
+async def _handle_consultative_query(update: Update, text: str) -> bool:
+    if not _is_consultative_query(text):
+        return False
+
+    recent_history: List[Dict[str, str]] = []
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        recent_history = _recent_dialogue_for_llm(conn, user_id=user_id, limit=8)
         session = db_module.get_session(conn, user_id)
         state = ensure_state(session.get("state"), brand_default=settings.brand_default)
         if state.get("state") == STATE_ASK_CONTACT:
@@ -599,10 +949,15 @@ async def _handle_consultative_query(update: Update, text: str) -> bool:
     prompt = build_prompt(state)
     next_question = _build_consultative_question(criteria=state["criteria"], prompt_question=prompt.message)
     missing_fields = _missing_criteria_fields(state["criteria"])
-    show_picks = (
+    product_offer_allowed = _should_offer_products(
+        state_name=str(state.get("state") or ""),
+        missing_fields=missing_fields,
+        user_text=text,
+    )
+    show_picks = product_offer_allowed and (
         has_new_info
-        or int(state.get("consultative", {}).get("turns", 0)) <= 1
         or state.get("state") == STATE_SUGGEST_PRODUCTS
+        or _has_explicit_product_intent(text)
     )
 
     response_text = ""
@@ -627,6 +982,8 @@ async def _handle_consultative_query(update: Update, text: str) -> bool:
                 top_products=products,
                 missing_fields=missing_fields,
                 repeat_count=repeat_count,
+                product_offer_allowed=product_offer_allowed,
+                recent_history=recent_history,
             )
             llm_used_fallback = llm_reply.used_fallback
             llm_error = llm_reply.error
@@ -639,9 +996,9 @@ async def _handle_consultative_query(update: Update, text: str) -> bool:
                 chunks.append(picks_block)
             chunks.append(llm_reply.next_question or next_question)
 
-            if not missing_fields and llm_reply.call_to_action:
+            if product_offer_allowed and (not missing_fields) and llm_reply.call_to_action:
                 chunks.append(llm_reply.call_to_action)
-            elif not missing_fields:
+            elif product_offer_allowed and (not missing_fields):
                 chunks.append(
                     "Если захотите, помогу сравнить программы и подскажу, какая логичнее как следующий шаг."
                 )
@@ -744,9 +1101,9 @@ async def _handle_flow_step(
             )
 
             extra = []
-            if sales_reply.next_question:
+            if sales_reply.next_question and step.next_state != STATE_SUGGEST_PRODUCTS:
                 extra.append(sales_reply.next_question)
-            contact_cta_allowed = step.next_state in {STATE_SUGGEST_PRODUCTS, STATE_ASK_CONTACT}
+            contact_cta_allowed = step.next_state == STATE_ASK_CONTACT
             if sales_reply.call_to_action and contact_cta_allowed:
                 extra.append(sales_reply.call_to_action)
             elif contact_cta_allowed:
@@ -887,8 +1244,108 @@ async def kbtest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def adminapp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        incoming_text = update.message.text or "/adminapp"
+        db_module.log_message(
+            conn,
+            user_id,
+            "inbound",
+            incoming_text,
+            {"type": "command", "handler": "adminapp", **_user_meta(update)},
+        )
+    finally:
+        conn.close()
+
+    if not settings.admin_miniapp_enabled:
+        reply = "Admin Mini App пока выключен. Включите ADMIN_MINIAPP_ENABLED=true."
+        delivered = await _reply(update, reply)
+        conn = db_module.get_connection(settings.database_path)
+        try:
+            user_id = _get_or_create_user_id(update, conn)
+            db_module.log_message(
+                conn,
+                user_id,
+                "outbound",
+                delivered,
+                {"handler": "adminapp", "status": "disabled", "quality": _quality_meta(delivered), **_user_meta(update)},
+            )
+        finally:
+            conn.close()
+        return
+
+    if not settings.admin_webapp_url:
+        reply = "Не задан ADMIN_WEBAPP_URL. Укажите URL miniapp в .env."
+        delivered = await _reply(update, reply)
+        conn = db_module.get_connection(settings.database_path)
+        try:
+            user_id = _get_or_create_user_id(update, conn)
+            db_module.log_message(
+                conn,
+                user_id,
+                "outbound",
+                delivered,
+                {"handler": "adminapp", "status": "no_url", "quality": _quality_meta(delivered), **_user_meta(update)},
+            )
+        finally:
+            conn.close()
+        return
+
+    telegram_user_id = int(update.effective_user.id)
+    if not _is_admin_user(telegram_user_id):
+        reply = "Доступ ограничен: эта команда доступна только администраторам."
+        delivered = await _reply(update, reply)
+        conn = db_module.get_connection(settings.database_path)
+        try:
+            user_id = _get_or_create_user_id(update, conn)
+            db_module.log_message(
+                conn,
+                user_id,
+                "outbound",
+                delivered,
+                {
+                    "handler": "adminapp",
+                    "status": "forbidden",
+                    "quality": _quality_meta(delivered),
+                    **_user_meta(update),
+                },
+            )
+        finally:
+            conn.close()
+        return
+
+    button = InlineKeyboardButton(
+        text="Открыть Admin Mini App",
+        web_app=WebAppInfo(url=settings.admin_webapp_url),
+    )
+    markup = InlineKeyboardMarkup([[button]])
+    message_text = "Откройте miniapp для работы с лидами и диалогами."
+    delivered_text = apply_tone_guardrails(message_text)
+    await update.message.reply_text(delivered_text, reply_markup=markup)
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        db_module.log_message(
+            conn,
+            user_id,
+            "outbound",
+            delivered_text,
+            {"handler": "adminapp", "status": "ok", "quality": _quality_meta(delivered_text), **_user_meta(update)},
+        )
+    finally:
+        conn.close()
+
+
 async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
+        return
+    if _is_duplicate_update(update):
+        logger.info("Skipping duplicate text update_id=%s", getattr(update, "update_id", None))
         return
 
     text = update.message.text or ""
@@ -955,11 +1412,38 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _answer_knowledge_question(update, question=text)
         return
 
+    current_state_payload = _load_current_state_payload(update)
+    current_state = (
+        str(current_state_payload.get("state"))
+        if isinstance(current_state_payload.get("state"), str)
+        else None
+    )
+    if _is_general_education_query(text):
+        handled_general = await _answer_general_education_question(
+            update=update,
+            question=text,
+            current_state=current_state,
+        )
+        if handled_general:
+            return
+
+    handled_small_talk = await _answer_small_talk(
+        update=update,
+        text=text,
+        current_state_payload=current_state_payload,
+    )
+    if handled_small_talk:
+        return
+
     await _handle_flow_step(update=update, message_text=text)
 
 
 async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.callback_query:
+        return
+    if _is_duplicate_update(update):
+        logger.info("Skipping duplicate callback update_id=%s", getattr(update, "update_id", None))
+        await update.callback_query.answer()
         return
     await update.callback_query.answer()
     await _handle_flow_step(update=update, callback_data=update.callback_query.data)
@@ -969,6 +1453,7 @@ def _configure_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("leadtest", leadtest))
     application.add_handler(CommandHandler("kbtest", kbtest))
+    application.add_handler(CommandHandler("adminapp", adminapp))
     application.add_handler(CallbackQueryHandler(on_callback_query))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
 

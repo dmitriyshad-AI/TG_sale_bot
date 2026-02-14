@@ -292,6 +292,18 @@ def advance_flow(
             state["state"] = STATE_ASK_CONTACT
             return build_prompt(state)
 
+        if text:
+            return FlowStep(
+                message=(
+                    "Понял. Если хотите, отвечу на ваш вопрос и затем продолжим подбор. "
+                    "Чтобы оставить контакт, используйте кнопку ниже."
+                ),
+                next_state=STATE_SUGGEST_PRODUCTS,
+                state_data=state,
+                keyboard=_suggest_keyboard(),
+                should_suggest_products=False,
+            )
+
         prompt = build_prompt(state)
         prompt.message = "Чтобы продолжить, нажмите 'Оставить контакт' или 'Подобрать заново'."
         return prompt

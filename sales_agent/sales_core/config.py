@@ -29,6 +29,9 @@ class Settings:
     telegram_mode: str = "polling"
     telegram_webhook_secret: str = ""
     telegram_webhook_path: str = "/telegram/webhook"
+    admin_miniapp_enabled: bool = False
+    admin_telegram_ids: tuple[int, ...] = ()
+    admin_webapp_url: str = ""
 
 
 def project_root() -> Path:
@@ -56,6 +59,18 @@ def get_settings() -> Settings:
     telegram_webhook_path = os.getenv("TELEGRAM_WEBHOOK_PATH", "/telegram/webhook").strip() or "/telegram/webhook"
     if not telegram_webhook_path.startswith("/"):
         telegram_webhook_path = f"/{telegram_webhook_path}"
+    admin_miniapp_enabled = os.getenv("ADMIN_MINIAPP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+    admin_telegram_ids_raw = os.getenv("ADMIN_TELEGRAM_IDS", "").strip()
+    admin_telegram_ids: list[int] = []
+    if admin_telegram_ids_raw:
+        for token in admin_telegram_ids_raw.split(","):
+            value = token.strip()
+            if not value:
+                continue
+            try:
+                admin_telegram_ids.append(int(value))
+            except ValueError:
+                continue
 
     return Settings(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
@@ -77,4 +92,7 @@ def get_settings() -> Settings:
         crm_provider=os.getenv("CRM_PROVIDER", "tallanto").strip().lower() or "tallanto",
         amo_api_url=os.getenv("AMO_API_URL", "").strip(),
         amo_access_token=os.getenv("AMO_ACCESS_TOKEN", "").strip(),
+        admin_miniapp_enabled=admin_miniapp_enabled,
+        admin_telegram_ids=tuple(admin_telegram_ids),
+        admin_webapp_url=os.getenv("ADMIN_WEBAPP_URL", "").strip(),
     )

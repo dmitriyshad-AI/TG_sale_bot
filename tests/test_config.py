@@ -25,6 +25,9 @@ class ConfigTests(unittest.TestCase):
             "TELEGRAM_MODE": "webhook",
             "TELEGRAM_WEBHOOK_SECRET": "wh-secret",
             "TELEGRAM_WEBHOOK_PATH": "tg/webhook",
+            "ADMIN_MINIAPP_ENABLED": "true",
+            "ADMIN_TELEGRAM_IDS": "101,  202,broken,",
+            "ADMIN_WEBAPP_URL": "https://example.com/admin/miniapp",
             "OPENAI_API_KEY": "sk-test",
             "OPENAI_MODEL": "gpt-4.1-mini",
             "TALLANTO_API_URL": "https://crm.example/api",
@@ -49,6 +52,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.telegram_mode, "webhook")
         self.assertEqual(settings.telegram_webhook_secret, "wh-secret")
         self.assertEqual(settings.telegram_webhook_path, "/tg/webhook")
+        self.assertTrue(settings.admin_miniapp_enabled)
+        self.assertEqual(settings.admin_telegram_ids, (101, 202))
+        self.assertEqual(settings.admin_webapp_url, "https://example.com/admin/miniapp")
         self.assertEqual(settings.openai_api_key, "sk-test")
         self.assertEqual(settings.openai_model, "gpt-4.1-mini")
         self.assertEqual(settings.tallanto_api_url, "https://crm.example/api")
@@ -73,6 +79,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.telegram_mode, "polling")
         self.assertEqual(settings.telegram_webhook_secret, "")
         self.assertEqual(settings.telegram_webhook_path, "/telegram/webhook")
+        self.assertFalse(settings.admin_miniapp_enabled)
+        self.assertEqual(settings.admin_telegram_ids, ())
+        self.assertEqual(settings.admin_webapp_url, "")
         self.assertEqual(settings.openai_model, "gpt-4.1")
         self.assertEqual(settings.database_path, root / "data" / "sales_agent.db")
         self.assertEqual(settings.catalog_path, root / "catalog" / "products.yaml")
@@ -102,6 +111,12 @@ class ConfigTests(unittest.TestCase):
     def test_invalid_telegram_mode_falls_back_to_polling(self) -> None:
         settings = get_settings()
         self.assertEqual(settings.telegram_mode, "polling")
+
+    @patch.dict(os.environ, {"ADMIN_MINIAPP_ENABLED": "yes", "ADMIN_TELEGRAM_IDS": "1, 2, bad,3"}, clear=True)
+    def test_admin_miniapp_settings_parse_values(self) -> None:
+        settings = get_settings()
+        self.assertTrue(settings.admin_miniapp_enabled)
+        self.assertEqual(settings.admin_telegram_ids, (1, 2, 3))
 
 
 if __name__ == "__main__":

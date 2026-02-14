@@ -109,6 +109,9 @@ AMO_ACCESS_TOKEN=
 BRAND_DEFAULT=kmipt
 ADMIN_USER=
 ADMIN_PASS=
+ADMIN_MINIAPP_ENABLED=false
+ADMIN_TELEGRAM_IDS=
+ADMIN_WEBAPP_URL=
 
 # Optional overrides
 DATABASE_PATH=
@@ -157,6 +160,8 @@ SALES_TONE_PATH=
 - Проверка создания лида в Telegram:
   - `/leadtest +79991234567` (одной командой), или
   - `/leadtest`, затем отправить номер отдельным сообщением.
+- Открытие admin miniapp из Telegram:
+  - `/adminapp` (команда доступна только ID из `ADMIN_TELEGRAM_IDS`).
 - Проверка knowledge-базы в Telegram:
   - `/kbtest Какие условия возврата?`, или
   - `/kbtest`, затем отправить вопрос отдельным сообщением.
@@ -187,6 +192,19 @@ SALES_TONE_PATH=
   - `POST /admin/copilot/import` — импорт WhatsApp `.txt` или Telegram `.json`,
     возврат `summary + customer_profile + draft_reply` (без автоотправки).
     Опционально: `?create_task=true` для создания задачи в Tallanto.
+- Admin Mini App (Telegram WebApp, без Basic Auth):
+  - Включить в env:
+    - `ADMIN_MINIAPP_ENABLED=true`
+    - `ADMIN_TELEGRAM_IDS=123456789,987654321`
+    - `ADMIN_WEBAPP_URL=https://<your-domain>/admin/miniapp`
+  - UI:
+    - `GET /admin/miniapp`
+    - стиль интерфейса: glass/liquid в голубых тонах, адаптивен для mobile/desktop.
+  - API (используют Telegram `initData` в заголовке `X-Telegram-Init-Data`):
+    - `GET /admin/miniapp/api/me`
+    - `GET /admin/miniapp/api/leads`
+    - `GET /admin/miniapp/api/conversations`
+    - `GET /admin/miniapp/api/conversations/{user_id}`
 - Если `OPENAI_API_KEY` не задан, бот использует детерминированный fallback для текста рекомендаций.
 - Синхронизация knowledge-файлов в OpenAI Vector Store:
   ```bash

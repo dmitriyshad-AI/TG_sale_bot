@@ -30,6 +30,13 @@ class KnowledgeReply:
     error: Optional[str] = None
 
 
+@dataclass
+class GeneralHelpReply:
+    answer_text: str
+    used_fallback: bool
+    error: Optional[str] = None
+
+
 class LLMClient:
     def __init__(
         self,
@@ -120,12 +127,15 @@ class LLMClient:
         top_products: List[Product],
         missing_fields: List[str],
         repeat_count: int = 0,
+        product_offer_allowed: bool = True,
+        recent_history: Optional[List[Dict[str, str]]] = None,
     ) -> SalesReply:
         if not self.is_configured():
             fallback = self._fallback_consultative_reply(
                 criteria=criteria,
                 top_products=top_products,
                 missing_fields=missing_fields,
+                product_offer_allowed=product_offer_allowed,
             )
             fallback.error = "OPENAI_API_KEY is not configured"
             return fallback
@@ -136,6 +146,8 @@ class LLMClient:
             top_products=top_products,
             missing_fields=missing_fields,
             repeat_count=repeat_count,
+            product_offer_allowed=product_offer_allowed,
+            recent_history=recent_history,
         )
         raw, error = await self._send_request_async(payload)
         if error:
@@ -143,6 +155,7 @@ class LLMClient:
                 criteria=criteria,
                 top_products=top_products,
                 missing_fields=missing_fields,
+                product_offer_allowed=product_offer_allowed,
             )
             fallback.error = error
             return fallback
@@ -153,11 +166,49 @@ class LLMClient:
                 criteria=criteria,
                 top_products=top_products,
                 missing_fields=missing_fields,
+                product_offer_allowed=product_offer_allowed,
             )
             fallback.error = "Could not parse structured LLM response"
             return fallback
 
         return parsed
+
+    async def build_general_help_reply_async(
+        self,
+        *,
+        user_message: str,
+        dialogue_state: Optional[str] = None,
+        recent_history: Optional[List[Dict[str, str]]] = None,
+    ) -> GeneralHelpReply:
+        if not user_message.strip():
+            return GeneralHelpReply(
+                answer_text="Сформулируйте вопрос, и я постараюсь объяснить простыми словами.",
+                used_fallback=True,
+            )
+
+        if not self.is_configured():
+            fallback = self._fallback_general_help_reply(user_message=user_message, dialogue_state=dialogue_state)
+            fallback.error = "OPENAI_API_KEY is not configured"
+            return fallback
+
+        payload = self._build_general_help_payload(
+            user_message=user_message,
+            dialogue_state=dialogue_state,
+            recent_history=recent_history,
+        )
+        raw, error = await self._send_request_async(payload)
+        if error:
+            fallback = self._fallback_general_help_reply(user_message=user_message, dialogue_state=dialogue_state)
+            fallback.error = error
+            return fallback
+
+        text = self._extract_text(raw or {})
+        if not text:
+            fallback = self._fallback_general_help_reply(user_message=user_message, dialogue_state=dialogue_state)
+            fallback.error = "empty response text"
+            return fallback
+
+        return GeneralHelpReply(answer_text=text.strip(), used_fallback=False)
 
     def answer_knowledge_question(
         self,
@@ -348,6 +399,8 @@ class LLMClient:
         top_products: List[Product],
         missing_fields: List[str],
         repeat_count: int,
+        product_offer_allowed: bool,
+        recent_history: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         criteria_payload = {
             "brand": criteria.brand,
@@ -357,6 +410,7 @@ class LLMClient:
             "format": criteria.format,
         }
         products_payload = [self._product_payload(product) for product in top_products]
+        history_payload = recent_history or []
 
         tone_block = tone_as_prompt_block(self.tone_profile)
         system_prompt = (
@@ -381,11 +435,15 @@ class LLMClient:
             f"{json.dumps(criteria_payload, ensure_ascii=False)}\n\n"
             "Какие поля пока не заполнены:\n"
             f"{json.dumps(missing_fields, ensure_ascii=False)}\n\n"
+            "Краткая история последних сообщений в диалоге:\n"
+            f"{json.dumps(history_payload, ensure_ascii=False)}\n\n"
             f"Повторов одинакового запроса подряд: {repeat_count}\n\n"
+            f"Можно ли на этом шаге предлагать программы: {'да' if product_offer_allowed else 'нет'}\n\n"
             "Доступные программы (использовать только их):\n"
             f"{json.dumps(products_payload, ensure_ascii=False)}\n\n"
             "Сделай ответ максимально полезным, конкретным и человечным. "
-            "Сначала польза, потом мягкий следующий шаг к продукту. "
+            "Сначала польза. Если предлагать программы пока нельзя, не перечисляй курсы и не проси оставить контакт. "
+            "Если предлагать программы можно, предложи мягко, без давления. "
             "В конце задай один короткий уточняющий вопрос. "
             "recommended_product_ids должен содержать только id из списка программ."
         )
@@ -403,6 +461,47 @@ class LLMClient:
             ],
             "temperature": 0.35,
             "max_output_tokens": 800,
+        }
+
+    def _build_general_help_payload(
+        self,
+        user_message: str,
+        dialogue_state: Optional[str],
+        recent_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        history_payload = recent_history or []
+        tone_block = tone_as_prompt_block(self.tone_profile)
+        system_prompt = (
+            "Вы образовательный консультант-наставник. "
+            "Задача: отвечать по-человечески, понятно и полезно, как живой эксперт. "
+            "Сфокусируйтесь на пользе и объяснении. "
+            "Не давите продажей и не просите контакт, если пользователь сам об этом не просил. "
+            "Коротко и конкретно: 3-6 предложений, можно один мини-пример.\n\n"
+            f"{tone_block}"
+        )
+        user_prompt = (
+            "Контекст состояния диалога:\n"
+            f"{dialogue_state or 'unknown'}\n\n"
+            "Краткая история последних сообщений:\n"
+            f"{json.dumps(history_payload, ensure_ascii=False)}\n\n"
+            "Вопрос пользователя:\n"
+            f"{user_message.strip()}\n\n"
+            "Дайте спокойный, полезный и естественный ответ."
+        )
+        return {
+            "model": self.model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": user_prompt}],
+                },
+            ],
+            "temperature": 0.35,
+            "max_output_tokens": 500,
         }
 
     def _build_knowledge_payload(self, question: str, vector_store_id: str) -> Dict[str, Any]:
@@ -678,6 +777,7 @@ class LLMClient:
         criteria: SearchCriteria,
         top_products: List[Product],
         missing_fields: List[str],
+        product_offer_allowed: bool,
     ) -> SalesReply:
         lead_phrase = (
             "Спасибо за ваш вопрос. Понимаю ваш запрос. Давайте соберем реалистичный план подготовки, "
@@ -691,7 +791,7 @@ class LLMClient:
 
         options = "; ".join(product.title for product in top_products[:2]) if top_products else ""
         answer_text = lead_phrase
-        if options:
+        if options and product_offer_allowed:
             answer_text += f" Уже вижу подходящие направления: {options}."
 
         next_question_map = {
@@ -715,3 +815,44 @@ class LLMClient:
             recommended_product_ids=[item.id for item in top_products[:2]],
             used_fallback=True,
         )
+
+    def _fallback_general_help_reply(
+        self,
+        *,
+        user_message: str,
+        dialogue_state: Optional[str] = None,
+    ) -> GeneralHelpReply:
+        normalized = user_message.lower()
+
+        if "косинус" in normalized:
+            answer = (
+                "Косинус угла в прямоугольном треугольнике — это отношение прилежащего катета к гипотенузе. "
+                "Обозначают так: cos(a) = прилежащий / гипотенуза. "
+                "Например, если прилежащий катет 3, а гипотенуза 5, то cos(a)=0.6."
+            )
+            return GeneralHelpReply(answer_text=answer, used_fallback=True)
+
+        if "синус" in normalized:
+            answer = (
+                "Синус угла в прямоугольном треугольнике — это отношение противолежащего катета к гипотенузе: "
+                "sin(a) = противолежащий / гипотенуза. "
+                "Если нужно, разберем на конкретной задаче."
+            )
+            return GeneralHelpReply(answer_text=answer, used_fallback=True)
+
+        if "поступить" in normalized and "мгу" in normalized:
+            answer = (
+                "Для поступления в МГУ обычно важно три вещи: выбрать направление, зафиксировать нужные ЕГЭ и "
+                "собрать реалистичный график подготовки. "
+                "Сначала проверьте проходные баллы прошлых лет по вашему факультету, затем разложите подготовку "
+                "по предметам на еженедельный план с контрольными точками."
+            )
+            return GeneralHelpReply(answer_text=answer, used_fallback=True)
+
+        answer = (
+            "Хороший вопрос. Могу объяснить это простыми словами и затем разобрать на примере из школьной задачи. "
+            "Если хотите, напишите класс и тему, и я подстрою объяснение под ваш уровень."
+        )
+        if dialogue_state:
+            answer += " После этого можем вернуться к вашему плану подготовки."
+        return GeneralHelpReply(answer_text=answer, used_fallback=True)

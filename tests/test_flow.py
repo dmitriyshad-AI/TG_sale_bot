@@ -65,6 +65,27 @@ class FlowTests(unittest.TestCase):
         self.assertTrue(step.completed)
         self.assertEqual(step.state_data["contact"], "+79991234567")
 
+    def test_suggest_state_with_free_text_does_not_repeat_product_suggestion(self) -> None:
+        state = {
+            "state": STATE_SUGGEST_PRODUCTS,
+            "criteria": {
+                "brand": "kmipt",
+                "grade": 11,
+                "goal": "ege",
+                "subject": "physics",
+                "format": "offline",
+            },
+            "contact": None,
+        }
+        step = advance_flow(
+            state_data=state,
+            brand_default="kmipt",
+            message_text="что такое косинус?",
+        )
+        self.assertEqual(step.next_state, STATE_SUGGEST_PRODUCTS)
+        self.assertFalse(step.should_suggest_products)
+        self.assertIn("отвечу", step.message.lower())
+
     def test_restart_from_any_step(self) -> None:
         state = {
             "state": STATE_ASK_CONTACT,

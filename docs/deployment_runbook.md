@@ -29,6 +29,9 @@ OPENAI_MODEL=gpt-4.1
 BRAND_DEFAULT=kmipt
 ADMIN_USER=admin
 ADMIN_PASS=strong_password
+ADMIN_MINIAPP_ENABLED=false
+ADMIN_TELEGRAM_IDS=
+ADMIN_WEBAPP_URL=
 SALES_TONE_PATH=
 ```
 
@@ -171,3 +174,18 @@ docker compose -f docker-compose.prod.yml up -d --build
      ```bash
      curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/deleteWebhook?drop_pending_updates=true"
      ```
+
+## 9) Admin Mini App (опционально)
+
+1. В env включите miniapp:
+   ```dotenv
+   ADMIN_MINIAPP_ENABLED=true
+   ADMIN_TELEGRAM_IDS=123456789,987654321
+   ADMIN_WEBAPP_URL=https://<your-domain>/admin/miniapp
+   ```
+2. Перезапустите сервис.
+3. В Telegram от админ-аккаунта выполните `/adminapp`.
+4. Бот отправит кнопку открытия miniapp.
+5. Miniapp API защищен:
+   - Telegram WebApp `initData` (проверка подписи),
+   - allowlist `ADMIN_TELEGRAM_IDS`.

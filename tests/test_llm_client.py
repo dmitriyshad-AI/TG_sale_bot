@@ -182,10 +182,37 @@ class LLMClientTests(unittest.TestCase):
             top_products=self.top_products,
             missing_fields=["format"],
             repeat_count=0,
+            product_offer_allowed=True,
         )
         self.assertEqual(payload["input"][0]["content"][0]["type"], "input_text")
         self.assertEqual(payload["input"][1]["content"][0]["type"], "input_text")
         self.assertIn("квалифицированного сотрудника отдела продаж", payload["input"][0]["content"][0]["text"])
+
+    def test_consultative_payload_includes_recent_history(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        payload = client._build_consultative_payload(
+            user_message="Хочу поступить в МФТИ",
+            criteria=self.criteria,
+            top_products=self.top_products,
+            missing_fields=["format"],
+            repeat_count=0,
+            product_offer_allowed=False,
+            recent_history=[{"role": "user", "text": "Ранее: 11 класс"}],
+        )
+        prompt_text = payload["input"][1]["content"][0]["text"]
+        self.assertIn("Краткая история последних сообщений", prompt_text)
+        self.assertIn("11 класс", prompt_text)
+
+    def test_general_help_payload_includes_recent_history(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        payload = client._build_general_help_payload(
+            user_message="Что такое косинус?",
+            dialogue_state="ask_subject",
+            recent_history=[{"role": "assistant", "text": "Обсуждали тригонометрию"}],
+        )
+        prompt_text = payload["input"][1]["content"][0]["text"]
+        self.assertIn("Краткая история последних сообщений", prompt_text)
+        self.assertIn("тригонометрию", prompt_text)
 
     @patch("sales_agent.sales_core.llm_client.urlopen")
     def test_send_request_includes_http_error_details(self, mock_urlopen) -> None:
@@ -313,11 +340,38 @@ class LLMClientAsyncTests(unittest.IsolatedAsyncioTestCase):
                 top_products=_products(),
                 missing_fields=["format"],
                 repeat_count=0,
+                product_offer_allowed=True,
             )
 
         self.assertFalse(result.used_fallback)
         self.assertIn("План понятен", result.answer_text)
         self.assertEqual(result.recommended_product_ids, ["p01"])
+
+    async def test_build_general_help_reply_async_parses_text(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        response = _MockAsyncResponse(
+            200,
+            {"output_text": "Косинус — отношение прилежащего катета к гипотенузе."},
+        )
+        with patch(
+            "sales_agent.sales_core.llm_client.httpx.AsyncClient",
+            return_value=_MockAsyncClient(response),
+        ):
+            result = await client.build_general_help_reply_async(
+                user_message="что такое косинус?",
+                dialogue_state="ask_subject",
+            )
+        self.assertFalse(result.used_fallback)
+        self.assertIn("Косинус", result.answer_text)
+
+    async def test_build_general_help_reply_async_uses_fallback_without_key(self) -> None:
+        client = LLMClient(api_key="", model="gpt-4.1")
+        result = await client.build_general_help_reply_async(
+            user_message="Что такое косинус?",
+            dialogue_state="ask_subject",
+        )
+        self.assertTrue(result.used_fallback)
+        self.assertIn("косинус", result.answer_text.lower())
 
 
 if __name__ == "__main__":

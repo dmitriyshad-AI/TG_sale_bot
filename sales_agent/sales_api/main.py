@@ -7,12 +7,13 @@ import logging
 import secrets
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
 from telegram import Update
 
 from sales_agent.sales_bot import bot as bot_runtime
-from sales_agent.sales_core.config import Settings, get_settings
+from sales_agent.sales_core.config import Settings, get_settings, project_root
 from sales_agent.sales_core.copilot import run_copilot_from_file
 from sales_agent.sales_core.crm import build_crm_client
 from sales_agent.sales_core.db import (
@@ -22,6 +23,7 @@ from sales_agent.sales_core.db import (
     list_recent_conversations,
     list_recent_leads,
 )
+from sales_agent.sales_core.telegram_webapp import verify_telegram_webapp_init_data
 
 
 security = HTTPBasic()
@@ -54,6 +56,53 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.info("Telegram webhook application stopped")
 
     app = FastAPI(title="sales-agent", lifespan=lifespan)
+    miniapp_dir = project_root() / "sales_agent" / "sales_api" / "static" / "admin_miniapp"
+    if miniapp_dir.exists():
+        app.mount(
+            "/admin/miniapp/static",
+            StaticFiles(directory=str(miniapp_dir)),
+            name="admin-miniapp-static",
+        )
+
+    def require_miniapp_user(request: Request) -> dict:
+        if not cfg.admin_miniapp_enabled:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin miniapp is disabled.")
+        if not cfg.telegram_bot_token:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="TELEGRAM_BOT_TOKEN is not configured.",
+            )
+        if not cfg.admin_telegram_ids:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="ADMIN_TELEGRAM_IDS is not configured.",
+            )
+
+        init_data = request.headers.get("X-Telegram-Init-Data", "").strip()
+
+        auth = verify_telegram_webapp_init_data(
+            init_data=init_data,
+            bot_token=cfg.telegram_bot_token,
+        )
+        if not auth.ok:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid Telegram miniapp auth: {auth.reason}",
+            )
+        if auth.user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Telegram user id is missing in init data.",
+            )
+        if auth.user_id not in cfg.admin_telegram_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This Telegram account is not allowed.",
+            )
+        return {
+            "user_id": auth.user_id,
+            "user": auth.user or {},
+        }
 
     def require_admin(credentials: HTTPBasicCredentials = Depends(security)) -> str:
         if not cfg.admin_user or not cfg.admin_pass:
@@ -153,6 +202,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/health")
     async def health():
         return {"status": "ok", "service": "sales-agent"}
+
+    @app.get("/admin/miniapp")
+    async def admin_miniapp_page():
+        if not cfg.admin_miniapp_enabled:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin miniapp is disabled.")
+        index_path = miniapp_dir / "index.html"
+        if not index_path.exists():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Miniapp UI is not available.")
+        return FileResponse(index_path)
+
+    @app.get("/admin/miniapp/api/me")
+    async def admin_miniapp_me(auth_user: dict = Depends(require_miniapp_user)):
+        return {"ok": True, "user": auth_user.get("user", {}), "user_id": auth_user["user_id"]}
+
+    @app.get("/admin/miniapp/api/leads")
+    async def admin_miniapp_leads(
+        limit: int = 100,
+        auth_user: dict = Depends(require_miniapp_user),
+    ):
+        conn = get_connection(cfg.database_path)
+        try:
+            items = list_recent_leads(conn, limit=max(1, min(limit, 500)))
+        finally:
+            conn.close()
+        return {"ok": True, "requested_by": auth_user["user_id"], "items": items}
+
+    @app.get("/admin/miniapp/api/conversations")
+    async def admin_miniapp_conversations(
+        limit: int = 100,
+        auth_user: dict = Depends(require_miniapp_user),
+    ):
+        conn = get_connection(cfg.database_path)
+        try:
+            items = list_recent_conversations(conn, limit=max(1, min(limit, 500)))
+        finally:
+            conn.close()
+        return {"ok": True, "requested_by": auth_user["user_id"], "items": items}
+
+    @app.get("/admin/miniapp/api/conversations/{user_id}")
+    async def admin_miniapp_conversation_history(
+        user_id: int,
+        limit: int = 500,
+        auth_user: dict = Depends(require_miniapp_user),
+    ):
+        conn = get_connection(cfg.database_path)
+        try:
+            messages = list_conversation_messages(conn, user_id=user_id, limit=max(1, min(limit, 2000)))
+        finally:
+            conn.close()
+        return {
+            "ok": True,
+            "requested_by": auth_user["user_id"],
+            "user_id": user_id,
+            "messages": messages,
+        }
 
     @app.post(webhook_path)
     async def telegram_webhook(request: Request):

@@ -17,6 +17,9 @@ try:
         _extract_subject_hint,
         _format_product_blurb,
         _is_consultative_query,
+        _is_duplicate_update,
+        _is_general_education_query,
+        _is_small_talk_message,
         _next_state_for_consultative,
         _resolve_vector_store_id,
         _target_message,
@@ -137,6 +140,19 @@ class BotHelpersTests(unittest.TestCase):
         text = "Какие условия возврата и оплаты?"
         self.assertFalse(_is_consultative_query(text))
 
+    def test_general_education_query_detection(self) -> None:
+        self.assertTrue(_is_general_education_query("Что такое косинус?"))
+        self.assertTrue(_is_general_education_query("Объясни, как решать уравнения?"))
+        self.assertFalse(_is_general_education_query("10"))
+        self.assertFalse(_is_general_education_query("Онлайн"))
+        self.assertFalse(_is_general_education_query("Хочу поступить в МФТИ, что делать?"))
+
+    def test_small_talk_detection(self) -> None:
+        self.assertTrue(_is_small_talk_message("Спасибо"))
+        self.assertTrue(_is_small_talk_message("Понял"))
+        self.assertFalse(_is_small_talk_message("Онлайн"))
+        self.assertFalse(_is_small_talk_message("Хочу поступить в МФТИ"))
+
     def test_next_state_for_consultative_does_not_loop_to_goal_when_complete(self) -> None:
         state = _next_state_for_consultative(
             {
@@ -152,6 +168,46 @@ class BotHelpersTests(unittest.TestCase):
     def test_build_user_name_from_first_and_last_name(self) -> None:
         update = SimpleNamespace(effective_user=SimpleNamespace(first_name="Ivan", last_name="Petrov"))
         self.assertEqual(_build_user_name(update), "Ivan Petrov")
+
+    def test_is_duplicate_update_returns_false_without_update_id(self) -> None:
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=100),
+            update_id=None,
+        )
+        self.assertFalse(_is_duplicate_update(update))
+
+    def test_is_duplicate_update_detects_repeat(self) -> None:
+        class _DummyConn:
+            def close(self):
+                return None
+
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=100),
+            update_id=5001,
+        )
+        state_without_runtime = {
+            "state": "ask_grade",
+            "criteria": {"brand": "kmipt", "grade": None, "goal": None, "subject": None, "format": None},
+            "contact": None,
+        }
+        state_with_runtime = {
+            **state_without_runtime,
+            "_runtime": {"last_update_id": 5001},
+        }
+
+        with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
+            bot, "_get_or_create_user_id", return_value=1
+        ), patch.object(
+            bot.db_module,
+            "get_session",
+            side_effect=[{"state": state_without_runtime, "meta": {}}, {"state": state_with_runtime, "meta": {}}],
+        ), patch.object(bot.db_module, "upsert_session_state") as mock_upsert:
+            self.assertFalse(_is_duplicate_update(update))
+            self.assertTrue(_is_duplicate_update(update))
+
+        mock_upsert.assert_called_once()
 
 
 if __name__ == "__main__":

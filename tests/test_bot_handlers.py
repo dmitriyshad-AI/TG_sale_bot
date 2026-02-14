@@ -112,7 +112,7 @@ class BotSyncCoverageTests(unittest.TestCase):
             bot.main()
 
         builder.token.assert_called_once_with("tg-token")
-        self.assertEqual(app_mock.add_handler.call_count, 5)
+        self.assertEqual(app_mock.add_handler.call_count, 6)
         app_mock.run_polling.assert_called_once()
 
     def test_main_raises_in_webhook_mode(self) -> None:
@@ -219,6 +219,124 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
         update = SimpleNamespace(message=None, callback_query=None)
         await bot._answer_knowledge_question(update=update, question="Какие документы?")
 
+    async def test_answer_general_education_question_replies_and_logs(self) -> None:
+        update = _make_update_with_message("что такое косинус?")
+        llm_result = SimpleNamespace(
+            answer_text="Косинус — отношение прилежащего катета к гипотенузе.",
+            used_fallback=False,
+            error=None,
+        )
+        llm_client = SimpleNamespace(build_general_help_reply_async=AsyncMock(return_value=llm_result))
+
+        with patch.object(bot, "LLMClient", return_value=llm_client), patch.object(
+            bot.db_module, "get_connection", return_value=_DummyConn()
+        ), patch.object(bot, "_get_or_create_user_id", return_value=1), patch.object(
+            bot.db_module, "list_recent_messages", return_value=[]
+        ), patch.object(
+            bot.db_module, "log_message"
+        ):
+            handled = await bot._answer_general_education_question(
+                update=update,
+                question="что такое косинус?",
+                current_state="ask_subject",
+            )
+
+        self.assertTrue(handled)
+        update.message.reply_text.assert_awaited_once()
+        text = update.message.reply_text.call_args.args[0]
+        self.assertIn("Косинус", text)
+        self.assertIn("вернемся к вашему плану", text)
+
+    async def test_answer_general_education_question_returns_false_without_target(self) -> None:
+        update = SimpleNamespace(message=None, callback_query=None)
+        handled = await bot._answer_general_education_question(
+            update=update,
+            question="что такое косинус?",
+            current_state="ask_subject",
+        )
+        self.assertFalse(handled)
+
+    async def test_answer_small_talk_replies_with_prompt_for_active_state(self) -> None:
+        update = _make_update_with_message("Спасибо")
+        current_state_payload = {
+            "state": "ask_grade",
+            "criteria": {"brand": "kmipt", "grade": None, "goal": None, "subject": None, "format": None},
+            "contact": None,
+        }
+
+        with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
+            bot, "_get_or_create_user_id", return_value=1
+        ), patch.object(bot.db_module, "log_message"):
+            handled = await bot._answer_small_talk(
+                update=update,
+                text="Спасибо",
+                current_state_payload=current_state_payload,
+            )
+
+        self.assertTrue(handled)
+        update.message.reply_text.assert_awaited_once()
+        reply_text = update.message.reply_text.call_args.args[0]
+        self.assertIn("Пожалуйста", reply_text)
+
+    async def test_adminapp_returns_disabled_message_when_feature_is_off(self) -> None:
+        update = _make_update_with_message("/adminapp")
+        with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
+            bot, "_get_or_create_user_id", return_value=1
+        ), patch.object(bot.db_module, "log_message"), patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(
+                database_path=Path("/tmp/test.db"),
+                admin_miniapp_enabled=False,
+                admin_webapp_url="https://example.com/admin/miniapp",
+                admin_telegram_ids=(101,),
+            ),
+        ), patch.object(bot, "_reply", new_callable=AsyncMock) as mock_reply:
+            await bot.adminapp(update=update, context=SimpleNamespace(args=[], user_data={}))
+
+        mock_reply.assert_awaited()
+        self.assertIn("выключен", mock_reply.await_args_list[0].args[1].lower())
+
+    async def test_adminapp_returns_forbidden_for_non_admin(self) -> None:
+        update = _make_update_with_message("/adminapp")
+        with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
+            bot, "_get_or_create_user_id", return_value=1
+        ), patch.object(bot.db_module, "log_message"), patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(
+                database_path=Path("/tmp/test.db"),
+                admin_miniapp_enabled=True,
+                admin_webapp_url="https://example.com/admin/miniapp",
+                admin_telegram_ids=(999,),
+            ),
+        ), patch.object(bot, "_reply", new_callable=AsyncMock) as mock_reply:
+            await bot.adminapp(update=update, context=SimpleNamespace(args=[], user_data={}))
+
+        mock_reply.assert_awaited()
+        self.assertIn("ограничен", mock_reply.await_args_list[0].args[1].lower())
+
+    async def test_adminapp_returns_webapp_button_for_admin(self) -> None:
+        update = _make_update_with_message("/adminapp")
+        with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
+            bot, "_get_or_create_user_id", return_value=1
+        ), patch.object(bot.db_module, "log_message"), patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(
+                database_path=Path("/tmp/test.db"),
+                admin_miniapp_enabled=True,
+                admin_webapp_url="https://example.com/admin/miniapp",
+                admin_telegram_ids=(101,),
+            ),
+        ):
+            await bot.adminapp(update=update, context=SimpleNamespace(args=[], user_data={}))
+
+        update.message.reply_text.assert_awaited_once()
+        kwargs = update.message.reply_text.call_args.kwargs
+        self.assertIn("reply_markup", kwargs)
+        self.assertIsNotNone(kwargs["reply_markup"])
+
     async def test_handle_flow_step_regular_prompt(self) -> None:
         update = _make_update_with_message("10")
         session_state = {"state": "ask_grade", "criteria": {}, "contact": None}
@@ -279,7 +397,7 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
         text = mock_reply.call_args.args[1]
         self.assertIn("LLM текст", text)
         self.assertIn("BLURB", text)
-        self.assertIn("Оставьте телефон", text)
+        self.assertNotIn("Оставьте телефон", text)
 
     async def test_handle_flow_step_llm_exception_fallback(self) -> None:
         update = _make_update_with_message("online")
@@ -442,6 +560,8 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
             bot, "_get_or_create_user_id", return_value=1
+        ), patch.object(
+            bot.db_module, "list_recent_messages", return_value=[]
         ), patch.object(
             bot.db_module, "get_session", return_value={"state": session_state, "meta": {}}
         ), patch.object(

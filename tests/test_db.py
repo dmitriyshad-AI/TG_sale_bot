@@ -212,6 +212,19 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(messages[1]["direction"], "outbound")
         self.assertEqual(messages[0]["meta"]["m"], 1)
 
+    def test_list_recent_messages_returns_last_rows_in_chronological_order(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="703")
+        db.log_message(self.conn, user_id, "inbound", "msg-1", {"n": 1})
+        db.log_message(self.conn, user_id, "outbound", "msg-2", {"n": 2})
+        db.log_message(self.conn, user_id, "inbound", "msg-3", {"n": 3})
+
+        recent = db.list_recent_messages(self.conn, user_id=user_id, limit=2)
+
+        self.assertEqual(len(recent), 2)
+        self.assertEqual(recent[0]["text"], "msg-2")
+        self.assertEqual(recent[1]["text"], "msg-3")
+        self.assertEqual(recent[0]["meta"]["n"], 2)
+
     def test_init_db_migrates_duplicate_sessions_and_enforces_unique_index(self) -> None:
         legacy_path = Path(self.tempdir.name) / "legacy_sessions.db"
         with sqlite3.connect(legacy_path) as conn:
