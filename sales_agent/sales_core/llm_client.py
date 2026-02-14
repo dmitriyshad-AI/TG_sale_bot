@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 import httpx
 
 from sales_agent.sales_core.catalog import Product, SearchCriteria
+from sales_agent.sales_core.tone import ToneProfile, load_tone_profile, tone_as_prompt_block
 
 
 @dataclass
@@ -36,11 +37,13 @@ class LLMClient:
         model: str,
         endpoint: str = "https://api.openai.com/v1/responses",
         timeout_seconds: float = 25.0,
+        tone_profile: Optional[ToneProfile] = None,
     ) -> None:
         self.api_key = api_key.strip()
         self.model = model.strip() or "gpt-4.1"
         self.endpoint = endpoint
         self.timeout_seconds = timeout_seconds
+        self.tone_profile = tone_profile or load_tone_profile()
 
     def is_configured(self) -> bool:
         return bool(self.api_key)
@@ -296,15 +299,19 @@ class LLMClient:
         }
         products_payload = [self._product_payload(product) for product in top_products]
 
+        tone_block = tone_as_prompt_block(self.tone_profile)
         system_prompt = (
             "Ты опытный консультант по школьному образованию. "
             "Сначала принеси пользу клиенту: объясни стратегию и следующий шаг, "
             "затем мягко предложи программу. "
+            "Тон общения: уважительный, дружелюбный, как у квалифицированного сотрудника отдела продаж. "
+            "Обращайся на 'вы', без давления и манипуляций. "
             "Используй только факты из переданного каталога. "
             "Не выдумывай цены, даты, условия и ссылки. "
             "Если данных не хватает, честно скажи и попроси уточнение. "
             "Ответ обязателен строго в JSON с ключами: "
-            "answer_text, next_question, call_to_action, recommended_product_ids."
+            "answer_text, next_question, call_to_action, recommended_product_ids.\n\n"
+            f"{tone_block}"
         )
 
         user_prompt = (
@@ -313,7 +320,7 @@ class LLMClient:
             "Доступные продукты (использовать только их):\n"
             f"{json.dumps(products_payload, ensure_ascii=False)}\n\n"
             "Сформируй полезный, человечный и точный ответ в тоне сильного консультанта. "
-            "Без навязчивых продаж. "
+            "Без навязчивых продаж, без категоричности и без шаблонных фраз. "
             "recommended_product_ids должен содержать только id из списка продуктов."
         )
 
@@ -351,17 +358,21 @@ class LLMClient:
         }
         products_payload = [self._product_payload(product) for product in top_products]
 
+        tone_block = tone_as_prompt_block(self.tone_profile)
         system_prompt = (
             "Ты консультант УНПК МФТИ по выбору образовательной траектории. "
             "Цель: сначала помочь родителю и ученику с понятным планом действий, "
             "и только потом мягко предложить релевантные программы. "
             "Не используй агрессивные продажи. "
-            "Пиши дружелюбно, профессионально, без канцелярита. "
+            "Пиши уважительно, дружелюбно и профессионально, в тоне квалифицированного сотрудника отдела продаж. "
+            "Обращайся на 'вы', не спорь с клиентом и не дави на срочное решение. "
+            "Без канцелярита и без заученных рекламных клише. "
             "Для фактов о программах используй только переданный каталог. "
             "Не выдумывай цены, даты, условия и ссылки. "
             "Если данных недостаточно, попроси одно конкретное уточнение. "
             "Верни строго JSON с ключами: "
-            "answer_text, next_question, call_to_action, recommended_product_ids."
+            "answer_text, next_question, call_to_action, recommended_product_ids.\n\n"
+            f"{tone_block}"
         )
         user_prompt = (
             "Сообщение клиента:\n"
@@ -374,6 +385,7 @@ class LLMClient:
             "Доступные программы (использовать только их):\n"
             f"{json.dumps(products_payload, ensure_ascii=False)}\n\n"
             "Сделай ответ максимально полезным, конкретным и человечным. "
+            "Сначала польза, потом мягкий следующий шаг к продукту. "
             "В конце задай один короткий уточняющий вопрос. "
             "recommended_product_ids должен содержать только id из списка программ."
         )
@@ -643,16 +655,19 @@ class LLMClient:
         hint = ", ".join(criteria_hint)
 
         answer = (
-            "По вашим параметрам подобрал релевантные программы. "
+            "Спасибо за ваш запрос. По вашим параметрам подобрал релевантные программы. "
             f"Рекомендую начать с: {options_text}."
         )
         if hint:
-            answer = f"По параметрам ({hint}) подобрал релевантные программы. {options_text}."
+            answer = f"Спасибо за ваш запрос. По параметрам ({hint}) подобрал релевантные программы: {options_text}."
 
         return SalesReply(
             answer_text=answer,
-            next_question="Подтвердите, пожалуйста, удобный формат обучения.",
-            call_to_action="Оставьте телефон, и я помогу выбрать лучший вариант и следующий шаг.",
+            next_question="Подскажите, пожалуйста, какой формат вам удобнее: онлайн, очно или гибрид?",
+            call_to_action=(
+                "Если вам удобно, оставьте телефон: помогу спокойно сравнить варианты "
+                "и выбрать оптимальный следующий шаг."
+            ),
             recommended_product_ids=[item.id for item in top_products[:3]],
             used_fallback=True,
         )
@@ -665,12 +680,12 @@ class LLMClient:
         missing_fields: List[str],
     ) -> SalesReply:
         lead_phrase = (
-            "Понимаю ваш запрос. Давайте соберем реалистичный план подготовки, "
+            "Спасибо за ваш вопрос. Понимаю ваш запрос. Давайте соберем реалистичный план подготовки, "
             "чтобы без перегруза двигаться к цели."
         )
         if criteria.grade:
             lead_phrase = (
-                f"Понимаю ваш запрос. Для {criteria.grade} класса важно выстроить "
+                f"Спасибо за ваш вопрос. Для {criteria.grade} класса важно выстроить "
                 "стабильный план подготовки и контроль прогресса."
             )
 
@@ -693,7 +708,10 @@ class LLMClient:
         return SalesReply(
             answer_text=answer_text,
             next_question=next_question,
-            call_to_action="Если захотите, после уточнения сразу сравню 2-3 программы и скажу, с какой начать.",
+            call_to_action=(
+                "Если захотите, после уточнения спокойно сравню 2-3 программы "
+                "и подскажу, с какой начать без лишней нагрузки."
+            ),
             recommended_product_ids=[item.id for item in top_products[:2]],
             used_fallback=True,
         )

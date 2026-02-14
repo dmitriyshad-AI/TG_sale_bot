@@ -29,6 +29,7 @@ from sales_agent.sales_core.flow import (
     ensure_state,
 )
 from sales_agent.sales_core.llm_client import LLMClient
+from sales_agent.sales_core.tone import apply_tone_guardrails, assess_response_quality
 from sales_agent.sales_core.vector_store import load_vector_store_id
 
 
@@ -273,6 +274,12 @@ def _build_consultative_question(criteria: Dict[str, object], prompt_question: s
     return prompt_question
 
 
+def _quality_meta(text: object) -> Dict[str, int]:
+    if not isinstance(text, str):
+        return assess_response_quality("")
+    return assess_response_quality(text)
+
+
 def _select_recommended_products(products: List[object], recommended_ids: List[str]) -> List[object]:
     if not products or not recommended_ids:
         return products
@@ -305,16 +312,30 @@ def _build_consultative_fallback_text(
 
     if repeated_without_new_info:
         emphasis = "Чтобы не давать общий совет," if repeat_count <= 1 else "Без этого шага дальше будет неточный план,"
+        example = ""
+        lowered_question = next_question.lower()
+        if repeat_count >= 2:
+            if "класс" in lowered_question:
+                example = "Например: «11 класс»."
+            elif "предмет" in lowered_question:
+                example = "Например: «математика»."
+            elif "формат" in lowered_question:
+                example = "Например: «онлайн»."
+            elif "приоритет" in lowered_question or "цель" in lowered_question:
+                example = "Например: «ЕГЭ по математике»."
+
+        extra = f"\n\n{example}" if example else ""
         return (
             "Понял вас, цель поступить в МФТИ.\n\n"
             f"{emphasis} уточню один пункт:\n"
             f"{next_question}\n\n"
             "Можно ответить коротко, в 1-2 словах, и я сразу дам конкретный маршрут."
+            f"{extra}"
         )
 
     if grade:
         intro = (
-            f"Цель сильная. Для {grade} класса обычно работает траектория: "
+            f"Отличная цель. Для {grade} класса обычно работает траектория: "
             "системная подготовка к ЕГЭ + при возможности олимпиадный трек."
         )
     else:
@@ -333,7 +354,7 @@ def _build_consultative_fallback_text(
         focus = "Соберу точный план под ваш кейс: без перегруза и с понятными этапами."
 
     picks = _format_soft_picks(products) if show_picks else ""
-    cta = "После уточнения дам 2-3 программы и объясню разницу простыми словами."
+    cta = "После уточнения дам 2-3 программы и уважительно объясню разницу простыми словами."
 
     chunks = [intro, focus]
     if picks:
@@ -403,12 +424,14 @@ def _target_message(update: Update) -> Optional[Message]:
     return update.message
 
 
-async def _reply(update: Update, text: str, keyboard_layout=None) -> None:
+async def _reply(update: Update, text: str, keyboard_layout=None) -> str:
     target = _target_message(update)
     if not target:
-        return
+        return text
     markup = _build_inline_keyboard(keyboard_layout)
-    await target.reply_text(text, reply_markup=markup)
+    safe_text = apply_tone_guardrails(text)
+    await target.reply_text(safe_text, reply_markup=markup)
+    return safe_text
 
 
 async def _create_lead_from_phone(
@@ -487,7 +510,8 @@ async def _answer_knowledge_question(update: Update, question: str) -> None:
         sources = ", ".join(knowledge_reply.sources)
         text = f"{text}\n\nИсточники: {sources}"
 
-    await target.reply_text(text)
+    safe_text = apply_tone_guardrails(text)
+    await target.reply_text(safe_text)
 
     conn = db_module.get_connection(settings.database_path)
     try:
@@ -496,11 +520,12 @@ async def _answer_knowledge_question(update: Update, question: str) -> None:
             conn,
             user_id,
             "outbound",
-            text,
+            safe_text,
             {
                 "handler": "kb",
                 "used_fallback": knowledge_reply.used_fallback,
                 "error": knowledge_reply.error,
+                "quality": _quality_meta(safe_text),
                 **_user_meta(update),
             },
         )
@@ -645,7 +670,7 @@ async def _handle_consultative_query(update: Update, text: str) -> bool:
             repeat_count=repeat_count,
         )
 
-    await _reply(update, response_text, keyboard_layout=prompt.keyboard)
+    delivered_text = await _reply(update, response_text, keyboard_layout=prompt.keyboard)
 
     conn = db_module.get_connection(settings.database_path)
     try:
@@ -654,7 +679,7 @@ async def _handle_consultative_query(update: Update, text: str) -> bool:
             conn,
             user_id,
             "outbound",
-            response_text,
+            delivered_text,
             {
                 "handler": "consultative",
                 "next_state": state.get("state"),
@@ -663,6 +688,7 @@ async def _handle_consultative_query(update: Update, text: str) -> bool:
                 "repeat_count": repeat_count,
                 "llm_used_fallback": llm_used_fallback,
                 "llm_error": llm_error,
+                "quality": _quality_meta(delivered_text),
                 **_user_meta(update),
             },
         )
@@ -719,8 +745,13 @@ async def _handle_flow_step(
             extra = []
             if sales_reply.next_question:
                 extra.append(sales_reply.next_question)
-            if sales_reply.call_to_action:
+            contact_cta_allowed = step.next_state in {STATE_SUGGEST_PRODUCTS, STATE_ASK_CONTACT}
+            if sales_reply.call_to_action and contact_cta_allowed:
                 extra.append(sales_reply.call_to_action)
+            elif contact_cta_allowed:
+                extra.append(
+                    "Если вам удобно, помогу спокойно сравнить варианты и выбрать оптимальный следующий шаг."
+                )
 
             response_text = f"{sales_reply.answer_text}\n\n{products_block}"
             if extra:
@@ -732,7 +763,7 @@ async def _handle_flow_step(
                 "Оставьте контакт, и менеджер поможет вручную."
             )
 
-    await _reply(update, response_text, keyboard_layout=step.keyboard)
+    delivered_text = await _reply(update, response_text, keyboard_layout=step.keyboard)
 
     conn = db_module.get_connection(settings.database_path)
     try:
@@ -741,8 +772,13 @@ async def _handle_flow_step(
             conn,
             user_id,
             "outbound",
-            response_text,
-            {"handler": "flow", "next_state": step.next_state, **_user_meta(update)},
+            delivered_text,
+            {
+                "handler": "flow",
+                "next_state": step.next_state,
+                "quality": _quality_meta(delivered_text),
+                **_user_meta(update),
+            },
         )
     finally:
         conn.close()
@@ -781,16 +817,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     hint = build_greeting_hint(start_meta)
     hint_block = f"{hint}\n\n" if hint else ""
     greeting = (
-        "Привет! Я помогу подобрать курс или лагерь УНПК МФТИ.\n\n"
+        "Здравствуйте! Я помогу подобрать курс или лагерь УНПК МФТИ.\n\n"
         f"{hint_block}{prompt.message}"
     )
-    await _reply(update, greeting, keyboard_layout=prompt.keyboard)
+    delivered_greeting = await _reply(update, greeting, keyboard_layout=prompt.keyboard)
 
     conn = db_module.get_connection(settings.database_path)
     try:
         user_id = _get_or_create_user_id(update, conn)
         db_module.log_message(
-            conn, user_id, "outbound", greeting, {"handler": "start", **_user_meta(update)}
+            conn,
+            user_id,
+            "outbound",
+            delivered_greeting,
+            {"handler": "start", "quality": _quality_meta(delivered_greeting), **_user_meta(update)},
         )
     finally:
         conn.close()

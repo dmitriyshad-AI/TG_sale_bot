@@ -26,6 +26,7 @@ OPENAI_MODEL=gpt-4.1
 BRAND_DEFAULT=kmipt
 ADMIN_USER=admin
 ADMIN_PASS=strong_password
+SALES_TONE_PATH=
 ```
 
 CRM:

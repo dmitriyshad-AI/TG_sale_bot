@@ -163,6 +163,7 @@ class LLMClientTests(unittest.TestCase):
         payload = client._build_sales_payload(self.criteria, self.top_products)
         self.assertEqual(payload["input"][0]["content"][0]["type"], "input_text")
         self.assertEqual(payload["input"][1]["content"][0]["type"], "input_text")
+        self.assertIn("уважительный", payload["input"][0]["content"][0]["text"])
 
     def test_knowledge_payload_uses_input_text_type(self) -> None:
         client = LLMClient(api_key="sk-test", model="gpt-4.1")
@@ -184,6 +185,7 @@ class LLMClientTests(unittest.TestCase):
         )
         self.assertEqual(payload["input"][0]["content"][0]["type"], "input_text")
         self.assertEqual(payload["input"][1]["content"][0]["type"], "input_text")
+        self.assertIn("квалифицированного сотрудника отдела продаж", payload["input"][0]["content"][0]["text"])
 
     @patch("sales_agent.sales_core.llm_client.urlopen")
     def test_send_request_includes_http_error_details(self, mock_urlopen) -> None:

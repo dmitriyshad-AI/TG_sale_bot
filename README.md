@@ -112,7 +112,18 @@ DATABASE_PATH=
 CATALOG_PATH=
 KNOWLEDGE_PATH=
 VECTOR_STORE_META_PATH=
+SALES_TONE_PATH=
 ```
+
+## Тон общения бота
+
+- Базовый профиль тона хранится в `config/sales_tone.yaml`.
+- По умолчанию бот использует этот файл для:
+  - системных промптов LLM,
+  - мягкой пост-обработки ответов,
+  - оценки качества текста в логах (`helpfulness/friendliness/pressure`).
+- Можно указать другой файл через `SALES_TONE_PATH`.
+- Метрики качества добавляются в `messages.meta_json.quality` для исходящих сообщений.
 
 ## Команды обслуживания
 
