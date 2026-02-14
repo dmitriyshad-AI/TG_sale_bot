@@ -173,6 +173,18 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(payload["input"][0]["content"][0]["type"], "input_text")
         self.assertEqual(payload["input"][1]["content"][0]["type"], "input_text")
 
+    def test_consultative_payload_uses_input_text_type(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        payload = client._build_consultative_payload(
+            user_message="Ребенок в 11 классе, как поступить в МФТИ?",
+            criteria=self.criteria,
+            top_products=self.top_products,
+            missing_fields=["format"],
+            repeat_count=0,
+        )
+        self.assertEqual(payload["input"][0]["content"][0]["type"], "input_text")
+        self.assertEqual(payload["input"][1]["content"][0]["type"], "input_text")
+
     @patch("sales_agent.sales_core.llm_client.urlopen")
     def test_send_request_includes_http_error_details(self, mock_urlopen) -> None:
         mock_urlopen.side_effect = HTTPError(
@@ -275,6 +287,35 @@ class LLMClientAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(raw)
         self.assertIn("OpenAI HTTP error: 400", error or "")
         self.assertIn("bad async payload", error or "")
+
+    async def test_build_consultative_reply_async_parses_response(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        response = _MockAsyncResponse(
+            200,
+            {
+                "output_text": (
+                    '{"answer_text":"План понятен: фиксируем предмет и темп.",'
+                    '"next_question":"Как удобнее заниматься: онлайн или очно?",'
+                    '"call_to_action":"После этого подберу 2 программы без навязчивых продаж.",'
+                    '"recommended_product_ids":["p01"]}'
+                )
+            },
+        )
+        with patch(
+            "sales_agent.sales_core.llm_client.httpx.AsyncClient",
+            return_value=_MockAsyncClient(response),
+        ):
+            result = await client.build_consultative_reply_async(
+                user_message="Хочу поступить в МФТИ, что делать?",
+                criteria=SearchCriteria(brand="kmipt", grade=11, goal="ege", subject="math", format=None),
+                top_products=_products(),
+                missing_fields=["format"],
+                repeat_count=0,
+            )
+
+        self.assertFalse(result.used_fallback)
+        self.assertIn("План понятен", result.answer_text)
+        self.assertEqual(result.recommended_product_ids, ["p01"])
 
 
 if __name__ == "__main__":

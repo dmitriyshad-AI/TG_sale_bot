@@ -17,6 +17,7 @@ try:
         _extract_subject_hint,
         _format_product_blurb,
         _is_consultative_query,
+        _next_state_for_consultative,
         _resolve_vector_store_id,
         _target_message,
     )
@@ -135,6 +136,18 @@ class BotHelpersTests(unittest.TestCase):
     def test_consultative_query_is_not_knowledge_query(self) -> None:
         text = "Какие условия возврата и оплаты?"
         self.assertFalse(_is_consultative_query(text))
+
+    def test_next_state_for_consultative_does_not_loop_to_goal_when_complete(self) -> None:
+        state = _next_state_for_consultative(
+            {
+                "brand": "kmipt",
+                "grade": 11,
+                "goal": "ege",
+                "subject": "math",
+                "format": "online",
+            }
+        )
+        self.assertEqual(state, "suggest_products")
 
     def test_build_user_name_from_first_and_last_name(self) -> None:
         update = SimpleNamespace(effective_user=SimpleNamespace(first_name="Ivan", last_name="Petrov"))

@@ -447,10 +447,10 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         mock_reply.assert_awaited_once()
         response_text = mock_reply.call_args.args[1]
-        self.assertIn("Понял, цель поступить в МФТИ", response_text)
-        self.assertIn("Какой формат удобнее", response_text)
+        self.assertIn("Понял вас, цель поступить в МФТИ", response_text)
+        self.assertIn("Как удобнее заниматься", response_text)
         self.assertNotIn("Вот 2 направления", response_text)
-        self.assertNotIn("По математике", response_text)
+        self.assertNotIn("профильный трек", response_text)
 
 
 if __name__ == "__main__":

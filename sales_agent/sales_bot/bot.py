@@ -23,7 +23,7 @@ from sales_agent.sales_core.flow import (
     STATE_ASK_GOAL,
     STATE_ASK_GRADE,
     STATE_ASK_SUBJECT,
-    STATE_DONE,
+    STATE_SUGGEST_PRODUCTS,
     advance_flow,
     build_prompt,
     ensure_state,
@@ -70,6 +70,23 @@ CONSULTATIVE_QUERY_KEYWORDS = {
     "как лучше",
     "куда поступ",
     "помогите выбрать",
+}
+
+CONSULTATIVE_CONTEXT_KEYWORDS = {
+    "класс",
+    "ребен",
+    "сын",
+    "дочь",
+    "экзам",
+    "егэ",
+    "огэ",
+    "олимп",
+    "подготов",
+    "поступ",
+    "мфти",
+    "балл",
+    "предмет",
+    "план",
 }
 
 GOAL_HINTS = {
@@ -144,12 +161,24 @@ def _is_knowledge_query(text: str) -> bool:
 
 
 def _is_consultative_query(text: str) -> bool:
-    normalized = text.strip().lower()
-    if len(normalized) < 12:
+    normalized = _normalize_text(text)
+    if len(normalized) < 8:
         return False
+
+    if any(keyword in normalized for keyword in CONSULTATIVE_QUERY_KEYWORDS):
+        return True
+
     if _is_knowledge_query(normalized):
         return False
-    return any(keyword in normalized for keyword in CONSULTATIVE_QUERY_KEYWORDS)
+
+    has_context = any(keyword in normalized for keyword in CONSULTATIVE_CONTEXT_KEYWORDS)
+    asks_question = "?" in normalized or normalized.startswith(
+        ("как ", "что ", "куда ", "зачем ", "почему ", "подскаж")
+    )
+    has_intent = any(
+        token in normalized for token in {"хочу", "нужно", "нужен", "нужна", "помогите", "подскажите"}
+    )
+    return has_context and (asks_question or has_intent)
 
 
 def _normalize_text(text: str) -> str:
@@ -186,88 +215,127 @@ def _extract_subject_hint(text: str) -> Optional[str]:
     return None
 
 
-def _next_state_for_consultative(criteria: Dict[str, object]) -> str:
+def _missing_criteria_fields(criteria: Dict[str, object]) -> List[str]:
+    missing: List[str] = []
     if not criteria.get("grade"):
-        return STATE_ASK_GRADE
+        missing.append("grade")
     if not criteria.get("goal"):
-        return STATE_ASK_GOAL
+        missing.append("goal")
     if criteria.get("subject") is None:
-        return STATE_ASK_SUBJECT
+        missing.append("subject")
     if not criteria.get("format"):
-        return STATE_ASK_FORMAT
-    return STATE_ASK_GOAL
+        missing.append("format")
+    return missing
+
+
+def _next_state_for_consultative(criteria: Dict[str, object]) -> str:
+    missing = _missing_criteria_fields(criteria)
+    if not missing:
+        return STATE_SUGGEST_PRODUCTS
+
+    next_field = missing[0]
+    if next_field == "grade":
+        return STATE_ASK_GRADE
+    if next_field == "goal":
+        return STATE_ASK_GOAL
+    if next_field == "subject":
+        return STATE_ASK_SUBJECT
+    return STATE_ASK_FORMAT
 
 
 def _format_soft_picks(products: List[object]) -> str:
     if not products:
         return ""
-    lines = ["Вот 2 направления, которые уже похожи на ваш запрос:"]
+    lines = ["Что уже может подойти под ваш запрос:"]
     for product in products[:2]:
         usp = product.usp[0] if getattr(product, "usp", None) else "подходит для текущей цели"
         lines.append(f"• {product.title} — {usp}.")
     return "\n".join(lines)
 
 
-def _build_consultative_text(
+def _build_consultative_question(criteria: Dict[str, object], prompt_question: str) -> str:
+    missing = _missing_criteria_fields(criteria)
+    if not missing:
+        return (
+            "Если хотите, следующим шагом могу сравнить 2-3 программы под вашу цель "
+            "и объяснить, какая лучше по нагрузке и формату. Что для вас важнее сейчас?"
+        )
+
+    next_field = missing[0]
+    if next_field == "grade":
+        return "Подскажите, пожалуйста, какой сейчас класс у ученика?"
+    if next_field == "goal":
+        return "Что сейчас в приоритете: ЕГЭ, олимпиады или усиление базы?"
+    if next_field == "subject":
+        return "Какой предмет сейчас основной: математика, физика или информатика?"
+    if next_field == "format":
+        return "Как удобнее заниматься: онлайн, очно или гибрид?"
+    return prompt_question
+
+
+def _select_recommended_products(products: List[object], recommended_ids: List[str]) -> List[object]:
+    if not products or not recommended_ids:
+        return products
+    by_id = {
+        str(getattr(product, "id", "")): product
+        for product in products
+        if getattr(product, "id", None) is not None
+    }
+    selected: List[object] = []
+    for product_id in recommended_ids:
+        candidate = by_id.get(product_id)
+        if candidate and candidate not in selected:
+            selected.append(candidate)
+    return selected or products
+
+
+def _build_consultative_fallback_text(
     text: str,
     criteria: Dict[str, object],
     products: List[object],
     next_question: str,
     *,
-    subject_from_user: bool,
     show_picks: bool,
     repeated_without_new_info: bool,
+    repeat_count: int,
 ) -> str:
     grade = criteria.get("grade")
     goal = criteria.get("goal")
-    subject = criteria.get("subject")
     normalized = _normalize_text(text)
 
     if repeated_without_new_info:
+        emphasis = "Чтобы не давать общий совет," if repeat_count <= 1 else "Без этого шага дальше будет неточный план,"
         return (
-            "Понял, цель поступить в МФТИ.\n\n"
-            "Чтобы дать действительно полезный план без лишних шагов, уточню один пункт:\n"
+            "Понял вас, цель поступить в МФТИ.\n\n"
+            f"{emphasis} уточню один пункт:\n"
             f"{next_question}\n\n"
-            "Можно ответить коротко, в 1-2 словах."
+            "Можно ответить коротко, в 1-2 словах, и я сразу дам конкретный маршрут."
         )
 
     if grade:
         intro = (
-            f"Отличная цель. Для {grade} класса поступление в МФТИ обычно строят через сильный профиль "
-            "по ЕГЭ и, по возможности, олимпиадные результаты."
+            f"Цель сильная. Для {grade} класса обычно работает траектория: "
+            "системная подготовка к ЕГЭ + при возможности олимпиадный трек."
         )
     else:
         intro = (
-            "Отличная цель. Для поступления в МФТИ обычно строят персональный маршрут: "
-            "ЕГЭ + олимпиады + регулярный контроль прогресса."
+            "Отличная цель. Для поступления в МФТИ обычно нужен персональный маршрут: "
+            "экзамены, предметный приоритет и контроль прогресса."
         )
 
     if goal == "ege":
-        focus = "Сейчас логично сделать акцент на ЕГЭ-план и зафиксировать приоритетный предмет."
+        focus = "Сейчас лучше зафиксировать приоритетный предмет и темп подготовки к ЕГЭ."
     elif goal == "olympiad":
-        focus = "Тогда делаем акцент на олимпиадный трек и параллельно держим базу под экзамены."
+        focus = "Тогда фокус на олимпиадный трек, при этом важно удержать базу под экзамены."
     elif "поступить" in normalized and "мфти" in normalized:
-        focus = "Если цель именно МФТИ, обычно начинаем с ЕГЭ-трека и добавляем олимпиадную стратегию."
+        focus = "Если цель именно МФТИ, обычно начинаем с ЕГЭ-опоры и добавляем олимпиадную стратегию."
     else:
-        focus = "Соберу точный план под ваш кейс, чтобы без перегруза и с понятными этапами."
-
-    subject_hint = ""
-    if subject_from_user and subject == "math":
-        subject_hint = "По математике можем сразу предложить профильный трек."
-    elif subject_from_user and subject == "physics":
-        subject_hint = "По физике можем сразу собрать траекторию от базы до сложных задач."
-    elif subject_from_user and subject == "informatics":
-        subject_hint = "По информатике подберем трек под формат задач ЕГЭ/олимпиад."
+        focus = "Соберу точный план под ваш кейс: без перегруза и с понятными этапами."
 
     picks = _format_soft_picks(products) if show_picks else ""
-    cta = (
-        "Если хотите, продолжим коротко: после следующего уточнения дам 2-3 программы "
-        "и объясню, какая лучше под вашу цель."
-    )
+    cta = "После уточнения дам 2-3 программы и объясню разницу простыми словами."
 
     chunks = [intro, focus]
-    if subject_hint:
-        chunks.append(subject_hint)
     if picks:
         chunks.append(picks)
     chunks.extend([next_question, cta])
@@ -479,20 +547,21 @@ async def _handle_consultative_query(update: Update, text: str) -> bool:
         changed_subject = previous_criteria.get("subject") != criteria.get("subject")
         has_new_info = changed_grade or changed_goal or changed_subject
 
-        criteria["brand"] = "kmipt"
+        criteria["brand"] = settings.brand_default or "kmipt"
         state["criteria"] = criteria
         state["state"] = _next_state_for_consultative(criteria)
-        if state["state"] == STATE_DONE:
-            state["state"] = STATE_ASK_GRADE
 
         normalized_text = _normalize_text(text)
         consultative = state.get("consultative") if isinstance(state.get("consultative"), dict) else {}
         last_text = str(consultative.get("last_text") or "")
         previous_turns = int(consultative.get("turns") or 0)
+        previous_repeat_count = int(consultative.get("repeat_count") or 0)
         repeated_without_new_info = (last_text == normalized_text) and (not has_new_info)
+        repeat_count = previous_repeat_count + 1 if repeated_without_new_info else 0
         state["consultative"] = {
             "last_text": normalized_text,
             "turns": previous_turns + 1,
+            "repeat_count": repeat_count,
         }
 
         db_module.upsert_session_state(conn, user_id=user_id, state=state)
@@ -502,15 +571,80 @@ async def _handle_consultative_query(update: Update, text: str) -> bool:
     criteria_obj = _criteria_from_state(state)
     products = _select_products(criteria_obj)
     prompt = build_prompt(state)
-    response_text = _build_consultative_text(
-        text=text,
-        criteria=state["criteria"],
-        products=products,
-        next_question=prompt.message,
-        subject_from_user=bool(subject_hint),
-        show_picks=has_new_info or int(state.get("consultative", {}).get("turns", 0)) <= 1,
-        repeated_without_new_info=repeated_without_new_info,
+    next_question = _build_consultative_question(criteria=state["criteria"], prompt_question=prompt.message)
+    missing_fields = _missing_criteria_fields(state["criteria"])
+    show_picks = (
+        has_new_info
+        or int(state.get("consultative", {}).get("turns", 0)) <= 1
+        or state.get("state") == STATE_SUGGEST_PRODUCTS
     )
+
+    response_text = ""
+    llm_used_fallback = True
+    llm_error: Optional[str] = None
+    if repeated_without_new_info:
+        response_text = _build_consultative_fallback_text(
+            text=text,
+            criteria=state["criteria"],
+            products=products,
+            next_question=next_question,
+            show_picks=False,
+            repeated_without_new_info=True,
+            repeat_count=repeat_count,
+        )
+    else:
+        try:
+            llm_client = LLMClient(api_key=settings.openai_api_key, model=settings.openai_model)
+            llm_reply = await llm_client.build_consultative_reply_async(
+                user_message=text,
+                criteria=criteria_obj,
+                top_products=products,
+                missing_fields=missing_fields,
+                repeat_count=repeat_count,
+            )
+            llm_used_fallback = llm_reply.used_fallback
+            llm_error = llm_reply.error
+
+            selected_products = _select_recommended_products(products, llm_reply.recommended_product_ids)
+            picks_block = _format_soft_picks(selected_products) if show_picks else ""
+
+            chunks = [llm_reply.answer_text.strip()]
+            if picks_block:
+                chunks.append(picks_block)
+            chunks.append(llm_reply.next_question or next_question)
+
+            if not missing_fields and llm_reply.call_to_action:
+                chunks.append(llm_reply.call_to_action)
+            elif not missing_fields:
+                chunks.append(
+                    "Если захотите, помогу сравнить программы и подскажу, какая логичнее как следующий шаг."
+                )
+
+            response_text = "\n\n".join(chunk for chunk in chunks if chunk)
+        except Exception as exc:  # defensive fallback
+            logger.exception("Failed to build consultative LLM reply")
+            llm_error = str(exc)
+            response_text = _build_consultative_fallback_text(
+                text=text,
+                criteria=state["criteria"],
+                products=products,
+                next_question=next_question,
+                show_picks=show_picks,
+                repeated_without_new_info=False,
+                repeat_count=repeat_count,
+            )
+
+    if not response_text:
+        response_text = _build_consultative_fallback_text(
+            text=text,
+            criteria=state["criteria"],
+            products=products,
+            next_question=next_question,
+            show_picks=show_picks,
+            repeated_without_new_info=False,
+            repeat_count=repeat_count,
+        )
+
     await _reply(update, response_text, keyboard_layout=prompt.keyboard)
 
     conn = db_module.get_connection(settings.database_path)
@@ -525,6 +659,10 @@ async def _handle_consultative_query(update: Update, text: str) -> bool:
                 "handler": "consultative",
                 "next_state": state.get("state"),
                 "products_count": len(products),
+                "missing_fields": missing_fields,
+                "repeat_count": repeat_count,
+                "llm_used_fallback": llm_used_fallback,
+                "llm_error": llm_error,
                 **_user_meta(update),
             },
         )
@@ -755,6 +893,10 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    handled_consultative = await _handle_consultative_query(update=update, text=text)
+    if handled_consultative:
+        return
+
     if _is_knowledge_query(text):
         conn = db_module.get_connection(settings.database_path)
         try:
@@ -770,10 +912,6 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             conn.close()
 
         await _answer_knowledge_question(update, question=text)
-        return
-
-    handled_consultative = await _handle_consultative_query(update=update, text=text)
-    if handled_consultative:
         return
 
     await _handle_flow_step(update=update, message_text=text)

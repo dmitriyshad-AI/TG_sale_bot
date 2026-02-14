@@ -109,6 +109,53 @@ class LLMClient:
 
         return parsed
 
+    async def build_consultative_reply_async(
+        self,
+        *,
+        user_message: str,
+        criteria: SearchCriteria,
+        top_products: List[Product],
+        missing_fields: List[str],
+        repeat_count: int = 0,
+    ) -> SalesReply:
+        if not self.is_configured():
+            fallback = self._fallback_consultative_reply(
+                criteria=criteria,
+                top_products=top_products,
+                missing_fields=missing_fields,
+            )
+            fallback.error = "OPENAI_API_KEY is not configured"
+            return fallback
+
+        payload = self._build_consultative_payload(
+            user_message=user_message,
+            criteria=criteria,
+            top_products=top_products,
+            missing_fields=missing_fields,
+            repeat_count=repeat_count,
+        )
+        raw, error = await self._send_request_async(payload)
+        if error:
+            fallback = self._fallback_consultative_reply(
+                criteria=criteria,
+                top_products=top_products,
+                missing_fields=missing_fields,
+            )
+            fallback.error = error
+            return fallback
+
+        parsed = self._parse_openai_sales_reply(raw or {}, allowed_ids=[product.id for product in top_products])
+        if parsed is None:
+            fallback = self._fallback_consultative_reply(
+                criteria=criteria,
+                top_products=top_products,
+                missing_fields=missing_fields,
+            )
+            fallback.error = "Could not parse structured LLM response"
+            return fallback
+
+        return parsed
+
     def answer_knowledge_question(
         self,
         question: str,
@@ -250,10 +297,12 @@ class LLMClient:
         products_payload = [self._product_payload(product) for product in top_products]
 
         system_prompt = (
-            "Ты sales-ассистент для образовательных программ. "
+            "Ты опытный консультант по школьному образованию. "
+            "Сначала принеси пользу клиенту: объясни стратегию и следующий шаг, "
+            "затем мягко предложи программу. "
             "Используй только факты из переданного каталога. "
             "Не выдумывай цены, даты, условия и ссылки. "
-            "Если данных не хватает, проси уточнение и предлагай оставить контакт. "
+            "Если данных не хватает, честно скажи и попроси уточнение. "
             "Ответ обязателен строго в JSON с ключами: "
             "answer_text, next_question, call_to_action, recommended_product_ids."
         )
@@ -263,7 +312,8 @@ class LLMClient:
             f"{json.dumps(criteria_payload, ensure_ascii=False)}\n\n"
             "Доступные продукты (использовать только их):\n"
             f"{json.dumps(products_payload, ensure_ascii=False)}\n\n"
-            "Сформируй продающий, но точный ответ. "
+            "Сформируй полезный, человечный и точный ответ в тоне сильного консультанта. "
+            "Без навязчивых продаж. "
             "recommended_product_ids должен содержать только id из списка продуктов."
         )
 
@@ -281,6 +331,66 @@ class LLMClient:
             ],
             "temperature": 0.2,
             "max_output_tokens": 600,
+        }
+
+    def _build_consultative_payload(
+        self,
+        *,
+        user_message: str,
+        criteria: SearchCriteria,
+        top_products: List[Product],
+        missing_fields: List[str],
+        repeat_count: int,
+    ) -> Dict[str, Any]:
+        criteria_payload = {
+            "brand": criteria.brand,
+            "grade": criteria.grade,
+            "goal": criteria.goal,
+            "subject": criteria.subject,
+            "format": criteria.format,
+        }
+        products_payload = [self._product_payload(product) for product in top_products]
+
+        system_prompt = (
+            "Ты консультант УНПК МФТИ по выбору образовательной траектории. "
+            "Цель: сначала помочь родителю и ученику с понятным планом действий, "
+            "и только потом мягко предложить релевантные программы. "
+            "Не используй агрессивные продажи. "
+            "Пиши дружелюбно, профессионально, без канцелярита. "
+            "Для фактов о программах используй только переданный каталог. "
+            "Не выдумывай цены, даты, условия и ссылки. "
+            "Если данных недостаточно, попроси одно конкретное уточнение. "
+            "Верни строго JSON с ключами: "
+            "answer_text, next_question, call_to_action, recommended_product_ids."
+        )
+        user_prompt = (
+            "Сообщение клиента:\n"
+            f"{user_message.strip()}\n\n"
+            "Известные параметры клиента:\n"
+            f"{json.dumps(criteria_payload, ensure_ascii=False)}\n\n"
+            "Какие поля пока не заполнены:\n"
+            f"{json.dumps(missing_fields, ensure_ascii=False)}\n\n"
+            f"Повторов одинакового запроса подряд: {repeat_count}\n\n"
+            "Доступные программы (использовать только их):\n"
+            f"{json.dumps(products_payload, ensure_ascii=False)}\n\n"
+            "Сделай ответ максимально полезным, конкретным и человечным. "
+            "В конце задай один короткий уточняющий вопрос. "
+            "recommended_product_ids должен содержать только id из списка программ."
+        )
+        return {
+            "model": self.model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": user_prompt}],
+                },
+            ],
+            "temperature": 0.35,
+            "max_output_tokens": 800,
         }
 
     def _build_knowledge_payload(self, question: str, vector_store_id: str) -> Dict[str, Any]:
@@ -544,5 +654,46 @@ class LLMClient:
             next_question="Подтвердите, пожалуйста, удобный формат обучения.",
             call_to_action="Оставьте телефон, и я помогу выбрать лучший вариант и следующий шаг.",
             recommended_product_ids=[item.id for item in top_products[:3]],
+            used_fallback=True,
+        )
+
+    def _fallback_consultative_reply(
+        self,
+        *,
+        criteria: SearchCriteria,
+        top_products: List[Product],
+        missing_fields: List[str],
+    ) -> SalesReply:
+        lead_phrase = (
+            "Понимаю ваш запрос. Давайте соберем реалистичный план подготовки, "
+            "чтобы без перегруза двигаться к цели."
+        )
+        if criteria.grade:
+            lead_phrase = (
+                f"Понимаю ваш запрос. Для {criteria.grade} класса важно выстроить "
+                "стабильный план подготовки и контроль прогресса."
+            )
+
+        options = "; ".join(product.title for product in top_products[:2]) if top_products else ""
+        answer_text = lead_phrase
+        if options:
+            answer_text += f" Уже вижу подходящие направления: {options}."
+
+        next_question_map = {
+            "grade": "Подскажите, пожалуйста, какой сейчас класс у ученика?",
+            "goal": "Что сейчас в приоритете: ЕГЭ, олимпиады или усиление школьной базы?",
+            "subject": "Какой предмет сейчас главный: математика, физика или информатика?",
+            "format": "Как удобнее заниматься: онлайн, очно или гибрид?",
+        }
+        next_question = next_question_map.get(
+            missing_fields[0] if missing_fields else "",
+            "Что для вас сейчас важнее всего: темп подготовки, нагрузка или расписание?",
+        )
+
+        return SalesReply(
+            answer_text=answer_text,
+            next_question=next_question,
+            call_to_action="Если захотите, после уточнения сразу сравню 2-3 программы и скажу, с какой начать.",
+            recommended_product_ids=[item.id for item in top_products[:2]],
             used_fallback=True,
         )
