@@ -20,7 +20,7 @@ except ModuleNotFoundError:
 class CatalogTests(unittest.TestCase):
     def test_load_default_catalog_success(self) -> None:
         catalog = load_catalog()
-        self.assertGreaterEqual(len(catalog.products), 15)
+        self.assertGreaterEqual(len(catalog.products), 10)
 
     def test_default_catalog_file_exists(self) -> None:
         self.assertTrue(default_catalog_path().exists())

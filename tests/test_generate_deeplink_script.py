@@ -37,7 +37,7 @@ class GenerateDeepLinkScriptTests(unittest.TestCase):
                 "--bot-username",
                 "SalesBot",
                 "--brand",
-                "foton",
+                "kmipt",
                 "--source",
                 "site",
                 "--page",
@@ -57,7 +57,7 @@ class GenerateDeepLinkScriptTests(unittest.TestCase):
 
         payload = self._extract_payload(result.stdout.strip())
         parsed = parse_start_payload(payload)
-        self.assertEqual(parsed.get("brand"), "foton")
+        self.assertEqual(parsed.get("brand"), "kmipt")
         self.assertEqual(parsed.get("source"), "site")
         self.assertNotIn("page", parsed)
         self.assertEqual(parsed.get("utm_source"), "g")

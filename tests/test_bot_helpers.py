@@ -12,7 +12,11 @@ try:
         _build_inline_keyboard,
         _build_user_name,
         _criteria_from_state,
+        _extract_goal_hint,
+        _extract_grade_hint,
+        _extract_subject_hint,
         _format_product_blurb,
+        _is_consultative_query,
         _resolve_vector_store_id,
         _target_message,
     )
@@ -48,10 +52,10 @@ def _sample_products():
 
 @unittest.skipUnless(HAS_BOT_DEPS, "bot dependencies are not installed")
 class BotHelpersTests(unittest.TestCase):
-    def test_apply_start_meta_sets_valid_brand(self) -> None:
+    def test_apply_start_meta_ignores_non_kmipt_brand(self) -> None:
         state = {"state": "ask_grade", "criteria": {"brand": "kmipt"}, "contact": None}
         updated = _apply_start_meta_to_state(state, {"brand": "foton", "source": "site"})
-        self.assertEqual(updated["criteria"]["brand"], "foton")
+        self.assertEqual(updated["criteria"]["brand"], "kmipt")
 
     def test_apply_start_meta_ignores_unknown_brand(self) -> None:
         state = {"state": "ask_grade", "criteria": {"brand": "kmipt"}, "contact": None}
@@ -120,6 +124,17 @@ class BotHelpersTests(unittest.TestCase):
         message = SimpleNamespace()
         update = SimpleNamespace(callback_query=None, message=message)
         self.assertIs(_target_message(update), message)
+
+    def test_consultative_detection_and_hint_extractors(self) -> None:
+        text = "У меня ребенок в 11 классе, хочу поступить в МФТИ, что делать?"
+        self.assertTrue(_is_consultative_query(text))
+        self.assertEqual(_extract_grade_hint(text), 11)
+        self.assertEqual(_extract_goal_hint(text), "ege")
+        self.assertIsNone(_extract_subject_hint(text))
+
+    def test_consultative_query_is_not_knowledge_query(self) -> None:
+        text = "Какие условия возврата и оплаты?"
+        self.assertFalse(_is_consultative_query(text))
 
     def test_build_user_name_from_first_and_last_name(self) -> None:
         update = SimpleNamespace(effective_user=SimpleNamespace(first_name="Ivan", last_name="Petrov"))

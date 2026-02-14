@@ -15,7 +15,7 @@ from sales_agent.sales_core.deeplink import DeepLinkMeta, encode_start_payload
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate Telegram deep-link payload")
     parser.add_argument("--bot-username", required=True, help="Telegram bot username without @")
-    parser.add_argument("--brand", choices=["kmipt", "foton"], default="kmipt")
+    parser.add_argument("--brand", choices=["kmipt"], default="kmipt")
     parser.add_argument("--source", default="site")
     parser.add_argument("--page", default="/")
     parser.add_argument("--utm-source", default=None)

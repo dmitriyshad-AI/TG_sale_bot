@@ -82,11 +82,26 @@ class BotRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(bot, "_handle_flow_step", new_callable=AsyncMock) as mock_flow, patch.object(
             bot, "_answer_knowledge_question", new_callable=AsyncMock
-        ) as mock_answer:
+        ) as mock_answer, patch.object(
+            bot, "_handle_consultative_query", new_callable=AsyncMock, return_value=False
+        ) as mock_consult:
             await bot.on_text_message(update, context)
 
         mock_flow.assert_awaited_once()
         mock_answer.assert_not_awaited()
+        mock_consult.assert_awaited_once()
+
+    async def test_on_text_message_routes_to_consultative_when_detected(self) -> None:
+        update = _update_with_text("У меня ребенок в 11 классе, хочу поступить в МФТИ, что делать?")
+        context = _context_with_flags()
+
+        with patch.object(
+            bot, "_handle_consultative_query", new_callable=AsyncMock, return_value=True
+        ) as mock_consult, patch.object(bot, "_handle_flow_step", new_callable=AsyncMock) as mock_flow:
+            await bot.on_text_message(update, context)
+
+        mock_consult.assert_awaited_once()
+        mock_flow.assert_not_awaited()
 
     async def test_on_callback_query_noop_without_query(self) -> None:
         update = SimpleNamespace(callback_query=None)

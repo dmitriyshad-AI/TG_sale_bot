@@ -1,5 +1,6 @@
 import logging
-from typing import Dict, Optional
+import re
+from typing import Dict, List, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import (
@@ -16,7 +17,17 @@ from sales_agent.sales_core.catalog import SearchCriteria, explain_match, select
 from sales_agent.sales_core.config import get_settings
 from sales_agent.sales_core.crm import build_crm_client
 from sales_agent.sales_core.deeplink import build_greeting_hint, parse_start_payload
-from sales_agent.sales_core.flow import STATE_ASK_CONTACT, advance_flow, build_prompt, ensure_state
+from sales_agent.sales_core.flow import (
+    STATE_ASK_CONTACT,
+    STATE_ASK_FORMAT,
+    STATE_ASK_GOAL,
+    STATE_ASK_GRADE,
+    STATE_ASK_SUBJECT,
+    STATE_DONE,
+    advance_flow,
+    build_prompt,
+    ensure_state,
+)
 from sales_agent.sales_core.llm_client import LLMClient
 from sales_agent.sales_core.vector_store import load_vector_store_id
 
@@ -48,6 +59,34 @@ KNOWLEDGE_QUERY_KEYWORDS = {
     "как оплатить",
     "перенос",
 }
+
+CONSULTATIVE_QUERY_KEYWORDS = {
+    "поступить",
+    "мфти",
+    "что делать",
+    "как подготов",
+    "нужен план",
+    "план подготовки",
+    "как лучше",
+    "куда поступ",
+    "помогите выбрать",
+}
+
+GOAL_HINTS = {
+    "еге": "ege",
+    "огэ": "oge",
+    "олимп": "olympiad",
+    "лагер": "camp",
+    "успеваем": "base",
+}
+
+SUBJECT_HINTS = {
+    "матем": "math",
+    "физ": "physics",
+    "информ": "informatics",
+}
+
+GRADE_PATTERN = re.compile(r"\b(1[01]|[1-9])\s*[- ]?класс", flags=re.IGNORECASE)
 
 
 def _user_meta(update: Update) -> Dict[str, Optional[str]]:
@@ -104,6 +143,137 @@ def _is_knowledge_query(text: str) -> bool:
     return any(keyword in normalized for keyword in KNOWLEDGE_QUERY_KEYWORDS)
 
 
+def _is_consultative_query(text: str) -> bool:
+    normalized = text.strip().lower()
+    if len(normalized) < 12:
+        return False
+    if _is_knowledge_query(normalized):
+        return False
+    return any(keyword in normalized for keyword in CONSULTATIVE_QUERY_KEYWORDS)
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def _extract_grade_hint(text: str) -> Optional[int]:
+    normalized = _normalize_text(text)
+    matched = GRADE_PATTERN.search(normalized)
+    if matched:
+        return int(matched.group(1))
+
+    digits = "".join(ch for ch in normalized if ch.isdigit())
+    if digits in {str(value) for value in range(1, 12)}:
+        return int(digits)
+    return None
+
+
+def _extract_goal_hint(text: str) -> Optional[str]:
+    normalized = _normalize_text(text)
+    for keyword, goal in GOAL_HINTS.items():
+        if keyword in normalized:
+            return goal
+    if "поступить" in normalized and "мфти" in normalized:
+        return "ege"
+    return None
+
+
+def _extract_subject_hint(text: str) -> Optional[str]:
+    normalized = _normalize_text(text)
+    for keyword, subject in SUBJECT_HINTS.items():
+        if keyword in normalized:
+            return subject
+    return None
+
+
+def _next_state_for_consultative(criteria: Dict[str, object]) -> str:
+    if not criteria.get("grade"):
+        return STATE_ASK_GRADE
+    if not criteria.get("goal"):
+        return STATE_ASK_GOAL
+    if criteria.get("subject") is None:
+        return STATE_ASK_SUBJECT
+    if not criteria.get("format"):
+        return STATE_ASK_FORMAT
+    return STATE_ASK_GOAL
+
+
+def _format_soft_picks(products: List[object]) -> str:
+    if not products:
+        return ""
+    lines = ["Вот 2 направления, которые уже похожи на ваш запрос:"]
+    for product in products[:2]:
+        usp = product.usp[0] if getattr(product, "usp", None) else "подходит для текущей цели"
+        lines.append(f"• {product.title} — {usp}.")
+    return "\n".join(lines)
+
+
+def _build_consultative_text(
+    text: str,
+    criteria: Dict[str, object],
+    products: List[object],
+    next_question: str,
+    *,
+    subject_from_user: bool,
+    show_picks: bool,
+    repeated_without_new_info: bool,
+) -> str:
+    grade = criteria.get("grade")
+    goal = criteria.get("goal")
+    subject = criteria.get("subject")
+    normalized = _normalize_text(text)
+
+    if repeated_without_new_info:
+        return (
+            "Понял, цель поступить в МФТИ.\n\n"
+            "Чтобы дать действительно полезный план без лишних шагов, уточню один пункт:\n"
+            f"{next_question}\n\n"
+            "Можно ответить коротко, в 1-2 словах."
+        )
+
+    if grade:
+        intro = (
+            f"Отличная цель. Для {grade} класса поступление в МФТИ обычно строят через сильный профиль "
+            "по ЕГЭ и, по возможности, олимпиадные результаты."
+        )
+    else:
+        intro = (
+            "Отличная цель. Для поступления в МФТИ обычно строят персональный маршрут: "
+            "ЕГЭ + олимпиады + регулярный контроль прогресса."
+        )
+
+    if goal == "ege":
+        focus = "Сейчас логично сделать акцент на ЕГЭ-план и зафиксировать приоритетный предмет."
+    elif goal == "olympiad":
+        focus = "Тогда делаем акцент на олимпиадный трек и параллельно держим базу под экзамены."
+    elif "поступить" in normalized and "мфти" in normalized:
+        focus = "Если цель именно МФТИ, обычно начинаем с ЕГЭ-трека и добавляем олимпиадную стратегию."
+    else:
+        focus = "Соберу точный план под ваш кейс, чтобы без перегруза и с понятными этапами."
+
+    subject_hint = ""
+    if subject_from_user and subject == "math":
+        subject_hint = "По математике можем сразу предложить профильный трек."
+    elif subject_from_user and subject == "physics":
+        subject_hint = "По физике можем сразу собрать траекторию от базы до сложных задач."
+    elif subject_from_user and subject == "informatics":
+        subject_hint = "По информатике подберем трек под формат задач ЕГЭ/олимпиад."
+
+    picks = _format_soft_picks(products) if show_picks else ""
+    cta = (
+        "Если хотите, продолжим коротко: после следующего уточнения дам 2-3 программы "
+        "и объясню, какая лучше под вашу цель."
+    )
+
+    chunks = [intro, focus]
+    if subject_hint:
+        chunks.append(subject_hint)
+    if picks:
+        chunks.append(picks)
+    chunks.extend([next_question, cta])
+    return "\n\n".join(chunks)
+
+
 def _build_inline_keyboard(layout):
     if not layout:
         return None
@@ -129,7 +299,7 @@ def _criteria_from_state(state_data: Dict[str, object]) -> SearchCriteria:
 def _apply_start_meta_to_state(state_data: Dict[str, object], meta: Dict[str, str]) -> Dict[str, object]:
     criteria = state_data.get("criteria") if isinstance(state_data.get("criteria"), dict) else {}
     brand = meta.get("brand", "").strip().lower()
-    if brand in {"kmipt", "foton"}:
+    if brand == "kmipt":
         criteria["brand"] = brand
     state_data["criteria"] = criteria
     return state_data
@@ -270,6 +440,100 @@ async def _answer_knowledge_question(update: Update, question: str) -> None:
         conn.close()
 
 
+async def _handle_consultative_query(update: Update, text: str) -> bool:
+    if not _is_consultative_query(text):
+        return False
+
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        session = db_module.get_session(conn, user_id)
+        state = ensure_state(session.get("state"), brand_default=settings.brand_default)
+        if state.get("state") == STATE_ASK_CONTACT:
+            return False
+
+        db_module.log_message(
+            conn,
+            user_id,
+            "inbound",
+            text,
+            {"type": "message", "handler": "consultative", **_user_meta(update)},
+        )
+
+        criteria = state.get("criteria") if isinstance(state.get("criteria"), dict) else {}
+        previous_criteria = dict(criteria)
+
+        grade_hint = _extract_grade_hint(text)
+        goal_hint = _extract_goal_hint(text)
+        subject_hint = _extract_subject_hint(text)
+
+        if grade_hint and criteria.get("grade") != grade_hint:
+            criteria["grade"] = grade_hint
+        if goal_hint and criteria.get("goal") != goal_hint:
+            criteria["goal"] = goal_hint
+        if subject_hint and criteria.get("subject") != subject_hint:
+            criteria["subject"] = subject_hint
+
+        changed_grade = previous_criteria.get("grade") != criteria.get("grade")
+        changed_goal = previous_criteria.get("goal") != criteria.get("goal")
+        changed_subject = previous_criteria.get("subject") != criteria.get("subject")
+        has_new_info = changed_grade or changed_goal or changed_subject
+
+        criteria["brand"] = "kmipt"
+        state["criteria"] = criteria
+        state["state"] = _next_state_for_consultative(criteria)
+        if state["state"] == STATE_DONE:
+            state["state"] = STATE_ASK_GRADE
+
+        normalized_text = _normalize_text(text)
+        consultative = state.get("consultative") if isinstance(state.get("consultative"), dict) else {}
+        last_text = str(consultative.get("last_text") or "")
+        previous_turns = int(consultative.get("turns") or 0)
+        repeated_without_new_info = (last_text == normalized_text) and (not has_new_info)
+        state["consultative"] = {
+            "last_text": normalized_text,
+            "turns": previous_turns + 1,
+        }
+
+        db_module.upsert_session_state(conn, user_id=user_id, state=state)
+    finally:
+        conn.close()
+
+    criteria_obj = _criteria_from_state(state)
+    products = _select_products(criteria_obj)
+    prompt = build_prompt(state)
+    response_text = _build_consultative_text(
+        text=text,
+        criteria=state["criteria"],
+        products=products,
+        next_question=prompt.message,
+        subject_from_user=bool(subject_hint),
+        show_picks=has_new_info or int(state.get("consultative", {}).get("turns", 0)) <= 1,
+        repeated_without_new_info=repeated_without_new_info,
+    )
+    await _reply(update, response_text, keyboard_layout=prompt.keyboard)
+
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        db_module.log_message(
+            conn,
+            user_id,
+            "outbound",
+            response_text,
+            {
+                "handler": "consultative",
+                "next_state": state.get("state"),
+                "products_count": len(products),
+                **_user_meta(update),
+            },
+        )
+    finally:
+        conn.close()
+
+    return True
+
+
 async def _handle_flow_step(
     update: Update,
     message_text: Optional[str] = None,
@@ -379,7 +643,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     hint = build_greeting_hint(start_meta)
     hint_block = f"{hint}\n\n" if hint else ""
     greeting = (
-        "Привет! Я помогу подобрать курс или лагерь для KMIPT/ФОТОН.\n\n"
+        "Привет! Я помогу подобрать курс или лагерь УНПК МФТИ.\n\n"
         f"{hint_block}{prompt.message}"
     )
     await _reply(update, greeting, keyboard_layout=prompt.keyboard)
@@ -506,6 +770,10 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             conn.close()
 
         await _answer_knowledge_question(update, question=text)
+        return
+
+    handled_consultative = await _handle_consultative_query(update=update, text=text)
+    if handled_consultative:
         return
 
     await _handle_flow_step(update=update, message_text=text)

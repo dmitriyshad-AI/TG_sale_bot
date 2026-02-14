@@ -406,6 +406,52 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
         context = SimpleNamespace(user_data={}, args=[])
         await bot.on_text_message(update, context)
 
+    async def test_handle_consultative_query_avoids_repeating_long_pitch(self) -> None:
+        update = _make_update_with_message("поступить в МФТИ")
+        session_state = {
+            "state": "ask_subject",
+            "criteria": {
+                "brand": "kmipt",
+                "grade": 11,
+                "goal": "ege",
+                "subject": "math",
+                "format": None,
+            },
+            "contact": None,
+            "consultative": {"last_text": "поступить в мфти", "turns": 1},
+        }
+        prompt = FlowStep(
+            message="Какой формат удобнее?",
+            next_state="ask_format",
+            state_data=session_state,
+            keyboard=[],
+        )
+
+        with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
+            bot, "_get_or_create_user_id", return_value=1
+        ), patch.object(
+            bot.db_module, "get_session", return_value={"state": session_state, "meta": {}}
+        ), patch.object(
+            bot.db_module, "log_message"
+        ), patch.object(
+            bot.db_module, "upsert_session_state"
+        ), patch.object(
+            bot, "_select_products", return_value=_sample_products()
+        ), patch.object(
+            bot, "build_prompt", return_value=prompt
+        ), patch.object(
+            bot, "_reply", new_callable=AsyncMock
+        ) as mock_reply:
+            handled = await bot._handle_consultative_query(update=update, text="поступить в МФТИ")
+
+        self.assertTrue(handled)
+        mock_reply.assert_awaited_once()
+        response_text = mock_reply.call_args.args[1]
+        self.assertIn("Понял, цель поступить в МФТИ", response_text)
+        self.assertIn("Какой формат удобнее", response_text)
+        self.assertNotIn("Вот 2 направления", response_text)
+        self.assertNotIn("По математике", response_text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 # sales-agent (MVP)
 
-MVP-каркас для sales-бота (KMIPT + ФОТОН): FastAPI API, Telegram-бот, SQLite-логирование, каталог продуктов и строгая валидация каталога.
+MVP-каркас для sales-бота УНПК МФТИ (kmipt.ru): FastAPI API, Telegram-бот, SQLite-логирование, каталог продуктов и строгая валидация каталога.
 
 ## Быстрый старт (локально)
 
@@ -44,6 +44,8 @@ API будет доступен на `localhost:8000`, бот используе
 ```bash
 docker compose -f docker-compose.prod.yml up -d --build
 ```
+
+Пошаговая инструкция внедрения: `docs/deployment_runbook.md`.
 
 ## Структура
 
@@ -145,7 +147,7 @@ VECTOR_STORE_META_PATH=
   ```bash
   python3 scripts/check_catalog_freshness.py
   ```
-- Автогенерация чернового каталога с публичных страниц kmipt.ru + cdpofoton.ru:
+- Автогенерация чернового каталога с публичных страниц kmipt.ru:
   ```bash
   python3 scripts/build_catalog_draft.py
   python3 scripts/validate_catalog.py --path catalog/products.auto_draft.yaml
