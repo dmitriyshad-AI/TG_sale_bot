@@ -265,7 +265,18 @@ def _is_consultative_query(text: str) -> bool:
         ("как ", "что ", "куда ", "зачем ", "почему ", "подскаж")
     )
     has_intent = any(
-        token in normalized for token in {"хочу", "нужно", "нужен", "нужна", "помогите", "подскажите"}
+        token in normalized
+        for token in {
+            "хочу",
+            "хотел",
+            "хотела",
+            "интересует",
+            "нужно",
+            "нужен",
+            "нужна",
+            "помогите",
+            "подскажите",
+        }
     )
     return has_context and (asks_question or has_intent)
 
@@ -833,17 +844,45 @@ async def _answer_small_talk(
         return False
 
     normalized = _normalize_text(text)
-    opening = "Понял вас."
-    if normalized.startswith(("привет", "здрав", "добрый")):
-        opening = "Здравствуйте! Рад помочь."
-    elif normalized.startswith(("спасибо", "благодар")):
-        opening = "Пожалуйста, рад помочь."
-
     state_name = (
         str(current_state_payload.get("state"))
         if isinstance(current_state_payload.get("state"), str)
         else None
     )
+
+    recent_history: List[Dict[str, str]] = []
+    llm_used_fallback = True
+    llm_error: Optional[str] = None
+    user_id: Optional[int] = None
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        recent_history = _recent_dialogue_for_llm(conn, user_id=user_id, limit=8)
+        db_module.log_message(
+            conn,
+            user_id,
+            "inbound",
+            text,
+            {"type": "message", "handler": "small-talk", "state": state_name, **_user_meta(update)},
+        )
+    finally:
+        conn.close()
+
+    llm_client = LLMClient(api_key=settings.openai_api_key, model=settings.openai_model)
+    small_talk_prompt = (
+        "Пользователь отправил короткую реплику в диалоге. "
+        "Ответьте тепло и естественно, без продаж и без шаблонных фраз."
+    )
+    llm_reply = await llm_client.build_general_help_reply_async(
+        user_message=f"{small_talk_prompt}\n\nРеплика пользователя: {normalized}",
+        dialogue_state=state_name,
+        recent_history=recent_history,
+    )
+    llm_used_fallback = llm_reply.used_fallback
+    llm_error = llm_reply.error
+    opening = llm_reply.answer_text.strip()
+    if not opening:
+        opening = "Понял вас."
 
     keyboard_layout = None
     response_text = opening
@@ -856,22 +895,17 @@ async def _answer_small_talk(
 
     conn = db_module.get_connection(settings.database_path)
     try:
-        user_id = _get_or_create_user_id(update, conn)
+        resolved_user_id = user_id if user_id is not None else _get_or_create_user_id(update, conn)
         db_module.log_message(
             conn,
-            user_id,
-            "inbound",
-            text,
-            {"type": "message", "handler": "small-talk", "state": state_name, **_user_meta(update)},
-        )
-        db_module.log_message(
-            conn,
-            user_id,
+            resolved_user_id,
             "outbound",
             delivered_text,
             {
                 "handler": "small-talk",
                 "state": state_name,
+                "llm_used_fallback": llm_used_fallback,
+                "llm_error": llm_error,
                 "quality": _quality_meta(delivered_text),
                 **_user_meta(update),
             },
@@ -880,6 +914,45 @@ async def _answer_small_talk(
         conn.close()
 
     return True
+
+
+async def _humanize_flow_message(
+    *,
+    user_message: str,
+    base_message: str,
+    current_state: Optional[str],
+    next_state: Optional[str],
+    state_data: Dict[str, object],
+    user_id: Optional[int],
+) -> str:
+    cleaned = base_message.strip()
+    if not cleaned:
+        return base_message
+
+    recent_history: List[Dict[str, str]] = []
+    if user_id is not None:
+        conn = db_module.get_connection(settings.database_path)
+        try:
+            recent_history = _recent_dialogue_for_llm(conn, user_id=user_id, limit=8)
+        finally:
+            conn.close()
+
+    criteria = state_data.get("criteria") if isinstance(state_data.get("criteria"), dict) else {}
+    llm_client = LLMClient(api_key=settings.openai_api_key, model=settings.openai_model)
+    try:
+        reply = await llm_client.build_flow_followup_reply_async(
+            user_message=user_message,
+            base_message=cleaned,
+            current_state=current_state,
+            next_state=next_state,
+            criteria=criteria,
+            recent_history=recent_history,
+        )
+    except Exception:
+        logger.exception("Failed to humanize flow message")
+        return cleaned
+
+    return reply.answer_text.strip() or cleaned
 
 
 async def _handle_consultative_query(update: Update, text: str) -> bool:
@@ -1061,6 +1134,7 @@ async def _handle_flow_step(
     message_text: Optional[str] = None,
     callback_data: Optional[str] = None,
 ) -> None:
+    user_id: Optional[int] = None
     conn = db_module.get_connection(settings.database_path)
     try:
         user_id = _get_or_create_user_id(update, conn)
@@ -1120,6 +1194,15 @@ async def _handle_flow_step(
                 "Подбор временно недоступен. "
                 "Оставьте контакт, и менеджер поможет вручную."
             )
+    else:
+        response_text = await _humanize_flow_message(
+            user_message=message_text or callback_data or "",
+            base_message=response_text,
+            current_state=str(previous_state) if previous_state else None,
+            next_state=step.next_state,
+            state_data=step.state_data,
+            user_id=user_id,
+        )
 
     delivered_text = await _reply(update, response_text, keyboard_layout=step.keyboard)
 

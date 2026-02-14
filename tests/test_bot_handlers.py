@@ -263,10 +263,18 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
             "criteria": {"brand": "kmipt", "grade": None, "goal": None, "subject": None, "format": None},
             "contact": None,
         }
+        llm_result = SimpleNamespace(
+            answer_text="Пожалуйста, рад помочь.",
+            used_fallback=False,
+            error=None,
+        )
+        llm_client = SimpleNamespace(build_general_help_reply_async=AsyncMock(return_value=llm_result))
 
         with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
             bot, "_get_or_create_user_id", return_value=1
-        ), patch.object(bot.db_module, "log_message"):
+        ), patch.object(bot.db_module, "list_recent_messages", return_value=[]), patch.object(
+            bot.db_module, "log_message"
+        ), patch.object(bot, "LLMClient", return_value=llm_client):
             handled = await bot._answer_small_talk(
                 update=update,
                 text="Спасибо",
@@ -353,6 +361,8 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
             bot.db_module, "log_message"
         ), patch.object(bot.db_module, "upsert_session_state"), patch.object(
             bot, "advance_flow", return_value=step
+        ), patch.object(
+            bot, "_humanize_flow_message", new_callable=AsyncMock, return_value="Следующий шаг"
         ), patch.object(bot, "_reply", new_callable=AsyncMock) as mock_reply:
             await bot._handle_flow_step(update=update, message_text="10")
 
@@ -441,6 +451,8 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
             bot.db_module, "log_message"
         ), patch.object(bot.db_module, "upsert_session_state"), patch.object(
             bot, "advance_flow", return_value=step
+        ), patch.object(
+            bot, "_humanize_flow_message", new_callable=AsyncMock, return_value="Спасибо! Заявка сохранена."
         ), patch.object(bot, "_reply", new_callable=AsyncMock), patch.object(
             bot, "_create_lead_from_phone", new_callable=AsyncMock
         ) as mock_create_lead:

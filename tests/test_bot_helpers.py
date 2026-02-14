@@ -136,6 +136,10 @@ class BotHelpersTests(unittest.TestCase):
         self.assertEqual(_extract_goal_hint(text), "ege")
         self.assertIsNone(_extract_subject_hint(text))
 
+    def test_consultative_detection_supports_hotel_wording(self) -> None:
+        text = "Я хотел бы поступить в МФТИ, помогите с планом подготовки."
+        self.assertTrue(_is_consultative_query(text))
+
     def test_consultative_query_is_not_knowledge_query(self) -> None:
         text = "Какие условия возврата и оплаты?"
         self.assertFalse(_is_consultative_query(text))

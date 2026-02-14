@@ -210,6 +210,62 @@ class LLMClient:
 
         return GeneralHelpReply(answer_text=text.strip(), used_fallback=False)
 
+    async def build_flow_followup_reply_async(
+        self,
+        *,
+        user_message: str,
+        base_message: str,
+        current_state: Optional[str],
+        next_state: Optional[str],
+        criteria: Optional[Dict[str, Any]] = None,
+        recent_history: Optional[List[Dict[str, str]]] = None,
+    ) -> GeneralHelpReply:
+        cleaned_base = base_message.strip()
+        if not cleaned_base:
+            return GeneralHelpReply(
+                answer_text="Подскажите, пожалуйста, как лучше вам помочь дальше.",
+                used_fallback=True,
+            )
+
+        if not self.is_configured():
+            fallback = self._fallback_flow_followup_reply(
+                base_message=cleaned_base,
+                next_state=next_state,
+                criteria=criteria,
+            )
+            fallback.error = "OPENAI_API_KEY is not configured"
+            return fallback
+
+        payload = self._build_flow_followup_payload(
+            user_message=user_message,
+            base_message=cleaned_base,
+            current_state=current_state,
+            next_state=next_state,
+            criteria=criteria,
+            recent_history=recent_history,
+        )
+        raw, error = await self._send_request_async(payload)
+        if error:
+            fallback = self._fallback_flow_followup_reply(
+                base_message=cleaned_base,
+                next_state=next_state,
+                criteria=criteria,
+            )
+            fallback.error = error
+            return fallback
+
+        text = self._extract_text(raw or {})
+        if not text:
+            fallback = self._fallback_flow_followup_reply(
+                base_message=cleaned_base,
+                next_state=next_state,
+                criteria=criteria,
+            )
+            fallback.error = "empty response text"
+            return fallback
+
+        return GeneralHelpReply(answer_text=text.strip(), used_fallback=False)
+
     def answer_knowledge_question(
         self,
         question: str,
@@ -502,6 +558,59 @@ class LLMClient:
             ],
             "temperature": 0.35,
             "max_output_tokens": 500,
+        }
+
+    def _build_flow_followup_payload(
+        self,
+        *,
+        user_message: str,
+        base_message: str,
+        current_state: Optional[str],
+        next_state: Optional[str],
+        criteria: Optional[Dict[str, Any]] = None,
+        recent_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        tone_block = tone_as_prompt_block(self.tone_profile)
+        history_payload = recent_history or []
+        criteria_payload = criteria or {}
+
+        system_prompt = (
+            "Вы консультант образовательного центра. "
+            "Сформулируйте ответ по-человечески, спокойно и уважительно, как живой менеджер. "
+            "Без давления, без рекламных клише и без шаблонных повторов. "
+            "Обращайтесь на 'вы'. "
+            "Сохраните смысл исходного системного сообщения, но перепишите естественным языком. "
+            "Если нужен следующий шаг, задайте один короткий уточняющий вопрос. "
+            "Не придумывайте факты о ценах, датах или условиях программ.\n\n"
+            f"{tone_block}"
+        )
+        user_prompt = (
+            "Сообщение клиента:\n"
+            f"{user_message.strip()}\n\n"
+            "Текущее состояние диалога:\n"
+            f"current_state={current_state or 'unknown'}, next_state={next_state or 'unknown'}\n\n"
+            "Известные параметры клиента:\n"
+            f"{json.dumps(criteria_payload, ensure_ascii=False)}\n\n"
+            "Краткая история последних сообщений:\n"
+            f"{json.dumps(history_payload, ensure_ascii=False)}\n\n"
+            "Базовое сообщение бота (смысл нужно сохранить):\n"
+            f"{base_message}\n\n"
+            "Верните готовый текст ответа для пользователя (не JSON)."
+        )
+        return {
+            "model": self.model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": user_prompt}],
+                },
+            ],
+            "temperature": 0.35,
+            "max_output_tokens": 450,
         }
 
     def _build_knowledge_payload(self, question: str, vector_store_id: str) -> Dict[str, Any]:
@@ -856,3 +965,35 @@ class LLMClient:
         if dialogue_state:
             answer += " После этого можем вернуться к вашему плану подготовки."
         return GeneralHelpReply(answer_text=answer, used_fallback=True)
+
+    def _fallback_flow_followup_reply(
+        self,
+        *,
+        base_message: str,
+        next_state: Optional[str],
+        criteria: Optional[Dict[str, Any]] = None,
+    ) -> GeneralHelpReply:
+        criteria = criteria or {}
+        grade = criteria.get("grade")
+
+        if next_state == "ask_grade":
+            intro = "Чтобы предложить точный и безопасный маршрут, сначала уточню один момент."
+        elif next_state == "ask_goal":
+            intro = "Отлично, движемся дальше. Нужен еще один ориентир по цели подготовки."
+        elif next_state == "ask_subject":
+            intro = (
+                f"Для {grade} класса уже можно собрать рабочий план."
+                if grade
+                else "Уже можно собрать более точный план."
+            )
+        elif next_state == "ask_format":
+            intro = "Остался последний организационный вопрос, чтобы подобрать удобный вариант."
+        elif next_state == "ask_contact":
+            intro = "Если вам удобно, зафиксируем следующий шаг и передадим запрос менеджеру."
+        else:
+            intro = "Понял вас."
+
+        return GeneralHelpReply(
+            answer_text=f"{intro}\n\n{base_message}",
+            used_fallback=True,
+        )

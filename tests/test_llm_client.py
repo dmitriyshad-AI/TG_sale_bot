@@ -214,6 +214,21 @@ class LLMClientTests(unittest.TestCase):
         self.assertIn("Краткая история последних сообщений", prompt_text)
         self.assertIn("тригонометрию", prompt_text)
 
+    def test_flow_followup_payload_includes_base_message(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        payload = client._build_flow_followup_payload(
+            user_message="Спасибо",
+            base_message="Укажите класс ученика (1-11):",
+            current_state="ask_grade",
+            next_state="ask_grade",
+            criteria={"brand": "kmipt"},
+            recent_history=[{"role": "user", "text": "Хочу поступить в МФТИ"}],
+        )
+        self.assertEqual(payload["input"][0]["content"][0]["type"], "input_text")
+        prompt_text = payload["input"][1]["content"][0]["text"]
+        self.assertIn("Базовое сообщение бота", prompt_text)
+        self.assertIn("Укажите класс ученика", prompt_text)
+
     @patch("sales_agent.sales_core.llm_client.urlopen")
     def test_send_request_includes_http_error_details(self, mock_urlopen) -> None:
         mock_urlopen.side_effect = HTTPError(
@@ -372,6 +387,41 @@ class LLMClientAsyncTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(result.used_fallback)
         self.assertIn("косинус", result.answer_text.lower())
+
+    async def test_build_flow_followup_reply_async_parses_text(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        response = _MockAsyncResponse(
+            200,
+            {"output_text": "Понял вас. Подскажите, пожалуйста, какой сейчас класс ученика?"},
+        )
+        with patch(
+            "sales_agent.sales_core.llm_client.httpx.AsyncClient",
+            return_value=_MockAsyncClient(response),
+        ):
+            result = await client.build_flow_followup_reply_async(
+                user_message="Спасибо",
+                base_message="Укажите класс ученика (1-11):",
+                current_state="ask_grade",
+                next_state="ask_grade",
+                criteria={"brand": "kmipt"},
+                recent_history=[],
+            )
+
+        self.assertFalse(result.used_fallback)
+        self.assertIn("класс", result.answer_text.lower())
+
+    async def test_build_flow_followup_reply_async_uses_fallback_without_key(self) -> None:
+        client = LLMClient(api_key="", model="gpt-4.1")
+        result = await client.build_flow_followup_reply_async(
+            user_message="Спасибо",
+            base_message="Укажите класс ученика (1-11):",
+            current_state="ask_grade",
+            next_state="ask_grade",
+            criteria={"brand": "kmipt"},
+            recent_history=[],
+        )
+        self.assertTrue(result.used_fallback)
+        self.assertIn("класс", result.answer_text.lower())
 
 
 if __name__ == "__main__":
