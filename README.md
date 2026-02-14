@@ -47,6 +47,33 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 Пошаговая инструкция внедрения: `docs/deployment_runbook.md`.
 
+## Render (Free plan, polling)
+
+На Render Free у `Background Worker` нет бесплатного тарифа, поэтому для polling используется один `Web Service`.
+В этом репозитории Docker-старт по умолчанию запускает:
+- FastAPI на `PORT` (Render переменная окружения),
+- Telegram-бота в polling-режиме.
+
+Минимальные шаги:
+1. Создать отдельного бота для Render в `@BotFather` (другой токен, не локальный).
+2. Перед polling удалить webhook для этого токена:
+   ```bash
+   curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/deleteWebhook?drop_pending_updates=true"
+   ```
+3. Создать `Web Service` в Render (Runtime: Docker, Plan: Free).
+4. В `Environment` задать минимум:
+   - `TELEGRAM_BOT_TOKEN`
+   - `OPENAI_API_KEY`
+   - `OPENAI_MODEL=gpt-4.1`
+   - `BRAND_DEFAULT=kmipt`
+   - `CRM_PROVIDER=none`
+5. `Health Check Path`: `/api/health`.
+6. Deploy и проверить логи: должна появиться строка `Starting Telegram bot polling...`.
+
+Важно:
+- Один токен нельзя запускать одновременно локально и в Render.
+- Free Web Service может уходить в sleep при простое; для стабильного 24/7 обычно переходят на paid или webhook-архитектуру.
+
 ## Структура
 
 ```

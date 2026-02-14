@@ -106,3 +106,39 @@ docker compose -f docker-compose.prod.yml up -d --build
    ```
 
 `data/` вынесена в volume-монтирование, поэтому SQLite и метаданные vector store сохраняются между релизами.
+
+## 8) Render Free (один Web Service, без Worker)
+
+На бесплатном плане Render `Background Worker` недоступен. Для polling-режима используйте только `Web Service`.
+
+В проекте уже есть `start.sh`, который поднимает:
+1. API (`uvicorn`) на порту `PORT` (или `8000` локально),
+2. Telegram-бота в polling-режиме.
+
+### Шаги на Render
+
+1. Создайте отдельного Telegram-бота для Render (отдельный токен).
+2. Удалите webhook для этого токена (иначе polling не получит апдейты):
+   ```bash
+   curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/deleteWebhook?drop_pending_updates=true"
+   ```
+3. Создайте `Web Service`:
+   - Runtime: `Docker`
+   - Plan: `Free`
+4. Добавьте env-переменные:
+   ```dotenv
+   TELEGRAM_BOT_TOKEN=...
+   OPENAI_API_KEY=...
+   OPENAI_MODEL=gpt-4.1
+   BRAND_DEFAULT=kmipt
+   CRM_PROVIDER=none
+   ```
+5. Health Check Path: `/api/health`.
+6. Запустите deploy и проверьте логи сервиса:
+   - `Starting API on 0.0.0.0...`
+   - `Starting Telegram bot polling...`
+
+### Важно по эксплуатации
+
+- Не запускайте один и тот же токен одновременно локально и в Render.
+- Free Web Service может засыпать при простое. Для стабильного 24/7 лучше paid plan или webhook-архитектура.
