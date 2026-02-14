@@ -94,6 +94,9 @@ tests/             # unit tests
 `.env.example`:
 ```
 TELEGRAM_BOT_TOKEN=
+TELEGRAM_MODE=polling
+TELEGRAM_WEBHOOK_PATH=/telegram/webhook
+TELEGRAM_WEBHOOK_SECRET=
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1
 OPENAI_VECTOR_STORE_ID=
@@ -124,6 +127,25 @@ SALES_TONE_PATH=
   - оценки качества текста в логах (`helpfulness/friendliness/pressure`).
 - Можно указать другой файл через `SALES_TONE_PATH`.
 - Метрики качества добавляются в `messages.meta_json.quality` для исходящих сообщений.
+
+## Режим Telegram: polling vs webhook
+
+- По умолчанию: `TELEGRAM_MODE=polling`.
+- Для локальной разработки проще polling (`python3 -m sales_agent.sales_bot.bot`).
+- Для Render/Web Service можно использовать webhook:
+  1. Установить в env: `TELEGRAM_MODE=webhook`.
+  2. Задать `TELEGRAM_WEBHOOK_SECRET` (рекомендуется).
+  3. После деплоя выставить webhook:
+     ```bash
+     curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/setWebhook" \
+       -d "url=https://<your-render-domain>${TELEGRAM_WEBHOOK_PATH}" \
+       -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+     ```
+  4. Проверка:
+     ```bash
+     curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/getWebhookInfo"
+     ```
+- В webhook-режиме endpoint создается по пути `TELEGRAM_WEBHOOK_PATH` (по умолчанию `/telegram/webhook`).
 
 ## Команды обслуживания
 

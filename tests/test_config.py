@@ -22,6 +22,9 @@ class ConfigTests(unittest.TestCase):
         os.environ,
         {
             "TELEGRAM_BOT_TOKEN": "token-123",
+            "TELEGRAM_MODE": "webhook",
+            "TELEGRAM_WEBHOOK_SECRET": "wh-secret",
+            "TELEGRAM_WEBHOOK_PATH": "tg/webhook",
             "OPENAI_API_KEY": "sk-test",
             "OPENAI_MODEL": "gpt-4.1-mini",
             "TALLANTO_API_URL": "https://crm.example/api",
@@ -43,6 +46,9 @@ class ConfigTests(unittest.TestCase):
     def test_get_settings_reads_environment_values(self) -> None:
         settings = get_settings()
         self.assertEqual(settings.telegram_bot_token, "token-123")
+        self.assertEqual(settings.telegram_mode, "webhook")
+        self.assertEqual(settings.telegram_webhook_secret, "wh-secret")
+        self.assertEqual(settings.telegram_webhook_path, "/tg/webhook")
         self.assertEqual(settings.openai_api_key, "sk-test")
         self.assertEqual(settings.openai_model, "gpt-4.1-mini")
         self.assertEqual(settings.tallanto_api_url, "https://crm.example/api")
@@ -64,6 +70,9 @@ class ConfigTests(unittest.TestCase):
         settings = get_settings()
         root = project_root()
         self.assertEqual(settings.brand_default, "kmipt")
+        self.assertEqual(settings.telegram_mode, "polling")
+        self.assertEqual(settings.telegram_webhook_secret, "")
+        self.assertEqual(settings.telegram_webhook_path, "/telegram/webhook")
         self.assertEqual(settings.openai_model, "gpt-4.1")
         self.assertEqual(settings.database_path, root / "data" / "sales_agent.db")
         self.assertEqual(settings.catalog_path, root / "catalog" / "products.yaml")
@@ -88,6 +97,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.catalog_path, root / "catalog" / "products.yaml")
         self.assertEqual(settings.knowledge_path, root / "knowledge")
         self.assertEqual(settings.vector_store_meta_path, root / "data" / "vector_store.json")
+
+    @patch.dict(os.environ, {"TELEGRAM_MODE": "unexpected"}, clear=True)
+    def test_invalid_telegram_mode_falls_back_to_polling(self) -> None:
+        settings = get_settings()
+        self.assertEqual(settings.telegram_mode, "polling")
 
 
 if __name__ == "__main__":

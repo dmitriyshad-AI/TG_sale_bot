@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
@@ -964,15 +965,28 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await _handle_flow_step(update=update, callback_data=update.callback_query.data)
 
 
-def main() -> None:
-    if not settings.telegram_bot_token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set. Fill .env before running.")
-    application = ApplicationBuilder().token(settings.telegram_bot_token).build()
+def _configure_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("leadtest", leadtest))
     application.add_handler(CommandHandler("kbtest", kbtest))
     application.add_handler(CallbackQueryHandler(on_callback_query))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
+
+
+def build_application(token: str) -> Application:
+    application = ApplicationBuilder().token(token).build()
+    _configure_handlers(application)
+    return application
+
+
+def main() -> None:
+    if not settings.telegram_bot_token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set. Fill .env before running.")
+    if settings.telegram_mode == "webhook":
+        raise RuntimeError(
+            "TELEGRAM_MODE=webhook: polling runner disabled. Start FastAPI service and use webhook endpoint."
+        )
+    application = build_application(settings.telegram_bot_token)
     logger.info("Starting Telegram bot polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 

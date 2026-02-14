@@ -21,6 +21,9 @@
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=...
+TELEGRAM_MODE=polling
+TELEGRAM_WEBHOOK_PATH=/telegram/webhook
+TELEGRAM_WEBHOOK_SECRET=
 OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-4.1
 BRAND_DEFAULT=kmipt
@@ -112,9 +115,9 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 На бесплатном плане Render `Background Worker` недоступен. Для polling-режима используйте только `Web Service`.
 
-В проекте уже есть `start.sh`, который поднимает:
-1. API (`uvicorn`) на порту `PORT` (или `8000` локально),
-2. Telegram-бота в polling-режиме.
+В проекте уже есть `start.sh`:
+1. `TELEGRAM_MODE=polling` (по умолчанию): поднимает API + polling-бот.
+2. `TELEGRAM_MODE=webhook`: поднимает только API, Telegram обновления приходят в webhook endpoint.
 
 ### Шаги на Render
 
@@ -143,3 +146,28 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 - Не запускайте один и тот же токен одновременно локально и в Render.
 - Free Web Service может засыпать при простое. Для стабильного 24/7 лучше paid plan или webhook-архитектура.
+
+### Webhook режим на Render (рекомендуется для single web service)
+
+1. В env Render задайте:
+   ```dotenv
+   TELEGRAM_MODE=webhook
+   TELEGRAM_WEBHOOK_PATH=/telegram/webhook
+   TELEGRAM_WEBHOOK_SECRET=<long-random-secret>
+   ```
+2. После деплоя выставьте webhook:
+   ```bash
+   curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/setWebhook" \
+     -d "url=https://<your-render-domain>/telegram/webhook" \
+     -d "secret_token=<long-random-secret>"
+   ```
+3. Проверьте состояние:
+   ```bash
+   curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/getWebhookInfo"
+   ```
+4. Если нужно вернуться к polling:
+   - `TELEGRAM_MODE=polling`
+   - удалить webhook:
+     ```bash
+     curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/deleteWebhook?drop_pending_updates=true"
+     ```

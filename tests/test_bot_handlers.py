@@ -92,7 +92,7 @@ class BotSyncCoverageTests(unittest.TestCase):
         self.assertEqual(mock_select.call_args.kwargs["brand_default"], "foton")
 
     def test_main_raises_when_token_missing(self) -> None:
-        with patch.object(bot, "settings", SimpleNamespace(telegram_bot_token="")):
+        with patch.object(bot, "settings", SimpleNamespace(telegram_bot_token="", telegram_mode="polling")):
             with self.assertRaises(RuntimeError):
                 bot.main()
 
@@ -102,7 +102,11 @@ class BotSyncCoverageTests(unittest.TestCase):
         builder.token.return_value = builder
         builder.build.return_value = app_mock
 
-        with patch.object(bot, "settings", SimpleNamespace(telegram_bot_token="tg-token")), patch.object(
+        with patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(telegram_bot_token="tg-token", telegram_mode="polling"),
+        ), patch.object(
             bot, "ApplicationBuilder", return_value=builder
         ):
             bot.main()
@@ -110,6 +114,15 @@ class BotSyncCoverageTests(unittest.TestCase):
         builder.token.assert_called_once_with("tg-token")
         self.assertEqual(app_mock.add_handler.call_count, 5)
         app_mock.run_polling.assert_called_once()
+
+    def test_main_raises_in_webhook_mode(self) -> None:
+        with patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(telegram_bot_token="tg-token", telegram_mode="webhook"),
+        ):
+            with self.assertRaises(RuntimeError):
+                bot.main()
 
 
 @unittest.skipUnless(HAS_BOT_DEPS, "bot dependencies are not installed")

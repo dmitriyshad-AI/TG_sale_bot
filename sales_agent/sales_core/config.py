@@ -26,6 +26,9 @@ class Settings:
     crm_provider: str = "tallanto"
     amo_api_url: str = ""
     amo_access_token: str = ""
+    telegram_mode: str = "polling"
+    telegram_webhook_secret: str = ""
+    telegram_webhook_path: str = "/telegram/webhook"
 
 
 def project_root() -> Path:
@@ -47,8 +50,18 @@ def get_settings() -> Settings:
         if vector_store_meta_path
         else root / "data" / "vector_store.json"
     )
+    telegram_mode = os.getenv("TELEGRAM_MODE", "polling").strip().lower()
+    if telegram_mode not in {"polling", "webhook"}:
+        telegram_mode = "polling"
+    telegram_webhook_path = os.getenv("TELEGRAM_WEBHOOK_PATH", "/telegram/webhook").strip() or "/telegram/webhook"
+    if not telegram_webhook_path.startswith("/"):
+        telegram_webhook_path = f"/{telegram_webhook_path}"
+
     return Settings(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+        telegram_mode=telegram_mode,
+        telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip(),
+        telegram_webhook_path=telegram_webhook_path,
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1").strip() or "gpt-4.1",
         tallanto_api_url=os.getenv("TALLANTO_API_URL", "").strip(),

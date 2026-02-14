@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import html
 import json
+import logging
 import secrets
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from telegram import Update
 
+from sales_agent.sales_bot import bot as bot_runtime
 from sales_agent.sales_core.config import Settings, get_settings
 from sales_agent.sales_core.copilot import run_copilot_from_file
 from sales_agent.sales_core.crm import build_crm_client
@@ -21,13 +25,35 @@ from sales_agent.sales_core.db import (
 
 
 security = HTTPBasic()
+logger = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or get_settings()
     init_db(cfg.database_path)
+    webhook_path = cfg.telegram_webhook_path if cfg.telegram_webhook_path.startswith("/") else f"/{cfg.telegram_webhook_path}"
+    telegram_application = None
 
-    app = FastAPI(title="sales-agent")
+    if cfg.telegram_mode == "webhook":
+        if not cfg.telegram_bot_token:
+            logger.warning("TELEGRAM_MODE=webhook but TELEGRAM_BOT_TOKEN is empty. Webhook endpoint will return 503.")
+        else:
+            telegram_application = bot_runtime.build_application(cfg.telegram_bot_token)
+
+    @asynccontextmanager
+    async def lifespan(app_instance: FastAPI):
+        if telegram_application is not None:
+            app_instance.state.telegram_application = telegram_application
+            await telegram_application.initialize()
+            await telegram_application.start()
+            logger.info("Telegram webhook application initialized at path: %s", webhook_path)
+        yield
+        if telegram_application is not None:
+            await telegram_application.stop()
+            await telegram_application.shutdown()
+            logger.info("Telegram webhook application stopped")
+
+    app = FastAPI(title="sales-agent", lifespan=lifespan)
 
     def require_admin(credentials: HTTPBasicCredentials = Depends(security)) -> str:
         if not cfg.admin_user or not cfg.admin_pass:
@@ -127,6 +153,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/health")
     async def health():
         return {"status": "ok", "service": "sales-agent"}
+
+    @app.post(webhook_path)
+    async def telegram_webhook(request: Request):
+        if cfg.telegram_mode != "webhook":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Webhook endpoint is disabled. Set TELEGRAM_MODE=webhook.",
+            )
+        if not cfg.telegram_bot_token:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="TELEGRAM_BOT_TOKEN is not configured.",
+            )
+        if cfg.telegram_webhook_secret:
+            header_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+            if not secrets.compare_digest(header_secret, cfg.telegram_webhook_secret):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook secret token.")
+
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid Telegram payload.")
+
+        telegram_application = getattr(app.state, "telegram_application", None)
+        if telegram_application is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Telegram webhook application is not initialized.",
+            )
+
+        update = Update.de_json(payload, telegram_application.bot)
+        if update is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not parse Telegram update payload.",
+            )
+
+        await telegram_application.process_update(update)
+        return {"ok": True}
 
     @app.get("/admin/leads")
     async def admin_leads(_: str = Depends(require_admin), limit: int = 100):
