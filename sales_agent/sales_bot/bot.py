@@ -64,6 +64,38 @@ KNOWLEDGE_QUERY_KEYWORDS = {
     "перенос",
 }
 
+PROGRAM_INFO_QUERY_PHRASES = (
+    "что ты знаешь про",
+    "что вы знаете про",
+    "расскажи про",
+    "подробно про",
+    "подробнее про",
+    "что за",
+    "что входит",
+    "как проходит",
+    "какие есть",
+    "когда старт",
+    "когда начинается",
+    "сколько стоит",
+    "цена на",
+)
+
+PROGRAM_INFO_ENTITY_MARKERS = {
+    "лагер",
+    "смен",
+    "курс",
+    "интенсив",
+    "программ",
+    "трек",
+    "группа",
+    "it",
+    "айти",
+    "егэ",
+    "огэ",
+    "олимпиад",
+    "унпк",
+}
+
 CONSULTATIVE_QUERY_KEYWORDS = {
     "поступить",
     "мфти",
@@ -284,16 +316,48 @@ def _is_knowledge_query(text: str) -> bool:
     return any(keyword in normalized for keyword in KNOWLEDGE_QUERY_KEYWORDS)
 
 
+def _is_program_info_query(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    if normalized in FLOW_SELECTION_TOKENS:
+        return False
+    if normalized.isdigit() and 1 <= int(normalized) <= 11:
+        return False
+    if _is_structured_flow_input(normalized):
+        return False
+
+    has_lookup_phrase = any(phrase in normalized for phrase in PROGRAM_INFO_QUERY_PHRASES)
+    has_entity_marker = any(marker in normalized for marker in PROGRAM_INFO_ENTITY_MARKERS)
+    if has_lookup_phrase and has_entity_marker:
+        return True
+
+    asks_question = "?" in text
+    product_marker = any(
+        marker in normalized
+        for marker in {
+            "лагер",
+            "смен",
+            "курс",
+            "интенсив",
+            "программ",
+        }
+    )
+    return asks_question and product_marker
+
+
 def _is_consultative_query(text: str) -> bool:
     normalized = _normalize_text(text)
     if len(normalized) < 8:
         return False
 
-    if any(keyword in normalized for keyword in CONSULTATIVE_QUERY_KEYWORDS):
-        return True
-
     if _is_knowledge_query(normalized):
         return False
+    if _is_program_info_query(normalized):
+        return False
+
+    if any(keyword in normalized for keyword in CONSULTATIVE_QUERY_KEYWORDS):
+        return True
 
     has_context = any(keyword in normalized for keyword in CONSULTATIVE_CONTEXT_KEYWORDS)
     asks_question = "?" in normalized or normalized.startswith(
@@ -410,6 +474,8 @@ def _looks_like_fragmented_context_message(
     if _is_structured_flow_input(normalized):
         return False
     if _is_knowledge_query(normalized):
+        return False
+    if _is_program_info_query(normalized):
         return False
     if _is_general_education_query(normalized):
         return False
@@ -1066,6 +1132,8 @@ async def _answer_knowledge_question(
         question=question,
         vector_store_id=_resolve_vector_store_id(),
         user_context=user_context,
+        allow_web_fallback=settings.openai_web_fallback_enabled,
+        site_domain=settings.openai_web_fallback_domain,
     )
 
     text = knowledge_reply.answer_text
@@ -1918,6 +1986,23 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         message_text=text,
         current_state_payload=current_state_payload,
     )
+
+    if _is_program_info_query(effective_text):
+        conn = db_module.get_connection(settings.database_path)
+        try:
+            user_id = _get_or_create_user_id(update, conn)
+            db_module.log_message(
+                conn,
+                user_id,
+                "inbound",
+                effective_text,
+                {"type": "message", "handler": "program-info-auto", **_user_meta(update)},
+            )
+        finally:
+            conn.close()
+
+        await _answer_knowledge_question(update, question=effective_text, user_context=user_context)
+        return
 
     handled_consultative = await _handle_consultative_query(
         update=update,

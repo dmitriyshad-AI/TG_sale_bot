@@ -1,7 +1,7 @@
 import unittest
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError
 
 try:
@@ -173,6 +173,17 @@ class LLMClientTests(unittest.TestCase):
         )
         self.assertEqual(payload["input"][0]["content"][0]["type"], "input_text")
         self.assertEqual(payload["input"][1]["content"][0]["type"], "input_text")
+
+    def test_site_search_payload_uses_web_search_tool(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        payload = client._build_site_search_payload(
+            question="Что известно про IT лагерь?",
+            site_domain="kmipt.ru",
+            user_context={"summary_text": "Родитель интересуется летней программой."},
+        )
+        self.assertEqual(payload["tools"][0]["type"], "web_search_preview")
+        self.assertEqual(payload["input"][0]["content"][0]["type"], "input_text")
+        self.assertIn("kmipt.ru", payload["input"][0]["content"][0]["text"])
 
     def test_consultative_payload_uses_input_text_type(self) -> None:
         client = LLMClient(api_key="sk-test", model="gpt-4.1")
@@ -357,6 +368,68 @@ class LLMClientAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.used_fallback)
         self.assertIn("счету", result.answer_text)
         self.assertEqual(result.sources, ["payments.md"])
+
+    async def test_answer_knowledge_question_async_web_fallback_when_vector_store_missing(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        response = _MockAsyncResponse(
+            200,
+            {
+                "output": [
+                    {
+                        "content": [
+                            {
+                                "text": "IT лагерь проходит летом на базе кампуса МФТИ.",
+                                "annotations": [{"url": "https://kmipt.ru/camps/it"}],
+                            }
+                        ]
+                    }
+                ]
+            },
+        )
+        with patch(
+            "sales_agent.sales_core.llm_client.httpx.AsyncClient",
+            return_value=_MockAsyncClient(response),
+        ):
+            result = await client.answer_knowledge_question_async(
+                "Что известно про IT лагерь?",
+                vector_store_id=None,
+                allow_web_fallback=True,
+                site_domain="kmipt.ru",
+            )
+        self.assertFalse(result.used_fallback)
+        self.assertIn("лагерь", result.answer_text.lower())
+        self.assertIn("https://kmipt.ru/camps/it", result.sources)
+
+    async def test_answer_knowledge_question_async_web_fallback_when_file_search_uncertain(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        raw_file = {"output_text": "Недостаточно информации в базе знаний, лучше уточнить у менеджера."}
+        raw_web = {
+            "output": [
+                {
+                    "content": [
+                        {
+                            "text": "По данным kmipt.ru, IT лагерь включает проектные треки и командную работу.",
+                            "annotations": [{"url": "https://kmipt.ru/camps/it-program"}],
+                        }
+                    ]
+                }
+            ]
+        }
+        with patch.object(
+            client,
+            "_send_request_async",
+            new=AsyncMock(side_effect=[(raw_file, None), (raw_web, None)]),
+        ):
+            result = await client.answer_knowledge_question_async(
+                "Расскажи про IT лагерь",
+                vector_store_id="vs_test_123",
+                allow_web_fallback=True,
+                site_domain="kmipt.ru",
+            )
+
+        self.assertFalse(result.used_fallback)
+        self.assertIn("kmipt.ru", result.answer_text.lower())
+        self.assertEqual(result.sources, ["https://kmipt.ru/camps/it-program"])
 
     async def test_send_request_async_includes_http_error_details(self) -> None:
         client = LLMClient(api_key="sk-test", model="gpt-4.1")

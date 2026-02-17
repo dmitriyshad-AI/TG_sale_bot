@@ -205,6 +205,34 @@ class BotRoutingTests(unittest.IsolatedAsyncioTestCase):
         mock_consult.assert_awaited_once()
         mock_flow.assert_not_awaited()
 
+    async def test_on_text_message_routes_program_info_to_knowledge_before_consultative(self) -> None:
+        update = _update_with_text("Что ты знаешь про it лагерь УНПК МФТИ?")
+        context = _context_with_flags()
+
+        with patch.object(
+            bot, "_load_current_state_payload", return_value={"state": "ask_grade", "criteria": {}, "contact": None}
+        ), patch.object(
+            bot, "_prepare_effective_text_and_context",
+            return_value=("Что ты знаешь про it лагерь УНПК МФТИ?", {}),
+        ), patch.object(
+            bot, "_answer_knowledge_question", new_callable=AsyncMock
+        ) as mock_answer, patch.object(
+            bot, "_handle_consultative_query", new_callable=AsyncMock
+        ) as mock_consult, patch.object(
+            bot.db_module, "get_connection", return_value=_DummyConn()
+        ), patch.object(
+            bot, "_get_or_create_user_id", return_value=1
+        ), patch.object(
+            bot.db_module, "log_message"
+        ), patch.object(
+            bot, "_handle_flow_step", new_callable=AsyncMock
+        ) as mock_flow:
+            await bot.on_text_message(update, context)
+
+        mock_answer.assert_awaited_once()
+        mock_consult.assert_not_awaited()
+        mock_flow.assert_not_awaited()
+
     async def test_on_text_message_prioritizes_consultative_for_mixed_query(self) -> None:
         update = _update_with_text("Хочу поступить в МФТИ, подскажите условия оплаты и что делать дальше?")
         context = _context_with_flags()

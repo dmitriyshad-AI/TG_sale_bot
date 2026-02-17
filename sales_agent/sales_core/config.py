@@ -32,6 +32,8 @@ class Settings:
     admin_miniapp_enabled: bool = False
     admin_telegram_ids: tuple[int, ...] = ()
     admin_webapp_url: str = ""
+    openai_web_fallback_enabled: bool = True
+    openai_web_fallback_domain: str = "kmipt.ru"
 
 
 def project_root() -> Path:
@@ -60,6 +62,10 @@ def get_settings() -> Settings:
     if not telegram_webhook_path.startswith("/"):
         telegram_webhook_path = f"/{telegram_webhook_path}"
     admin_miniapp_enabled = os.getenv("ADMIN_MINIAPP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+    openai_web_fallback_enabled = (
+        os.getenv("OPENAI_WEB_FALLBACK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    )
+    openai_web_fallback_domain = os.getenv("OPENAI_WEB_FALLBACK_DOMAIN", "kmipt.ru").strip() or "kmipt.ru"
     admin_telegram_ids_raw = os.getenv("ADMIN_TELEGRAM_IDS", "").strip()
     admin_telegram_ids: list[int] = []
     if admin_telegram_ids_raw:
@@ -87,6 +93,8 @@ def get_settings() -> Settings:
         knowledge_path=knowledge,
         vector_store_meta_path=vector_meta,
         openai_vector_store_id=os.getenv("OPENAI_VECTOR_STORE_ID", "").strip(),
+        openai_web_fallback_enabled=openai_web_fallback_enabled,
+        openai_web_fallback_domain=openai_web_fallback_domain,
         admin_user=os.getenv("ADMIN_USER", "").strip(),
         admin_pass=os.getenv("ADMIN_PASS", "").strip(),
         crm_provider=os.getenv("CRM_PROVIDER", "tallanto").strip().lower() or "tallanto",

@@ -37,6 +37,19 @@ class GeneralHelpReply:
     error: Optional[str] = None
 
 
+SITE_FALLBACK_GAP_MARKERS = (
+    "недостаточно",
+    "не удалось",
+    "не найден",
+    "не нашел",
+    "не нашла",
+    "нет информации",
+    "не могу найти",
+    "уточнить у менеджера",
+    "уточнить у администратора",
+)
+
+
 class LLMClient:
     def __init__(
         self,
@@ -278,6 +291,9 @@ class LLMClient:
         question: str,
         vector_store_id: Optional[str],
         user_context: Optional[Dict[str, Any]] = None,
+        *,
+        allow_web_fallback: bool = False,
+        site_domain: Optional[str] = None,
     ) -> KnowledgeReply:
         if not question.strip():
             return KnowledgeReply(
@@ -296,8 +312,9 @@ class LLMClient:
                 error="OPENAI_API_KEY is not configured",
             )
 
+        primary_reply: KnowledgeReply
         if not vector_store_id:
-            return KnowledgeReply(
+            primary_reply = KnowledgeReply(
                 answer_text=(
                     "База знаний пока не подключена. Запустите синхронизацию: "
                     "python3 scripts/sync_vector_store.py"
@@ -306,41 +323,50 @@ class LLMClient:
                 used_fallback=True,
                 error="vector_store_id is not configured",
             )
+        else:
+            payload = self._build_knowledge_payload(
+                question=question,
+                vector_store_id=vector_store_id,
+                user_context=user_context,
+            )
+            raw, error = self._send_request(payload)
+            if error:
+                primary_reply = KnowledgeReply(
+                    answer_text=(
+                        "Не удалось обратиться к knowledge-базе. "
+                        "Попробуйте позже или уточните вопрос менеджеру."
+                    ),
+                    sources=[],
+                    used_fallback=True,
+                    error=error,
+                )
+            else:
+                text = self._extract_text(raw or {})
+                if not text:
+                    primary_reply = KnowledgeReply(
+                        answer_text=(
+                            "Не удалось получить ответ из knowledge-базы. "
+                            "Попробуйте переформулировать вопрос."
+                        ),
+                        sources=[],
+                        used_fallback=True,
+                        error="empty response text",
+                    )
+                else:
+                    sources = self._extract_source_names(raw or {})
+                    primary_reply = KnowledgeReply(
+                        answer_text=text,
+                        sources=sources,
+                        used_fallback=False,
+                    )
 
-        payload = self._build_knowledge_payload(
+        if not allow_web_fallback:
+            return primary_reply
+        return self._apply_site_fallback(
             question=question,
-            vector_store_id=vector_store_id,
+            primary_reply=primary_reply,
             user_context=user_context,
-        )
-        raw, error = self._send_request(payload)
-        if error:
-            return KnowledgeReply(
-                answer_text=(
-                    "Не удалось обратиться к knowledge-базе. "
-                    "Попробуйте позже или уточните вопрос менеджеру."
-                ),
-                sources=[],
-                used_fallback=True,
-                error=error,
-            )
-
-        text = self._extract_text(raw or {})
-        if not text:
-            return KnowledgeReply(
-                answer_text=(
-                    "Не удалось получить ответ из knowledge-базы. "
-                    "Попробуйте переформулировать вопрос."
-                ),
-                sources=[],
-                used_fallback=True,
-                error="empty response text",
-            )
-
-        sources = self._extract_source_names(raw or {})
-        return KnowledgeReply(
-            answer_text=text,
-            sources=sources,
-            used_fallback=False,
+            site_domain=site_domain,
         )
 
     async def answer_knowledge_question_async(
@@ -348,6 +374,9 @@ class LLMClient:
         question: str,
         vector_store_id: Optional[str],
         user_context: Optional[Dict[str, Any]] = None,
+        *,
+        allow_web_fallback: bool = False,
+        site_domain: Optional[str] = None,
     ) -> KnowledgeReply:
         if not question.strip():
             return KnowledgeReply(
@@ -366,8 +395,9 @@ class LLMClient:
                 error="OPENAI_API_KEY is not configured",
             )
 
+        primary_reply: KnowledgeReply
         if not vector_store_id:
-            return KnowledgeReply(
+            primary_reply = KnowledgeReply(
                 answer_text=(
                     "База знаний пока не подключена. Запустите синхронизацию: "
                     "python3 scripts/sync_vector_store.py"
@@ -376,18 +406,122 @@ class LLMClient:
                 used_fallback=True,
                 error="vector_store_id is not configured",
             )
+        else:
+            payload = self._build_knowledge_payload(
+                question=question,
+                vector_store_id=vector_store_id,
+                user_context=user_context,
+            )
+            raw, error = await self._send_request_async(payload)
+            if error:
+                primary_reply = KnowledgeReply(
+                    answer_text=(
+                        "Не удалось обратиться к knowledge-базе. "
+                        "Попробуйте позже или уточните вопрос менеджеру."
+                    ),
+                    sources=[],
+                    used_fallback=True,
+                    error=error,
+                )
+            else:
+                text = self._extract_text(raw or {})
+                if not text:
+                    primary_reply = KnowledgeReply(
+                        answer_text=(
+                            "Не удалось получить ответ из knowledge-базы. "
+                            "Попробуйте переформулировать вопрос."
+                        ),
+                        sources=[],
+                        used_fallback=True,
+                        error="empty response text",
+                    )
+                else:
+                    sources = self._extract_source_names(raw or {})
+                    primary_reply = KnowledgeReply(
+                        answer_text=text,
+                        sources=sources,
+                        used_fallback=False,
+                    )
 
-        payload = self._build_knowledge_payload(
+        if not allow_web_fallback:
+            return primary_reply
+        return await self._apply_site_fallback_async(
             question=question,
-            vector_store_id=vector_store_id,
+            primary_reply=primary_reply,
+            user_context=user_context,
+            site_domain=site_domain,
+        )
+
+    def _apply_site_fallback(
+        self,
+        *,
+        question: str,
+        primary_reply: KnowledgeReply,
+        user_context: Optional[Dict[str, Any]],
+        site_domain: Optional[str],
+    ) -> KnowledgeReply:
+        normalized_domain = (site_domain or "").strip()
+        if not normalized_domain:
+            return primary_reply
+        if not self._should_use_site_fallback(primary_reply):
+            return primary_reply
+
+        site_reply = self._answer_knowledge_via_site_search(
+            question=question,
+            user_context=user_context,
+            site_domain=normalized_domain,
+        )
+        if site_reply.used_fallback:
+            return primary_reply
+        return site_reply
+
+    async def _apply_site_fallback_async(
+        self,
+        *,
+        question: str,
+        primary_reply: KnowledgeReply,
+        user_context: Optional[Dict[str, Any]],
+        site_domain: Optional[str],
+    ) -> KnowledgeReply:
+        normalized_domain = (site_domain or "").strip()
+        if not normalized_domain:
+            return primary_reply
+        if not self._should_use_site_fallback(primary_reply):
+            return primary_reply
+
+        site_reply = await self._answer_knowledge_via_site_search_async(
+            question=question,
+            user_context=user_context,
+            site_domain=normalized_domain,
+        )
+        if site_reply.used_fallback:
+            return primary_reply
+        return site_reply
+
+    def _should_use_site_fallback(self, reply: KnowledgeReply) -> bool:
+        if reply.used_fallback:
+            return True
+        normalized = " ".join(reply.answer_text.lower().split())
+        return any(marker in normalized for marker in SITE_FALLBACK_GAP_MARKERS)
+
+    def _answer_knowledge_via_site_search(
+        self,
+        *,
+        question: str,
+        user_context: Optional[Dict[str, Any]],
+        site_domain: str,
+    ) -> KnowledgeReply:
+        payload = self._build_site_search_payload(
+            question=question,
+            site_domain=site_domain,
             user_context=user_context,
         )
-        raw, error = await self._send_request_async(payload)
+        raw, error = self._send_request(payload)
         if error:
             return KnowledgeReply(
                 answer_text=(
-                    "Не удалось обратиться к knowledge-базе. "
-                    "Попробуйте позже или уточните вопрос менеджеру."
+                    "Не удалось выполнить поиск на сайте. "
+                    "Попробуйте переформулировать вопрос или уточнить у менеджера."
                 ),
                 sources=[],
                 used_fallback=True,
@@ -398,18 +532,59 @@ class LLMClient:
         if not text:
             return KnowledgeReply(
                 answer_text=(
-                    "Не удалось получить ответ из knowledge-базы. "
-                    "Попробуйте переформулировать вопрос."
+                    "Не удалось получить факты с сайта. "
+                    "Попробуйте уточнить формулировку запроса."
                 ),
                 sources=[],
                 used_fallback=True,
                 error="empty response text",
             )
 
-        sources = self._extract_source_names(raw or {})
         return KnowledgeReply(
             answer_text=text,
-            sources=sources,
+            sources=self._extract_source_names(raw or {}),
+            used_fallback=False,
+        )
+
+    async def _answer_knowledge_via_site_search_async(
+        self,
+        *,
+        question: str,
+        user_context: Optional[Dict[str, Any]],
+        site_domain: str,
+    ) -> KnowledgeReply:
+        payload = self._build_site_search_payload(
+            question=question,
+            site_domain=site_domain,
+            user_context=user_context,
+        )
+        raw, error = await self._send_request_async(payload)
+        if error:
+            return KnowledgeReply(
+                answer_text=(
+                    "Не удалось выполнить поиск на сайте. "
+                    "Попробуйте переформулировать вопрос или уточнить у менеджера."
+                ),
+                sources=[],
+                used_fallback=True,
+                error=error,
+            )
+
+        text = self._extract_text(raw or {})
+        if not text:
+            return KnowledgeReply(
+                answer_text=(
+                    "Не удалось получить факты с сайта. "
+                    "Попробуйте уточнить формулировку запроса."
+                ),
+                sources=[],
+                used_fallback=True,
+                error="empty response text",
+            )
+
+        return KnowledgeReply(
+            answer_text=text,
+            sources=self._extract_source_names(raw or {}),
             used_fallback=False,
         )
 
@@ -693,6 +868,46 @@ class LLMClient:
             "max_output_tokens": 700,
         }
 
+    def _build_site_search_payload(
+        self,
+        *,
+        question: str,
+        site_domain: str,
+        user_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        user_context_payload = user_context or {}
+        clean_domain = site_domain.strip().lower().lstrip(".")
+        system_prompt = (
+            "Ты консультант УНПК МФТИ. "
+            f"Ищи факты только на страницах домена {clean_domain}. "
+            "Если на сайте нет данных по вопросу, скажи об этом честно и предложи уточнить у менеджера. "
+            "Не придумывай цены, даты и условия."
+        )
+        user_prompt = (
+            "Вопрос клиента:\n"
+            f"{question.strip()}\n\n"
+            "Законспектированный контекст клиента:\n"
+            f"{json.dumps(user_context_payload, ensure_ascii=False)}\n\n"
+            "Дай короткий ответ и добавь 1-3 ссылки на страницы, где взяты факты."
+        )
+        return {
+            "model": self.model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": user_prompt}],
+                },
+            ],
+            "tools": [{"type": "web_search_preview"}],
+            "tool_choice": "auto",
+            "temperature": 0.2,
+            "max_output_tokens": 700,
+        }
+
     def _send_request(self, payload: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         request = Request(
             self.endpoint,
@@ -822,10 +1037,40 @@ class LLMClient:
                 for annotation in annotations:
                     if not isinstance(annotation, dict):
                         continue
-                    filename = annotation.get("filename")
-                    if isinstance(filename, str) and filename and filename not in names:
-                        names.append(filename)
+                    label = self._source_label_from_annotation(annotation)
+                    if label and label not in names:
+                        names.append(label)
         return names
+
+    def _source_label_from_annotation(self, annotation: Dict[str, Any]) -> str:
+        filename = annotation.get("filename")
+        if isinstance(filename, str) and filename.strip():
+            return filename.strip()
+
+        file_citation = annotation.get("file_citation")
+        if isinstance(file_citation, dict):
+            file_name = file_citation.get("filename")
+            if isinstance(file_name, str) and file_name.strip():
+                return file_name.strip()
+
+        title = annotation.get("title")
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+
+        url = annotation.get("url")
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+
+        url_citation = annotation.get("url_citation")
+        if isinstance(url_citation, dict):
+            url_title = url_citation.get("title")
+            if isinstance(url_title, str) and url_title.strip():
+                return url_title.strip()
+            cited_url = url_citation.get("url")
+            if isinstance(cited_url, str) and cited_url.strip():
+                return cited_url.strip()
+
+        return ""
 
     def _extract_json_object(self, text: str) -> Optional[Dict[str, Any]]:
         if not text:

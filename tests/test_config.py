@@ -32,6 +32,8 @@ class ConfigTests(unittest.TestCase):
             "OPENAI_MODEL": "gpt-4.1-mini",
             "TALLANTO_API_URL": "https://crm.example/api",
             "TALLANTO_API_KEY": "crm-key",
+            "OPENAI_WEB_FALLBACK_ENABLED": "false",
+            "OPENAI_WEB_FALLBACK_DOMAIN": "example.edu",
             "BRAND_DEFAULT": "foton",
             "DATABASE_PATH": "/tmp/custom_sales_agent.db",
             "CATALOG_PATH": "/tmp/custom_products.yaml",
@@ -57,6 +59,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.admin_webapp_url, "https://example.com/admin/miniapp")
         self.assertEqual(settings.openai_api_key, "sk-test")
         self.assertEqual(settings.openai_model, "gpt-4.1-mini")
+        self.assertFalse(settings.openai_web_fallback_enabled)
+        self.assertEqual(settings.openai_web_fallback_domain, "example.edu")
         self.assertEqual(settings.tallanto_api_url, "https://crm.example/api")
         self.assertEqual(settings.tallanto_api_key, "crm-key")
         self.assertEqual(settings.brand_default, "foton")
@@ -83,6 +87,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.admin_telegram_ids, ())
         self.assertEqual(settings.admin_webapp_url, "")
         self.assertEqual(settings.openai_model, "gpt-4.1")
+        self.assertTrue(settings.openai_web_fallback_enabled)
+        self.assertEqual(settings.openai_web_fallback_domain, "kmipt.ru")
         self.assertEqual(settings.database_path, root / "data" / "sales_agent.db")
         self.assertEqual(settings.catalog_path, root / "catalog" / "products.yaml")
         self.assertEqual(settings.knowledge_path, root / "knowledge")

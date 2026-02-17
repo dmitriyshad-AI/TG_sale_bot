@@ -23,6 +23,7 @@ try:
         _is_duplicate_update,
         _is_general_education_query,
         _is_presence_ping,
+        _is_program_info_query,
         _is_small_talk_message,
         _looks_like_fragmented_context_message,
         _next_state_for_consultative,
@@ -150,6 +151,16 @@ class BotHelpersTests(unittest.TestCase):
     def test_consultative_query_is_not_knowledge_query(self) -> None:
         text = "Какие условия возврата и оплаты?"
         self.assertFalse(_is_consultative_query(text))
+
+    def test_program_info_query_detection(self) -> None:
+        text = "Что ты знаешь про it лагерь УНПК МФТИ?"
+        self.assertTrue(_is_program_info_query(text))
+        self.assertFalse(_is_consultative_query(text))
+
+    def test_program_info_query_does_not_catch_strategy_question(self) -> None:
+        text = "У меня ребенок в 11 классе, хочу поступить в МФТИ, что делать?"
+        self.assertFalse(_is_program_info_query(text))
+        self.assertTrue(_is_consultative_query(text))
 
     def test_general_education_query_detection(self) -> None:
         self.assertTrue(_is_general_education_query("Что такое косинус?"))

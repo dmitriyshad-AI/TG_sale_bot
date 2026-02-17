@@ -100,6 +100,8 @@ TELEGRAM_WEBHOOK_SECRET=
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1
 OPENAI_VECTOR_STORE_ID=
+OPENAI_WEB_FALLBACK_ENABLED=true
+OPENAI_WEB_FALLBACK_DOMAIN=kmipt.ru
 TALLANTO_API_URL=
 TALLANTO_API_KEY=
 TALLANTO_MOCK_MODE=false
@@ -165,6 +167,8 @@ SALES_TONE_PATH=
 - Проверка knowledge-базы в Telegram:
   - `/kbtest Какие условия возврата?`, или
   - `/kbtest`, затем отправить вопрос отдельным сообщением.
+- Для вопросов о конкретных программах (`"Что ты знаешь про IT лагерь?"`) бот сначала пробует File Search.
+  Если данных не хватает, может автоматически сделать web fallback по домену `OPENAI_WEB_FALLBACK_DOMAIN`.
 - Генерация deep-link для сайта:
   ```bash
   python3 scripts/generate_deeplink.py --bot-username YOUR_BOT --brand kmipt --page /courses/ege --utm-source google --utm-medium cpc
