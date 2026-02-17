@@ -151,6 +151,81 @@ def apply_tone_guardrails(text: str, profile: Optional[ToneProfile] = None) -> s
     return normalized.strip()
 
 
+def _deduplicate_consecutive_lines(text: str) -> str:
+    lines = text.splitlines()
+    if not lines:
+        return text
+
+    result: List[str] = []
+    previous_normalized = ""
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        normalized = re.sub(r"\s+", " ", line.strip().lower())
+        if normalized and normalized == previous_normalized:
+            continue
+        result.append(line)
+        previous_normalized = normalized
+    return "\n".join(result).strip()
+
+
+def _deduplicate_sentences(text: str) -> str:
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    if len(parts) <= 1:
+        return text.strip()
+
+    result: List[str] = []
+    seen_recent: List[str] = []
+    for part in parts:
+        cleaned = part.strip()
+        if not cleaned:
+            continue
+        normalized = re.sub(r"\s+", " ", cleaned.lower())
+        if normalized in seen_recent[-2:]:
+            continue
+        result.append(cleaned)
+        seen_recent.append(normalized)
+    return " ".join(result).strip()
+
+
+def _soften_pressure(text: str, profile: ToneProfile) -> str:
+    softened = text
+    replacement_pairs = {
+        "срочно": "по возможности",
+        "прямо сейчас": "в удобное для вас время",
+        "последний шанс": "актуальный вариант",
+        "иначе": "чтобы",
+    }
+    for source, target in replacement_pairs.items():
+        softened = _replace_insensitive(softened, source, target)
+
+    for marker in profile.pressure_markers:
+        if marker in {"срочно", "прямо сейчас", "последний шанс", "иначе"}:
+            continue
+        softened = _replace_insensitive(softened, marker, "")
+    softened = re.sub(r"\s{2,}", " ", softened)
+    return softened.strip()
+
+
+def enforce_delivery_quality(text: str, profile: Optional[ToneProfile] = None) -> str:
+    profile = profile or DEFAULT_TONE_PROFILE
+    original = text or ""
+    original_normalized = original.lower()
+    source_pressure_hits = sum(1 for marker in profile.pressure_markers if marker in original_normalized)
+    cleaned = apply_tone_guardrails(text, profile)
+    cleaned = _deduplicate_consecutive_lines(cleaned)
+    cleaned = _deduplicate_sentences(cleaned)
+
+    quality = assess_response_quality(cleaned, profile)
+    if quality["pressure_score"] >= 3 or source_pressure_hits > 0:
+        cleaned = _soften_pressure(cleaned, profile)
+        cleaned = apply_tone_guardrails(cleaned, profile)
+        cleaned = _deduplicate_consecutive_lines(cleaned)
+
+    if len(cleaned) > 3500:
+        cleaned = f"{cleaned[:3497].rstrip()}..."
+    return cleaned.strip()
+
+
 def assess_response_quality(text: str, profile: Optional[ToneProfile] = None) -> Dict[str, int]:
     profile = profile or DEFAULT_TONE_PROFILE
     normalized = text.lower().strip()

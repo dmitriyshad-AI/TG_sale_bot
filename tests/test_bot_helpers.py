@@ -21,10 +21,12 @@ try:
         _format_product_blurb,
         _is_consultative_query,
         _is_duplicate_update,
+        _is_flow_interrupt_question,
         _is_general_education_query,
         _is_presence_ping,
         _is_program_info_query,
         _is_small_talk_message,
+        _is_structured_flow_input,
         _looks_like_fragmented_context_message,
         _next_state_for_consultative,
         _resolve_vector_store_id,
@@ -179,6 +181,17 @@ class BotHelpersTests(unittest.TestCase):
         self.assertTrue(_is_presence_ping("ты тут?"))
         self.assertTrue(_is_presence_ping("на связи"))
         self.assertFalse(_is_presence_ping("хочу курс по физике"))
+
+    def test_structured_flow_input_accepts_punctuation_variants(self) -> None:
+        self.assertTrue(_is_structured_flow_input("11?"))
+        self.assertTrue(_is_structured_flow_input("ЕГЭ!"))
+        self.assertTrue(_is_structured_flow_input("онлайн."))
+
+    def test_flow_interrupt_question_detection(self) -> None:
+        self.assertTrue(_is_flow_interrupt_question("Можно ли совмещать школу и подготовку?"))
+        self.assertTrue(_is_flow_interrupt_question("Объясните, как распределить время между школой и кружками"))
+        self.assertFalse(_is_flow_interrupt_question("11"))
+        self.assertFalse(_is_flow_interrupt_question("онлайн"))
 
     def test_fragmented_context_message_detection(self) -> None:
         state = {"state": "ask_goal", "criteria": {"brand": "kmipt"}, "contact": None}

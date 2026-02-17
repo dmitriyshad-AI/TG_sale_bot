@@ -147,6 +147,32 @@ class BotRoutingTests(unittest.IsolatedAsyncioTestCase):
         mock_small.assert_awaited_once()
         mock_flow.assert_not_awaited()
 
+    async def test_on_text_message_routes_flow_interrupt_question_to_general_help(self) -> None:
+        update = _update_with_text("Можно ли сначала разобраться со стратегией подготовки?")
+        context = _context_with_flags()
+
+        with patch.object(
+            bot, "_load_current_state_payload", return_value={"state": "ask_subject", "criteria": {}, "contact": None}
+        ), patch.object(
+            bot, "_answer_presence_ping", new_callable=AsyncMock, return_value=False
+        ), patch.object(
+            bot, "_prepare_effective_text_and_context",
+            return_value=("Можно ли сначала разобраться со стратегией подготовки?", {}),
+        ), patch.object(
+            bot, "_handle_consultative_query", new_callable=AsyncMock, return_value=False
+        ), patch.object(
+            bot, "_answer_knowledge_question", new_callable=AsyncMock
+        ) as mock_kb, patch.object(
+            bot, "_answer_general_education_question", new_callable=AsyncMock, return_value=True
+        ) as mock_general, patch.object(
+            bot, "_handle_flow_step", new_callable=AsyncMock
+        ) as mock_flow:
+            await bot.on_text_message(update, context)
+
+        mock_kb.assert_not_awaited()
+        mock_general.assert_awaited_once()
+        mock_flow.assert_not_awaited()
+
     async def test_on_text_message_routes_presence_ping_before_flow(self) -> None:
         update = _update_with_text("ты тут?")
         context = _context_with_flags()

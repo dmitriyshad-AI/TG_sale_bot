@@ -23,6 +23,7 @@ from sales_agent.sales_core.db import (
     list_recent_conversations,
     list_recent_leads,
 )
+from sales_agent.sales_core.runtime_diagnostics import build_runtime_diagnostics
 from sales_agent.sales_core.telegram_webapp import verify_telegram_webapp_init_data
 
 
@@ -202,6 +203,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/health")
     async def health():
         return {"status": "ok", "service": "sales-agent"}
+
+    @app.get("/api/runtime/diagnostics")
+    async def runtime_diagnostics():
+        return build_runtime_diagnostics(cfg)
 
     @app.get("/admin/miniapp")
     async def admin_miniapp_page():

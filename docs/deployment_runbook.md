@@ -65,6 +65,7 @@ source .venv/bin/activate
 pip install -r requirements-dev.txt
 pytest -q
 python3 scripts/validate_catalog.py
+python3 scripts/preflight_audit.py
 ```
 
 Если используете knowledge-base через File Search:
@@ -84,6 +85,7 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 ```bash
 curl http://127.0.0.1:8000/api/health
+curl http://127.0.0.1:8000/api/runtime/diagnostics
 docker compose -f docker-compose.prod.yml ps
 docker compose -f docker-compose.prod.yml logs --tail=100 api
 docker compose -f docker-compose.prod.yml logs --tail=100 bot

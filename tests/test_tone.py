@@ -8,6 +8,7 @@ from sales_agent.sales_core.tone import (
     DEFAULT_TONE_PROFILE,
     apply_tone_guardrails,
     assess_response_quality,
+    enforce_delivery_quality,
     load_tone_profile,
     tone_as_prompt_block,
 )
@@ -64,6 +65,22 @@ class ToneTests(unittest.TestCase):
         text = "Если вам удобно, Если вам удобно, оставьте телефон."
         sanitized = apply_tone_guardrails(text, DEFAULT_TONE_PROFILE)
         self.assertEqual(sanitized, "Если вам удобно, оставьте телефон.")
+
+    def test_enforce_delivery_quality_deduplicates_lines_and_sentences(self) -> None:
+        text = (
+            "Если вам удобно, оставьте телефон.\n"
+            "Если вам удобно, оставьте телефон.\n\n"
+            "Спасибо за вопрос. Спасибо за вопрос."
+        )
+        sanitized = enforce_delivery_quality(text, DEFAULT_TONE_PROFILE)
+        self.assertEqual(sanitized.count("Если вам удобно, оставьте телефон."), 1)
+        self.assertEqual(sanitized.count("Спасибо за вопрос."), 1)
+
+    def test_enforce_delivery_quality_softens_pressure(self) -> None:
+        text = "Это последний шанс. Срочно оставьте телефон прямо сейчас."
+        sanitized = enforce_delivery_quality(text, DEFAULT_TONE_PROFILE)
+        self.assertNotIn("последний шанс", sanitized.lower())
+        self.assertNotIn("срочно", sanitized.lower())
 
 
 if __name__ == "__main__":

@@ -129,6 +129,7 @@ class BotSyncCoverageTests(unittest.TestCase):
 class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
     async def test_reply_sends_keyboard_markup_when_layout_provided(self) -> None:
         update = _make_update_with_message("hello")
+        bot._OUTBOUND_REPLY_DEDUP_CACHE.clear()
         await bot._reply(update, "reply", keyboard_layout=[[("Кнопка", "cb:data")]])
         update.message.reply_text.assert_awaited_once()
         kwargs = update.message.reply_text.call_args.kwargs
@@ -138,6 +139,16 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
     async def test_reply_noop_when_no_target_message(self) -> None:
         update = SimpleNamespace(message=None, callback_query=None)
         await bot._reply(update, "hello")
+
+    async def test_reply_suppresses_duplicate_for_same_update(self) -> None:
+        update = _make_update_with_message("hello")
+        update.update_id = 777
+        bot._OUTBOUND_REPLY_DEDUP_CACHE.clear()
+
+        await bot._reply(update, "Один и тот же ответ")
+        await bot._reply(update, "Один и тот же ответ")
+
+        update.message.reply_text.assert_awaited_once()
 
     async def test_create_lead_from_phone_rejects_invalid_phone(self) -> None:
         update = _make_update_with_message("bad")

@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -32,7 +33,7 @@ from sales_agent.sales_core.flow import (
     ensure_state,
 )
 from sales_agent.sales_core.llm_client import LLMClient
-from sales_agent.sales_core.tone import apply_tone_guardrails, assess_response_quality
+from sales_agent.sales_core.tone import apply_tone_guardrails, assess_response_quality, enforce_delivery_quality
 from sales_agent.sales_core.vector_store import load_vector_store_id
 
 
@@ -240,6 +241,31 @@ FORMAT_LABELS = {
 STITCH_WINDOW_SECONDS = 210
 STITCH_MAX_PARTS = 4
 STITCH_MAX_CHARS = 900
+OUTBOUND_REPLY_DEDUP_WINDOW_SECONDS = 20.0
+
+FLOW_INTERRUPT_PREFIXES = (
+    "что ",
+    "как ",
+    "почему ",
+    "можно ли",
+    "когда ",
+    "где ",
+    "кто ",
+    "зачем ",
+)
+
+FLOW_INTERRUPT_HINTS = {
+    "объясни",
+    "объясните",
+    "расскажи",
+    "расскажите",
+    "подскажи",
+    "подскажите",
+    "не понял",
+    "непонятно",
+}
+
+_OUTBOUND_REPLY_DEDUP_CACHE: Dict[str, float] = {}
 
 GOAL_HINTS = {
     "еге": "ege",
@@ -377,7 +403,20 @@ def _is_consultative_query(text: str) -> bool:
             "подскажите",
         }
     )
-    return has_context and (asks_question or has_intent)
+    has_strong_context = any(
+        token in normalized
+        for token in {
+            "поступить",
+            "мфти",
+            "егэ",
+            "огэ",
+            "олимп",
+            "класс",
+            "балл",
+            "предмет",
+        }
+    )
+    return (has_context and has_intent) or (has_strong_context and asks_question)
 
 
 def _normalize_text(text: str) -> str:
@@ -449,7 +488,7 @@ def _is_presence_ping(text: str) -> bool:
 
 
 def _is_structured_flow_input(text: str) -> bool:
-    normalized = _normalize_text(text)
+    normalized = _normalize_text(text).strip(" .,!?:;")
     if not normalized:
         return False
     if normalized in FLOW_SELECTION_TOKENS:
@@ -458,6 +497,30 @@ def _is_structured_flow_input(text: str) -> bool:
         return True
     phone = _sanitize_phone(normalized)
     return bool(phone)
+
+
+def _is_flow_interrupt_question(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    if _is_structured_flow_input(normalized):
+        return False
+    if _is_knowledge_query(normalized):
+        return False
+    if _is_program_info_query(normalized):
+        return False
+    if _is_consultative_query(normalized):
+        return False
+    if _is_small_talk_message(normalized):
+        return False
+    if normalized in FLOW_SELECTION_TOKENS:
+        return False
+
+    if "?" in text:
+        return True
+    if normalized.startswith(FLOW_INTERRUPT_PREFIXES):
+        return True
+    return any(hint in normalized for hint in FLOW_INTERRUPT_HINTS)
 
 
 def _looks_like_fragmented_context_message(
@@ -1047,13 +1110,57 @@ def _target_message(update: Update) -> Optional[Message]:
     return update.message
 
 
+def _outbound_dedup_cache_key(update: Update, text: str) -> Optional[str]:
+    update_id = getattr(update, "update_id", None)
+    chat = update.effective_chat
+    if not isinstance(update_id, int) or chat is None:
+        return None
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    if not normalized:
+        return None
+    return f"{chat.id}:{update_id}:{normalized}"
+
+
+def _is_duplicate_outbound_reply(update: Update, text: str) -> bool:
+    now = time.monotonic()
+    expired = [
+        key
+        for key, timestamp in _OUTBOUND_REPLY_DEDUP_CACHE.items()
+        if now - timestamp > OUTBOUND_REPLY_DEDUP_WINDOW_SECONDS
+    ]
+    for key in expired:
+        _OUTBOUND_REPLY_DEDUP_CACHE.pop(key, None)
+
+    dedup_key = _outbound_dedup_cache_key(update, text)
+    if not dedup_key:
+        return False
+
+    last_timestamp = _OUTBOUND_REPLY_DEDUP_CACHE.get(dedup_key)
+    return isinstance(last_timestamp, float) and (now - last_timestamp) <= OUTBOUND_REPLY_DEDUP_WINDOW_SECONDS
+
+
+def _remember_outbound_reply(update: Update, text: str) -> None:
+    dedup_key = _outbound_dedup_cache_key(update, text)
+    if not dedup_key:
+        return
+    _OUTBOUND_REPLY_DEDUP_CACHE[dedup_key] = time.monotonic()
+
+
 async def _reply(update: Update, text: str, keyboard_layout=None) -> str:
     target = _target_message(update)
     if not target:
         return text
     markup = _build_inline_keyboard(keyboard_layout)
-    safe_text = apply_tone_guardrails(text)
+    safe_text = enforce_delivery_quality(text)
+    if _is_duplicate_outbound_reply(update, safe_text):
+        logger.warning(
+            "Suppressing duplicate outbound reply (chat_id=%s, update_id=%s)",
+            update.effective_chat.id if update.effective_chat else None,
+            getattr(update, "update_id", None),
+        )
+        return safe_text
     await target.reply_text(safe_text, reply_markup=markup)
+    _remember_outbound_reply(update, safe_text)
     return safe_text
 
 
@@ -1141,8 +1248,7 @@ async def _answer_knowledge_question(
         sources = ", ".join(knowledge_reply.sources)
         text = f"{text}\n\nИсточники: {sources}"
 
-    safe_text = apply_tone_guardrails(text)
-    await target.reply_text(safe_text)
+    delivered_text = await _reply(update, text)
 
     conn = db_module.get_connection(settings.database_path)
     try:
@@ -1151,12 +1257,12 @@ async def _answer_knowledge_question(
             conn,
             user_id,
             "outbound",
-            safe_text,
+            delivered_text,
             {
                 "handler": "kb",
                 "used_fallback": knowledge_reply.used_fallback,
                 "error": knowledge_reply.error,
-                "quality": _quality_meta(safe_text),
+                "quality": _quality_meta(delivered_text),
                 **_user_meta(update),
             },
         )
@@ -1171,8 +1277,7 @@ async def _answer_general_education_question(
     current_state: Optional[str],
     user_context: Optional[Dict[str, object]] = None,
 ) -> bool:
-    target = _target_message(update)
-    if not target:
+    if not _target_message(update):
         return False
 
     recent_history: List[Dict[str, str]] = []
@@ -1205,8 +1310,7 @@ async def _answer_general_education_question(
             "Если хотите, после этого вернемся к вашему плану подготовки и продолжим с текущего шага."
         )
 
-    safe_text = apply_tone_guardrails(answer)
-    await target.reply_text(safe_text)
+    delivered_text = await _reply(update, answer)
 
     conn = db_module.get_connection(settings.database_path)
     try:
@@ -1215,13 +1319,13 @@ async def _answer_general_education_question(
             conn,
             user_id,
             "outbound",
-            safe_text,
+            delivered_text,
             {
                 "handler": "general-help",
                 "state": current_state,
                 "used_fallback": general_reply.used_fallback,
                 "error": general_reply.error,
-                "quality": _quality_meta(safe_text),
+                "quality": _quality_meta(delivered_text),
                 **_user_meta(update),
             },
         )
@@ -2037,6 +2141,16 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if _is_general_education_query(effective_text):
+        handled_general = await _answer_general_education_question(
+            update=update,
+            question=effective_text,
+            current_state=current_state,
+            user_context=user_context,
+        )
+        if handled_general:
+            return
+
+    if _is_active_flow_state(current_state) and _is_flow_interrupt_question(effective_text):
         handled_general = await _answer_general_education_question(
             update=update,
             question=effective_text,
