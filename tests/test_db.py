@@ -21,7 +21,7 @@ class DatabaseTests(unittest.TestCase):
     def test_init_db_creates_required_tables(self) -> None:
         cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         table_names = {row["name"] for row in cursor.fetchall()}
-        self.assertTrue({"users", "sessions", "messages", "leads"}.issubset(table_names))
+        self.assertTrue({"users", "sessions", "messages", "leads", "conversation_contexts"}.issubset(table_names))
 
     def test_get_or_create_user_is_idempotent(self) -> None:
         first = db.get_or_create_user(
@@ -224,6 +224,23 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(recent[0]["text"], "msg-2")
         self.assertEqual(recent[1]["text"], "msg-3")
         self.assertEqual(recent[0]["meta"]["n"], 2)
+
+    def test_get_and_upsert_conversation_context(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="704")
+        self.assertEqual(db.get_conversation_context(self.conn, user_id), {})
+
+        db.upsert_conversation_context(
+            self.conn,
+            user_id=user_id,
+            summary={
+                "profile": {"grade": 10, "goal": "ege"},
+                "summary_text": "Ученик 10 класса, цель ЕГЭ.",
+            },
+        )
+
+        context = db.get_conversation_context(self.conn, user_id)
+        self.assertEqual(context.get("profile", {}).get("grade"), 10)
+        self.assertIn("ЕГЭ", context.get("summary_text", ""))
 
     def test_init_db_migrates_duplicate_sessions_and_enforces_unique_index(self) -> None:
         legacy_path = Path(self.tempdir.name) / "legacy_sessions.db"

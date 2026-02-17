@@ -53,6 +53,14 @@ CREATE_TABLE_STATEMENTS = [
         FOREIGN KEY(user_id) REFERENCES users(id)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS conversation_contexts (
+        user_id INTEGER PRIMARY KEY,
+        summary_json TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+    """,
 ]
 
 CREATE_INDEX_STATEMENTS = [
@@ -61,6 +69,7 @@ CREATE_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_users_channel_external ON users(channel, external_id);",
     "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_user_unique ON sessions(user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_conversation_contexts_updated_at ON conversation_contexts(updated_at);",
 ]
 
 
@@ -315,3 +324,38 @@ def list_recent_messages(
         rows.append(item)
     rows.reverse()
     return rows
+
+
+def get_conversation_context(conn: sqlite3.Connection, user_id: int) -> Dict[str, Any]:
+    cursor = conn.execute(
+        "SELECT summary_json FROM conversation_contexts WHERE user_id = ?",
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return {}
+
+    try:
+        payload = json.loads(row["summary_json"] or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def upsert_conversation_context(
+    conn: sqlite3.Connection,
+    user_id: int,
+    summary: Dict[str, Any],
+) -> None:
+    summary_json = json.dumps(summary or {}, ensure_ascii=False)
+    conn.execute(
+        """
+        INSERT INTO conversation_contexts (user_id, summary_json)
+        VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            summary_json = excluded.summary_json,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (user_id, summary_json),
+    )
+    conn.commit()

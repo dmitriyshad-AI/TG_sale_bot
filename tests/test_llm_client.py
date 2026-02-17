@@ -188,6 +188,46 @@ class LLMClientTests(unittest.TestCase):
         self.assertEqual(payload["input"][1]["content"][0]["type"], "input_text")
         self.assertIn("квалифицированного сотрудника отдела продаж", payload["input"][0]["content"][0]["text"])
 
+    def test_payloads_include_user_context_summary(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        context = {"summary_text": "Ученик 10 класса, цель ЕГЭ, интерес к МФТИ."}
+        sales_payload = client._build_sales_payload(self.criteria, self.top_products, user_context=context)
+        consult_payload = client._build_consultative_payload(
+            user_message="Хочу поступить в МФТИ",
+            criteria=self.criteria,
+            top_products=self.top_products,
+            missing_fields=["format"],
+            repeat_count=0,
+            product_offer_allowed=True,
+            recent_history=[],
+            user_context=context,
+        )
+        general_payload = client._build_general_help_payload(
+            user_message="Как составить план?",
+            dialogue_state="ask_goal",
+            recent_history=[],
+            user_context=context,
+        )
+        flow_payload = client._build_flow_followup_payload(
+            user_message="Спасибо",
+            base_message="Укажите класс ученика (1-11):",
+            current_state="ask_grade",
+            next_state="ask_grade",
+            criteria={"brand": "kmipt"},
+            recent_history=[],
+            user_context=context,
+        )
+        knowledge_payload = client._build_knowledge_payload(
+            question="Как оплатить?",
+            vector_store_id="vs_test_123",
+            user_context=context,
+        )
+        self.assertIn("Законспектированный контекст клиента", sales_payload["input"][1]["content"][0]["text"])
+        self.assertIn("Законспектированный контекст клиента", consult_payload["input"][1]["content"][0]["text"])
+        self.assertIn("Законспектированный контекст клиента", general_payload["input"][1]["content"][0]["text"])
+        self.assertIn("Законспектированный контекст клиента", flow_payload["input"][1]["content"][0]["text"])
+        self.assertIn("Законспектированный контекст клиента", knowledge_payload["input"][1]["content"][0]["text"])
+
     def test_consultative_payload_includes_recent_history(self) -> None:
         client = LLMClient(api_key="sk-test", model="gpt-4.1")
         payload = client._build_consultative_payload(

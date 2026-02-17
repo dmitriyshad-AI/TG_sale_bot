@@ -43,7 +43,7 @@ class LLMClient:
         api_key: str,
         model: str,
         endpoint: str = "https://api.openai.com/v1/responses",
-        timeout_seconds: float = 25.0,
+        timeout_seconds: float = 12.0,
         tone_profile: Optional[ToneProfile] = None,
     ) -> None:
         self.api_key = api_key.strip()
@@ -70,7 +70,7 @@ class LLMClient:
             fallback.error = "OPENAI_API_KEY is not configured"
             return fallback
 
-        payload = self._build_sales_payload(criteria, top_products)
+        payload = self._build_sales_payload(criteria, top_products, user_context=None)
         raw, error = self._send_request(payload)
         if error:
             fallback = self._fallback_reply(criteria, top_products)
@@ -89,6 +89,7 @@ class LLMClient:
         self,
         criteria: SearchCriteria,
         top_products: List[Product],
+        user_context: Optional[Dict[str, Any]] = None,
     ) -> SalesReply:
         if not top_products:
             return SalesReply(
@@ -104,7 +105,7 @@ class LLMClient:
             fallback.error = "OPENAI_API_KEY is not configured"
             return fallback
 
-        payload = self._build_sales_payload(criteria, top_products)
+        payload = self._build_sales_payload(criteria, top_products, user_context=user_context)
         raw, error = await self._send_request_async(payload)
         if error:
             fallback = self._fallback_reply(criteria, top_products)
@@ -129,6 +130,7 @@ class LLMClient:
         repeat_count: int = 0,
         product_offer_allowed: bool = True,
         recent_history: Optional[List[Dict[str, str]]] = None,
+        user_context: Optional[Dict[str, Any]] = None,
     ) -> SalesReply:
         if not self.is_configured():
             fallback = self._fallback_consultative_reply(
@@ -148,6 +150,7 @@ class LLMClient:
             repeat_count=repeat_count,
             product_offer_allowed=product_offer_allowed,
             recent_history=recent_history,
+            user_context=user_context,
         )
         raw, error = await self._send_request_async(payload)
         if error:
@@ -179,6 +182,7 @@ class LLMClient:
         user_message: str,
         dialogue_state: Optional[str] = None,
         recent_history: Optional[List[Dict[str, str]]] = None,
+        user_context: Optional[Dict[str, Any]] = None,
     ) -> GeneralHelpReply:
         if not user_message.strip():
             return GeneralHelpReply(
@@ -195,6 +199,7 @@ class LLMClient:
             user_message=user_message,
             dialogue_state=dialogue_state,
             recent_history=recent_history,
+            user_context=user_context,
         )
         raw, error = await self._send_request_async(payload)
         if error:
@@ -219,6 +224,7 @@ class LLMClient:
         next_state: Optional[str],
         criteria: Optional[Dict[str, Any]] = None,
         recent_history: Optional[List[Dict[str, str]]] = None,
+        user_context: Optional[Dict[str, Any]] = None,
     ) -> GeneralHelpReply:
         cleaned_base = base_message.strip()
         if not cleaned_base:
@@ -243,6 +249,7 @@ class LLMClient:
             next_state=next_state,
             criteria=criteria,
             recent_history=recent_history,
+            user_context=user_context,
         )
         raw, error = await self._send_request_async(payload)
         if error:
@@ -270,6 +277,7 @@ class LLMClient:
         self,
         question: str,
         vector_store_id: Optional[str],
+        user_context: Optional[Dict[str, Any]] = None,
     ) -> KnowledgeReply:
         if not question.strip():
             return KnowledgeReply(
@@ -299,7 +307,11 @@ class LLMClient:
                 error="vector_store_id is not configured",
             )
 
-        payload = self._build_knowledge_payload(question=question, vector_store_id=vector_store_id)
+        payload = self._build_knowledge_payload(
+            question=question,
+            vector_store_id=vector_store_id,
+            user_context=user_context,
+        )
         raw, error = self._send_request(payload)
         if error:
             return KnowledgeReply(
@@ -335,6 +347,7 @@ class LLMClient:
         self,
         question: str,
         vector_store_id: Optional[str],
+        user_context: Optional[Dict[str, Any]] = None,
     ) -> KnowledgeReply:
         if not question.strip():
             return KnowledgeReply(
@@ -364,7 +377,11 @@ class LLMClient:
                 error="vector_store_id is not configured",
             )
 
-        payload = self._build_knowledge_payload(question=question, vector_store_id=vector_store_id)
+        payload = self._build_knowledge_payload(
+            question=question,
+            vector_store_id=vector_store_id,
+            user_context=user_context,
+        )
         raw, error = await self._send_request_async(payload)
         if error:
             return KnowledgeReply(
@@ -396,7 +413,12 @@ class LLMClient:
             used_fallback=False,
         )
 
-    def _build_sales_payload(self, criteria: SearchCriteria, top_products: List[Product]) -> Dict[str, Any]:
+    def _build_sales_payload(
+        self,
+        criteria: SearchCriteria,
+        top_products: List[Product],
+        user_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         criteria_payload = {
             "brand": criteria.brand,
             "grade": criteria.grade,
@@ -405,6 +427,7 @@ class LLMClient:
             "format": criteria.format,
         }
         products_payload = [self._product_payload(product) for product in top_products]
+        user_context_payload = user_context or {}
 
         tone_block = tone_as_prompt_block(self.tone_profile)
         system_prompt = (
@@ -426,6 +449,8 @@ class LLMClient:
             f"{json.dumps(criteria_payload, ensure_ascii=False)}\n\n"
             "Доступные продукты (использовать только их):\n"
             f"{json.dumps(products_payload, ensure_ascii=False)}\n\n"
+            "Законспектированный контекст клиента:\n"
+            f"{json.dumps(user_context_payload, ensure_ascii=False)}\n\n"
             "Сформируй полезный, человечный и точный ответ в тоне сильного консультанта. "
             "Без навязчивых продаж, без категоричности и без шаблонных фраз. "
             "recommended_product_ids должен содержать только id из списка продуктов."
@@ -457,6 +482,7 @@ class LLMClient:
         repeat_count: int,
         product_offer_allowed: bool,
         recent_history: Optional[List[Dict[str, str]]] = None,
+        user_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         criteria_payload = {
             "brand": criteria.brand,
@@ -467,6 +493,7 @@ class LLMClient:
         }
         products_payload = [self._product_payload(product) for product in top_products]
         history_payload = recent_history or []
+        user_context_payload = user_context or {}
 
         tone_block = tone_as_prompt_block(self.tone_profile)
         system_prompt = (
@@ -493,6 +520,8 @@ class LLMClient:
             f"{json.dumps(missing_fields, ensure_ascii=False)}\n\n"
             "Краткая история последних сообщений в диалоге:\n"
             f"{json.dumps(history_payload, ensure_ascii=False)}\n\n"
+            "Законспектированный контекст клиента:\n"
+            f"{json.dumps(user_context_payload, ensure_ascii=False)}\n\n"
             f"Повторов одинакового запроса подряд: {repeat_count}\n\n"
             f"Можно ли на этом шаге предлагать программы: {'да' if product_offer_allowed else 'нет'}\n\n"
             "Доступные программы (использовать только их):\n"
@@ -524,8 +553,10 @@ class LLMClient:
         user_message: str,
         dialogue_state: Optional[str],
         recent_history: Optional[List[Dict[str, str]]] = None,
+        user_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         history_payload = recent_history or []
+        user_context_payload = user_context or {}
         tone_block = tone_as_prompt_block(self.tone_profile)
         system_prompt = (
             "Вы образовательный консультант-наставник. "
@@ -540,6 +571,8 @@ class LLMClient:
             f"{dialogue_state or 'unknown'}\n\n"
             "Краткая история последних сообщений:\n"
             f"{json.dumps(history_payload, ensure_ascii=False)}\n\n"
+            "Законспектированный контекст клиента:\n"
+            f"{json.dumps(user_context_payload, ensure_ascii=False)}\n\n"
             "Вопрос пользователя:\n"
             f"{user_message.strip()}\n\n"
             "Дайте спокойный, полезный и естественный ответ."
@@ -569,10 +602,12 @@ class LLMClient:
         next_state: Optional[str],
         criteria: Optional[Dict[str, Any]] = None,
         recent_history: Optional[List[Dict[str, str]]] = None,
+        user_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         tone_block = tone_as_prompt_block(self.tone_profile)
         history_payload = recent_history or []
         criteria_payload = criteria or {}
+        user_context_payload = user_context or {}
 
         system_prompt = (
             "Вы консультант образовательного центра. "
@@ -593,6 +628,8 @@ class LLMClient:
             f"{json.dumps(criteria_payload, ensure_ascii=False)}\n\n"
             "Краткая история последних сообщений:\n"
             f"{json.dumps(history_payload, ensure_ascii=False)}\n\n"
+            "Законспектированный контекст клиента:\n"
+            f"{json.dumps(user_context_payload, ensure_ascii=False)}\n\n"
             "Базовое сообщение бота (смысл нужно сохранить):\n"
             f"{base_message}\n\n"
             "Верните готовый текст ответа для пользователя (не JSON)."
@@ -613,7 +650,13 @@ class LLMClient:
             "max_output_tokens": 450,
         }
 
-    def _build_knowledge_payload(self, question: str, vector_store_id: str) -> Dict[str, Any]:
+    def _build_knowledge_payload(
+        self,
+        question: str,
+        vector_store_id: str,
+        user_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        user_context_payload = user_context or {}
         system_prompt = (
             "Ты консультант по условиям образовательных программ. "
             "Отвечай строго на основе найденных документов из file_search. "
@@ -623,6 +666,8 @@ class LLMClient:
         user_prompt = (
             "Вопрос клиента:\n"
             f"{question.strip()}\n\n"
+            "Законспектированный контекст клиента:\n"
+            f"{json.dumps(user_context_payload, ensure_ascii=False)}\n\n"
             "Дай короткий, понятный ответ и укажи, что уточнить при нехватке данных."
         )
         return {

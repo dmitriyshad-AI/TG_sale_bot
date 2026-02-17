@@ -359,6 +359,8 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
             bot, "_get_or_create_user_id", return_value=1
         ), patch.object(bot.db_module, "get_session", return_value={"state": session_state, "meta": {}}), patch.object(
             bot.db_module, "log_message"
+        ), patch.object(
+            bot.db_module, "get_conversation_context", return_value={}
         ), patch.object(bot.db_module, "upsert_session_state"), patch.object(
             bot, "advance_flow", return_value=step
         ), patch.object(
@@ -394,6 +396,8 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
             bot, "_get_or_create_user_id", return_value=1
         ), patch.object(bot.db_module, "get_session", return_value={"state": session_state, "meta": {}}), patch.object(
             bot.db_module, "log_message"
+        ), patch.object(
+            bot.db_module, "get_conversation_context", return_value={}
         ), patch.object(bot.db_module, "upsert_session_state"), patch.object(
             bot, "advance_flow", return_value=step
         ), patch.object(bot, "_select_products", return_value=_sample_products()), patch.object(
@@ -424,6 +428,8 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
             bot, "_get_or_create_user_id", return_value=1
         ), patch.object(bot.db_module, "get_session", return_value={"state": session_state, "meta": {}}), patch.object(
             bot.db_module, "log_message"
+        ), patch.object(
+            bot.db_module, "get_conversation_context", return_value={}
         ), patch.object(bot.db_module, "upsert_session_state"), patch.object(
             bot, "advance_flow", return_value=step
         ), patch.object(bot, "_select_products", side_effect=RuntimeError("boom")), patch.object(
@@ -449,6 +455,8 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
             bot, "_get_or_create_user_id", return_value=1
         ), patch.object(bot.db_module, "get_session", return_value={"state": previous_state, "meta": {}}), patch.object(
             bot.db_module, "log_message"
+        ), patch.object(
+            bot.db_module, "get_conversation_context", return_value={}
         ), patch.object(bot.db_module, "upsert_session_state"), patch.object(
             bot, "advance_flow", return_value=step
         ), patch.object(

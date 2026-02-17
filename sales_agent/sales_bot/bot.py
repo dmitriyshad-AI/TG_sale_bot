@@ -1,5 +1,6 @@
 import logging
 import re
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update, WebAppInfo
@@ -174,6 +175,40 @@ SMALL_TALK_PREFIXES = (
     "ясно",
 )
 
+PRESENCE_PING_TERMS = {
+    "ты тут",
+    "вы тут",
+    "тут",
+    "на связи",
+    "живой",
+    "есть кто",
+    "ау",
+}
+
+GOAL_LABELS = {
+    "ege": "ЕГЭ",
+    "oge": "ОГЭ",
+    "olympiad": "Олимпиада",
+    "camp": "Лагерь",
+    "base": "Успеваемость",
+}
+
+SUBJECT_LABELS = {
+    "math": "Математика",
+    "physics": "Физика",
+    "informatics": "Информатика",
+}
+
+FORMAT_LABELS = {
+    "online": "Онлайн",
+    "offline": "Очно",
+    "hybrid": "Гибрид",
+}
+
+STITCH_WINDOW_SECONDS = 210
+STITCH_MAX_PARTS = 4
+STITCH_MAX_CHARS = 900
+
 GOAL_HINTS = {
     "еге": "ege",
     "огэ": "oge",
@@ -337,6 +372,64 @@ def _is_small_talk_message(text: str) -> bool:
     return normalized.startswith(SMALL_TALK_PREFIXES)
 
 
+def _is_presence_ping(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    lowered = normalized.rstrip("!?., ")
+    if lowered in PRESENCE_PING_TERMS:
+        return True
+    if lowered.startswith(("ты тут", "вы тут", "на связи")):
+        return True
+    return False
+
+
+def _is_structured_flow_input(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    if normalized in FLOW_SELECTION_TOKENS:
+        return True
+    if normalized.isdigit() and 1 <= int(normalized) <= 11:
+        return True
+    phone = _sanitize_phone(normalized)
+    return bool(phone)
+
+
+def _looks_like_fragmented_context_message(
+    text: str,
+    current_state_payload: Dict[str, object],
+) -> bool:
+    state_name = current_state_payload.get("state") if isinstance(current_state_payload, dict) else None
+    if state_name not in {STATE_ASK_GRADE, STATE_ASK_GOAL, STATE_ASK_SUBJECT, STATE_ASK_FORMAT, STATE_SUGGEST_PRODUCTS}:
+        return False
+
+    normalized = _normalize_text(text)
+    if len(normalized) < 12:
+        return False
+    if _is_structured_flow_input(normalized):
+        return False
+    if _is_knowledge_query(normalized):
+        return False
+    if _is_general_education_query(normalized):
+        return False
+
+    markers = (
+        "нужно",
+        "хочу",
+        "хотел",
+        "хотела",
+        "поступить",
+        "мфти",
+        "цель",
+        "подготов",
+        "стратег",
+        "чтобы",
+        "понял",
+    )
+    return (" " in normalized) and any(marker in normalized for marker in markers)
+
+
 def _recent_dialogue_for_llm(conn, user_id: int, limit: int = 8) -> List[Dict[str, str]]:
     history: List[Dict[str, str]] = []
     for item in db_module.list_recent_messages(conn, user_id=user_id, limit=limit):
@@ -351,6 +444,234 @@ def _recent_dialogue_for_llm(conn, user_id: int, limit: int = 8) -> List[Dict[st
         role = "assistant" if direction == "outbound" else "user"
         history.append({"role": role, "text": text[:400]})
     return history[-limit:]
+
+
+def _parse_db_timestamp(raw_value: object) -> Optional[datetime]:
+    if not isinstance(raw_value, str):
+        return None
+    value = raw_value.strip()
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _build_stitched_user_text(conn, user_id: int, current_text: str) -> str:
+    base_text = current_text.strip()
+    if not base_text:
+        return current_text
+    if _is_structured_flow_input(base_text):
+        return current_text
+
+    recent = db_module.list_recent_messages(conn, user_id=user_id, limit=16)
+    now = datetime.utcnow()
+    parts: List[str] = [base_text]
+    seen = {_normalize_text(base_text)}
+    current_size = len(base_text)
+
+    for item in reversed(recent):
+        direction = str(item.get("direction") or "")
+        if direction != "inbound":
+            continue
+        previous = str(item.get("text") or "").strip()
+        if not previous or previous.startswith("/"):
+            continue
+        normalized_prev = _normalize_text(previous)
+        if not normalized_prev or normalized_prev in seen:
+            continue
+
+        created_at = _parse_db_timestamp(item.get("created_at"))
+        if created_at is not None and (now - created_at).total_seconds() > STITCH_WINDOW_SECONDS:
+            continue
+
+        if current_size + len(previous) + 1 > STITCH_MAX_CHARS:
+            break
+
+        parts.insert(0, previous)
+        seen.add(normalized_prev)
+        current_size += len(previous) + 1
+        if len(parts) >= STITCH_MAX_PARTS:
+            break
+
+    stitched = " ".join(part for part in parts if part).strip()
+    return stitched or current_text
+
+
+def _merge_unique_texts(items: List[str], limit: int = 8) -> List[str]:
+    result: List[str] = []
+    seen = set()
+    for item in items:
+        normalized = _normalize_text(item)
+        if not normalized or normalized in seen:
+            continue
+        result.append(item.strip())
+        seen.add(normalized)
+    return result[-limit:]
+
+
+def _extract_intent_tags(text: str) -> List[str]:
+    normalized = _normalize_text(text)
+    mapping = [
+        ("поступление", ("поступить", "поступлен")),
+        ("стратегия", ("стратег", "план", "маршрут")),
+        ("егэ", ("егэ",)),
+        ("огэ", ("огэ",)),
+        ("олимпиады", ("олимп",)),
+        ("успеваемость", ("успеваем", "база")),
+        ("условия", ("условия", "договор", "документ")),
+        ("оплата", ("оплата", "стоимость", "цена", "рассроч", "вычет")),
+        ("расписание", ("расписан", "время", "график")),
+    ]
+    tags: List[str] = []
+    for label, keywords in mapping:
+        if any(keyword in normalized for keyword in keywords):
+            tags.append(label)
+    return tags
+
+
+def _build_context_summary_text(summary: Dict[str, object]) -> str:
+    profile = summary.get("profile") if isinstance(summary.get("profile"), dict) else {}
+    intents = summary.get("intents") if isinstance(summary.get("intents"), list) else []
+    recent_requests = (
+        summary.get("recent_user_requests")
+        if isinstance(summary.get("recent_user_requests"), list)
+        else []
+    )
+
+    chunks: List[str] = []
+    grade = profile.get("grade")
+    goal = profile.get("goal")
+    subject = profile.get("subject")
+    study_format = profile.get("format")
+    target = profile.get("target")
+
+    profile_parts: List[str] = []
+    if grade:
+        profile_parts.append(f"{grade} класс")
+    if goal:
+        profile_parts.append(f"цель: {goal}")
+    if subject:
+        profile_parts.append(f"предмет: {subject}")
+    if study_format:
+        profile_parts.append(f"формат: {study_format}")
+    if target:
+        profile_parts.append(f"вуз/цель: {target}")
+    if profile_parts:
+        chunks.append("Профиль: " + "; ".join(profile_parts) + ".")
+
+    if intents:
+        normalized_intents = [str(item).strip() for item in intents if str(item).strip()]
+        if normalized_intents:
+            chunks.append("Интересы: " + ", ".join(normalized_intents) + ".")
+
+    if recent_requests:
+        request_chunks = [str(item).strip() for item in recent_requests[-2:] if str(item).strip()]
+        if request_chunks:
+            chunks.append("Последние запросы: " + " | ".join(request_chunks) + ".")
+
+    return " ".join(chunks).strip()
+
+
+def _update_user_context_summary(
+    conn,
+    *,
+    user_id: int,
+    message_text: str,
+    state_payload: Optional[Dict[str, object]] = None,
+) -> Dict[str, object]:
+    current = db_module.get_conversation_context(conn, user_id=user_id)
+    if not isinstance(current, dict):
+        current = {}
+
+    profile = current.get("profile") if isinstance(current.get("profile"), dict) else {}
+    intents = current.get("intents") if isinstance(current.get("intents"), list) else []
+    recent_requests = (
+        current.get("recent_user_requests")
+        if isinstance(current.get("recent_user_requests"), list)
+        else []
+    )
+
+    grade_hint = _extract_grade_hint(message_text)
+    goal_hint = _extract_goal_hint(message_text)
+    subject_hint = _extract_subject_hint(message_text)
+    normalized = _normalize_text(message_text)
+
+    if grade_hint:
+        profile["grade"] = grade_hint
+    if goal_hint:
+        profile["goal"] = GOAL_LABELS.get(goal_hint, goal_hint)
+    if subject_hint:
+        profile["subject"] = SUBJECT_LABELS.get(subject_hint, subject_hint)
+    if "онлайн" in normalized:
+        profile["format"] = FORMAT_LABELS["online"]
+    elif "очно" in normalized:
+        profile["format"] = FORMAT_LABELS["offline"]
+    elif "гибрид" in normalized or "смешан" in normalized:
+        profile["format"] = FORMAT_LABELS["hybrid"]
+
+    if "мфти" in normalized:
+        profile["target"] = "МФТИ"
+    elif "мгу" in normalized:
+        profile["target"] = "МГУ"
+
+    if state_payload and isinstance(state_payload.get("criteria"), dict):
+        criteria = state_payload.get("criteria", {})
+        state_grade = criteria.get("grade")
+        if isinstance(state_grade, int):
+            profile["grade"] = state_grade
+        state_goal = criteria.get("goal")
+        if isinstance(state_goal, str) and state_goal:
+            profile["goal"] = GOAL_LABELS.get(state_goal, state_goal)
+        state_subject = criteria.get("subject")
+        if isinstance(state_subject, str) and state_subject:
+            profile["subject"] = SUBJECT_LABELS.get(state_subject, state_subject)
+        state_format = criteria.get("format")
+        if isinstance(state_format, str) and state_format:
+            profile["format"] = FORMAT_LABELS.get(state_format, state_format)
+
+    intents_extended = [str(item) for item in intents] + _extract_intent_tags(message_text)
+    intents_clean = _merge_unique_texts(intents_extended, limit=10)
+
+    recent_requests_extended = [str(item) for item in recent_requests] + [message_text.strip()]
+    recent_requests_clean = _merge_unique_texts(recent_requests_extended, limit=8)
+
+    summary: Dict[str, object] = {
+        "profile": profile,
+        "intents": intents_clean,
+        "recent_user_requests": recent_requests_clean,
+        "summary_text": "",
+    }
+    summary["summary_text"] = _build_context_summary_text(summary)
+    db_module.upsert_conversation_context(conn, user_id=user_id, summary=summary)
+    return summary
+
+
+def _prepare_effective_text_and_context(
+    update: Update,
+    *,
+    message_text: str,
+    current_state_payload: Dict[str, object],
+) -> tuple[str, Dict[str, object]]:
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        effective_text = _build_stitched_user_text(conn, user_id=user_id, current_text=message_text)
+        context_summary = _update_user_context_summary(
+            conn,
+            user_id=user_id,
+            message_text=effective_text,
+            state_payload=current_state_payload,
+        )
+        return effective_text, context_summary
+    finally:
+        conn.close()
 
 
 def _extract_grade_hint(text: str) -> Optional[int]:
@@ -730,7 +1051,12 @@ async def _create_lead_from_phone(
         conn.close()
 
 
-async def _answer_knowledge_question(update: Update, question: str) -> None:
+async def _answer_knowledge_question(
+    update: Update,
+    question: str,
+    *,
+    user_context: Optional[Dict[str, object]] = None,
+) -> None:
     target = _target_message(update)
     if not target:
         return
@@ -739,6 +1065,7 @@ async def _answer_knowledge_question(update: Update, question: str) -> None:
     knowledge_reply = await llm_client.answer_knowledge_question_async(
         question=question,
         vector_store_id=_resolve_vector_store_id(),
+        user_context=user_context,
     )
 
     text = knowledge_reply.answer_text
@@ -774,6 +1101,7 @@ async def _answer_general_education_question(
     question: str,
     *,
     current_state: Optional[str],
+    user_context: Optional[Dict[str, object]] = None,
 ) -> bool:
     target = _target_message(update)
     if not target:
@@ -799,6 +1127,7 @@ async def _answer_general_education_question(
         user_message=question,
         dialogue_state=current_state,
         recent_history=recent_history,
+        user_context=user_context,
     )
 
     answer = general_reply.answer_text.strip()
@@ -839,6 +1168,7 @@ async def _answer_small_talk(
     text: str,
     *,
     current_state_payload: Dict[str, object],
+    user_context: Optional[Dict[str, object]] = None,
 ) -> bool:
     if not _is_small_talk_message(text):
         return False
@@ -877,6 +1207,7 @@ async def _answer_small_talk(
         user_message=f"{small_talk_prompt}\n\nРеплика пользователя: {normalized}",
         dialogue_state=state_name,
         recent_history=recent_history,
+        user_context=user_context,
     )
     llm_used_fallback = llm_reply.used_fallback
     llm_error = llm_reply.error
@@ -916,6 +1247,52 @@ async def _answer_small_talk(
     return True
 
 
+async def _answer_presence_ping(
+    update: Update,
+    *,
+    current_state_payload: Dict[str, object],
+) -> bool:
+    text = update.message.text if update.message else ""
+    if not _is_presence_ping(text or ""):
+        return False
+
+    state_name = (
+        str(current_state_payload.get("state"))
+        if isinstance(current_state_payload.get("state"), str)
+        else None
+    )
+    prompt = build_prompt(current_state_payload)
+    response_text = "Да, я на связи. Прочитал ваш запрос.\n\n" + prompt.message
+    delivered_text = await _reply(update, response_text, keyboard_layout=prompt.keyboard)
+
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        db_module.log_message(
+            conn,
+            user_id,
+            "inbound",
+            text or "",
+            {"type": "message", "handler": "presence-ping", "state": state_name, **_user_meta(update)},
+        )
+        db_module.log_message(
+            conn,
+            user_id,
+            "outbound",
+            delivered_text,
+            {
+                "handler": "presence-ping",
+                "state": state_name,
+                "quality": _quality_meta(delivered_text),
+                **_user_meta(update),
+            },
+        )
+    finally:
+        conn.close()
+
+    return True
+
+
 async def _humanize_flow_message(
     *,
     user_message: str,
@@ -924,6 +1301,7 @@ async def _humanize_flow_message(
     next_state: Optional[str],
     state_data: Dict[str, object],
     user_id: Optional[int],
+    user_context: Optional[Dict[str, object]] = None,
 ) -> str:
     cleaned = base_message.strip()
     if not cleaned:
@@ -947,6 +1325,7 @@ async def _humanize_flow_message(
             next_state=next_state,
             criteria=criteria,
             recent_history=recent_history,
+            user_context=user_context,
         )
     except Exception:
         logger.exception("Failed to humanize flow message")
@@ -955,8 +1334,14 @@ async def _humanize_flow_message(
     return reply.answer_text.strip() or cleaned
 
 
-async def _handle_consultative_query(update: Update, text: str) -> bool:
-    if not _is_consultative_query(text):
+async def _handle_consultative_query(
+    update: Update,
+    text: str,
+    *,
+    force: bool = False,
+    user_context: Optional[Dict[str, object]] = None,
+) -> bool:
+    if (not force) and (not _is_consultative_query(text)):
         return False
 
     recent_history: List[Dict[str, str]] = []
@@ -1057,6 +1442,7 @@ async def _handle_consultative_query(update: Update, text: str) -> bool:
                 repeat_count=repeat_count,
                 product_offer_allowed=product_offer_allowed,
                 recent_history=recent_history,
+                user_context=user_context,
             )
             llm_used_fallback = llm_reply.used_fallback
             llm_error = llm_reply.error
@@ -1135,10 +1521,13 @@ async def _handle_flow_step(
     callback_data: Optional[str] = None,
 ) -> None:
     user_id: Optional[int] = None
+    user_context: Dict[str, object] = {}
     conn = db_module.get_connection(settings.database_path)
     try:
         user_id = _get_or_create_user_id(update, conn)
         session = db_module.get_session(conn, user_id)
+        user_context_raw = db_module.get_conversation_context(conn, user_id=user_id)
+        user_context = user_context_raw if isinstance(user_context_raw, dict) else {}
         previous_state = session["state"].get("state") if isinstance(session["state"], dict) else None
 
         inbound_text = callback_data or message_text or ""
@@ -1172,6 +1561,7 @@ async def _handle_flow_step(
             sales_reply = await llm_client.build_sales_reply_async(
                 criteria=criteria,
                 top_products=products,
+                user_context=user_context,
             )
 
             extra = []
@@ -1195,6 +1585,40 @@ async def _handle_flow_step(
                 "Оставьте контакт, и менеджер поможет вручную."
             )
     else:
+        should_humanize = (
+            (not callback_data)
+            and bool(message_text)
+            and (not _is_structured_flow_input(message_text or ""))
+            and step.next_state != STATE_DONE
+        )
+        if not should_humanize:
+            delivered_text = await _reply(update, response_text, keyboard_layout=step.keyboard)
+            conn = db_module.get_connection(settings.database_path)
+            try:
+                user_id = _get_or_create_user_id(update, conn)
+                db_module.log_message(
+                    conn,
+                    user_id,
+                    "outbound",
+                    delivered_text,
+                    {
+                        "handler": "flow",
+                        "next_state": step.next_state,
+                        "quality": _quality_meta(delivered_text),
+                        **_user_meta(update),
+                    },
+                )
+            finally:
+                conn.close()
+
+            if previous_state == STATE_ASK_CONTACT and step.completed and step.state_data.get("contact"):
+                await _create_lead_from_phone(
+                    update=update,
+                    raw_phone=str(step.state_data["contact"]),
+                    command_source="telegram_flow_contact",
+                )
+            return
+
         response_text = await _humanize_flow_message(
             user_message=message_text or callback_data or "",
             base_message=response_text,
@@ -1202,6 +1626,7 @@ async def _handle_flow_step(
             next_state=step.next_state,
             state_data=step.state_data,
             user_id=user_id,
+            user_context=user_context,
         )
 
     delivered_text = await _reply(update, response_text, keyboard_layout=step.keyboard)
@@ -1474,11 +1899,42 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    handled_consultative = await _handle_consultative_query(update=update, text=text)
+    current_state_payload = _load_current_state_payload(update)
+    current_state = (
+        str(current_state_payload.get("state"))
+        if isinstance(current_state_payload.get("state"), str)
+        else None
+    )
+
+    handled_presence_ping = await _answer_presence_ping(
+        update=update,
+        current_state_payload=current_state_payload,
+    )
+    if handled_presence_ping:
+        return
+
+    effective_text, user_context = _prepare_effective_text_and_context(
+        update,
+        message_text=text,
+        current_state_payload=current_state_payload,
+    )
+
+    handled_consultative = await _handle_consultative_query(
+        update=update,
+        text=effective_text,
+        user_context=user_context,
+    )
+    if (not handled_consultative) and _looks_like_fragmented_context_message(effective_text, current_state_payload):
+        handled_consultative = await _handle_consultative_query(
+            update=update,
+            text=effective_text,
+            force=True,
+            user_context=user_context,
+        )
     if handled_consultative:
         return
 
-    if _is_knowledge_query(text):
+    if _is_knowledge_query(effective_text):
         conn = db_module.get_connection(settings.database_path)
         try:
             user_id = _get_or_create_user_id(update, conn)
@@ -1486,26 +1942,21 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 conn,
                 user_id,
                 "inbound",
-                text,
+                effective_text,
                 {"type": "message", "handler": "kb-auto", **_user_meta(update)},
             )
         finally:
             conn.close()
 
-        await _answer_knowledge_question(update, question=text)
+        await _answer_knowledge_question(update, question=effective_text, user_context=user_context)
         return
 
-    current_state_payload = _load_current_state_payload(update)
-    current_state = (
-        str(current_state_payload.get("state"))
-        if isinstance(current_state_payload.get("state"), str)
-        else None
-    )
-    if _is_general_education_query(text):
+    if _is_general_education_query(effective_text):
         handled_general = await _answer_general_education_question(
             update=update,
-            question=text,
+            question=effective_text,
             current_state=current_state,
+            user_context=user_context,
         )
         if handled_general:
             return
@@ -1514,6 +1965,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         update=update,
         text=text,
         current_state_payload=current_state_payload,
+        user_context=user_context,
     )
     if handled_small_talk:
         return

@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -9,6 +11,7 @@ try:
     from sales_agent.sales_bot import bot
     from sales_agent.sales_bot.bot import (
         _apply_start_meta_to_state,
+        _build_stitched_user_text,
         _build_inline_keyboard,
         _build_user_name,
         _criteria_from_state,
@@ -19,11 +22,15 @@ try:
         _is_consultative_query,
         _is_duplicate_update,
         _is_general_education_query,
+        _is_presence_ping,
         _is_small_talk_message,
+        _looks_like_fragmented_context_message,
         _next_state_for_consultative,
         _resolve_vector_store_id,
         _target_message,
+        _update_user_context_summary,
     )
+    from sales_agent.sales_core import db as db_module
     from sales_agent.sales_core.catalog import SearchCriteria, parse_catalog
 
     HAS_BOT_DEPS = True
@@ -156,6 +163,72 @@ class BotHelpersTests(unittest.TestCase):
         self.assertTrue(_is_small_talk_message("Понял"))
         self.assertFalse(_is_small_talk_message("Онлайн"))
         self.assertFalse(_is_small_talk_message("Хочу поступить в МФТИ"))
+
+    def test_presence_ping_detection(self) -> None:
+        self.assertTrue(_is_presence_ping("ты тут?"))
+        self.assertTrue(_is_presence_ping("на связи"))
+        self.assertFalse(_is_presence_ping("хочу курс по физике"))
+
+    def test_fragmented_context_message_detection(self) -> None:
+        state = {"state": "ask_goal", "criteria": {"brand": "kmipt"}, "contact": None}
+        self.assertTrue(
+            _looks_like_fragmented_context_message(
+                "Ты лучше понял, что мне нужно для поступления в МФТИ",
+                state,
+            )
+        )
+        self.assertFalse(_looks_like_fragmented_context_message("11", state))
+
+    def test_build_stitched_user_text_combines_recent_inbound_fragments(self) -> None:
+        class _DummyConn:
+            pass
+
+        now = datetime.utcnow()
+        recent = [
+            {
+                "direction": "inbound",
+                "text": "У меня ученик 10 класса",
+                "created_at": (now - timedelta(seconds=35)).strftime("%Y-%m-%d %H:%M:%S"),
+            },
+            {
+                "direction": "inbound",
+                "text": "Хочу стратегию поступления в МФТИ",
+                "created_at": (now - timedelta(seconds=15)).strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        ]
+        with patch.object(bot.db_module, "list_recent_messages", return_value=recent):
+            stitched = _build_stitched_user_text(_DummyConn(), user_id=1, current_text="Ты лучше понял, что нужно?")
+
+        self.assertIn("У меня ученик 10 класса", stitched)
+        self.assertIn("Хочу стратегию поступления в МФТИ", stitched)
+        self.assertIn("Ты лучше понял", stitched)
+
+    def test_update_user_context_summary_persists_profile_and_summary_text(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "helper_context.db"
+            db_module.init_db(db_path)
+            conn = db_module.get_connection(db_path)
+            try:
+                user_id = db_module.get_or_create_user(conn, channel="telegram", external_id="1001")
+                state = {
+                    "state": "ask_subject",
+                    "criteria": {"brand": "kmipt", "grade": 10, "goal": "ege", "subject": "physics", "format": None},
+                    "contact": None,
+                }
+                summary = _update_user_context_summary(
+                    conn,
+                    user_id=user_id,
+                    message_text="Хочу поступить в МФТИ, нужна стратегия",
+                    state_payload=state,
+                )
+
+                self.assertEqual(summary.get("profile", {}).get("grade"), 10)
+                self.assertIn("МФТИ", summary.get("profile", {}).get("target", ""))
+                self.assertTrue(summary.get("summary_text"))
+                stored = db_module.get_conversation_context(conn, user_id=user_id)
+                self.assertEqual(stored.get("profile", {}).get("subject"), "Физика")
+            finally:
+                conn.close()
 
     def test_next_state_for_consultative_does_not_loop_to_goal_when_complete(self) -> None:
         state = _next_state_for_consultative(

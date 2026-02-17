@@ -70,7 +70,11 @@ class BotRoutingTests(unittest.IsolatedAsyncioTestCase):
             bot, "_get_or_create_user_id", return_value=1
         ), patch.object(bot.db_module, "log_message"), patch.object(
             bot, "_answer_knowledge_question", new_callable=AsyncMock
-        ) as mock_answer, patch.object(bot, "_handle_flow_step", new_callable=AsyncMock) as mock_flow:
+        ) as mock_answer, patch.object(
+            bot, "_load_current_state_payload", return_value={"state": "ask_grade", "criteria": {}, "contact": None}
+        ), patch.object(
+            bot, "_prepare_effective_text_and_context", return_value=("Какие условия возврата оплаты?", {})
+        ), patch.object(bot, "_handle_flow_step", new_callable=AsyncMock) as mock_flow:
             await bot.on_text_message(update, context)
 
         mock_answer.assert_awaited_once()
@@ -86,6 +90,8 @@ class BotRoutingTests(unittest.IsolatedAsyncioTestCase):
             bot, "_handle_consultative_query", new_callable=AsyncMock, return_value=False
         ) as mock_consult, patch.object(
             bot, "_load_current_state_payload", return_value={"state": "ask_grade", "criteria": {}, "contact": None}
+        ), patch.object(
+            bot, "_prepare_effective_text_and_context", return_value=("10 класс", {})
         ):
             await bot.on_text_message(update, context)
 
@@ -103,6 +109,8 @@ class BotRoutingTests(unittest.IsolatedAsyncioTestCase):
             bot, "_answer_knowledge_question", new_callable=AsyncMock
         ) as mock_kb, patch.object(
             bot, "_load_current_state_payload", return_value={"state": "ask_subject", "criteria": {}, "contact": None}
+        ), patch.object(
+            bot, "_prepare_effective_text_and_context", return_value=("Что такое косинус?", {})
         ), patch.object(
             bot, "_answer_general_education_question", new_callable=AsyncMock, return_value=True
         ) as mock_general, patch.object(
@@ -126,6 +134,8 @@ class BotRoutingTests(unittest.IsolatedAsyncioTestCase):
         ) as mock_kb, patch.object(
             bot, "_load_current_state_payload", return_value={"state": "ask_goal", "criteria": {}, "contact": None}
         ), patch.object(
+            bot, "_prepare_effective_text_and_context", return_value=("Спасибо", {})
+        ), patch.object(
             bot, "_answer_small_talk", new_callable=AsyncMock, return_value=True
         ) as mock_small, patch.object(
             bot, "_handle_flow_step", new_callable=AsyncMock
@@ -137,11 +147,57 @@ class BotRoutingTests(unittest.IsolatedAsyncioTestCase):
         mock_small.assert_awaited_once()
         mock_flow.assert_not_awaited()
 
+    async def test_on_text_message_routes_presence_ping_before_flow(self) -> None:
+        update = _update_with_text("ты тут?")
+        context = _context_with_flags()
+
+        with patch.object(
+            bot, "_load_current_state_payload", return_value={"state": "ask_goal", "criteria": {}, "contact": None}
+        ), patch.object(
+            bot, "_answer_presence_ping", new_callable=AsyncMock, return_value=True
+        ) as mock_ping, patch.object(
+            bot, "_handle_consultative_query", new_callable=AsyncMock
+        ) as mock_consult, patch.object(
+            bot, "_handle_flow_step", new_callable=AsyncMock
+        ) as mock_flow:
+            await bot.on_text_message(update, context)
+
+        mock_ping.assert_awaited_once()
+        mock_consult.assert_not_awaited()
+        mock_flow.assert_not_awaited()
+
+    async def test_on_text_message_uses_forced_consultative_for_fragmented_thought(self) -> None:
+        update = _update_with_text("Ты лучше понял, что мне нужно")
+        context = _context_with_flags()
+
+        with patch.object(
+            bot, "_load_current_state_payload", return_value={"state": "ask_goal", "criteria": {}, "contact": None}
+        ), patch.object(
+            bot, "_answer_presence_ping", new_callable=AsyncMock, return_value=False
+        ), patch.object(
+            bot, "_prepare_effective_text_and_context", return_value=("Ты лучше понял, что мне нужно", {})
+        ), patch.object(
+            bot, "_handle_consultative_query", new_callable=AsyncMock, side_effect=[False, True]
+        ) as mock_consult, patch.object(
+            bot, "_handle_flow_step", new_callable=AsyncMock
+        ) as mock_flow:
+            await bot.on_text_message(update, context)
+
+        self.assertEqual(mock_consult.await_count, 2)
+        forced_call = mock_consult.await_args_list[1]
+        self.assertEqual(forced_call.kwargs.get("force"), True)
+        mock_flow.assert_not_awaited()
+
     async def test_on_text_message_routes_to_consultative_when_detected(self) -> None:
         update = _update_with_text("У меня ребенок в 11 классе, хочу поступить в МФТИ, что делать?")
         context = _context_with_flags()
 
         with patch.object(
+            bot, "_load_current_state_payload", return_value={"state": "ask_grade", "criteria": {}, "contact": None}
+        ), patch.object(
+            bot, "_prepare_effective_text_and_context",
+            return_value=("У меня ребенок в 11 классе, хочу поступить в МФТИ, что делать?", {}),
+        ), patch.object(
             bot, "_handle_consultative_query", new_callable=AsyncMock, return_value=True
         ) as mock_consult, patch.object(bot, "_handle_flow_step", new_callable=AsyncMock) as mock_flow:
             await bot.on_text_message(update, context)
@@ -154,6 +210,11 @@ class BotRoutingTests(unittest.IsolatedAsyncioTestCase):
         context = _context_with_flags()
 
         with patch.object(
+            bot, "_load_current_state_payload", return_value={"state": "ask_grade", "criteria": {}, "contact": None}
+        ), patch.object(
+            bot, "_prepare_effective_text_and_context",
+            return_value=("Хочу поступить в МФТИ, подскажите условия оплаты и что делать дальше?", {}),
+        ), patch.object(
             bot, "_handle_consultative_query", new_callable=AsyncMock, return_value=True
         ) as mock_consult, patch.object(
             bot, "_answer_knowledge_question", new_callable=AsyncMock
