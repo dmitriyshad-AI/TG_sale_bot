@@ -263,6 +263,12 @@ body::before {
   padding: var(--spacing-3);
 }
 
+.chatIntroActions {
+  margin-top: var(--spacing-2);
+  display: flex;
+  justify-content: flex-start;
+}
+
 .chatQuickRow {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -275,6 +281,8 @@ body::before {
 }
 
 .chatBubble {
+  width: fit-content;
+  max-width: 94%;
   padding: var(--spacing-3);
   display: grid;
   gap: 8px;
@@ -283,19 +291,25 @@ body::before {
 .chatBubbleUser {
   border-color: rgba(176, 227, 252, 0.9);
   background: rgba(218, 242, 255, 0.7);
+  justify-self: end;
+  margin-left: 4%;
+  border-top-right-radius: 14px;
 }
 
 .chatBubbleAssistant {
   border-color: rgba(255, 255, 255, 0.88);
+  justify-self: start;
+  margin-right: 4%;
+  border-top-left-radius: 14px;
 }
 
 .chatRole {
-  margin: 0;
-  font-size: 12px;
+  margin: 0 0 2px 0;
+  font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: rgba(5, 41, 61, 0.82);
+  color: rgba(5, 41, 61, 0.64);
 }
 
 .chatText {
@@ -304,10 +318,74 @@ body::before {
   line-height: 1.45;
 }
 
+.chatText p {
+  margin: 0 0 8px 0;
+}
+
+.chatText p:last-child {
+  margin-bottom: 0;
+}
+
+.chatText strong {
+  font-weight: 700;
+}
+
+.chatText em {
+  font-style: italic;
+}
+
+.chatText code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  background: rgba(224, 245, 255, 0.9);
+  border: 1px solid rgba(168, 218, 244, 0.9);
+  border-radius: 8px;
+  padding: 1px 6px;
+}
+
+.chatList {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.chatListOrdered {
+  padding-left: 20px;
+}
+
+.chatList li {
+  line-height: 1.45;
+}
+
+.mathInline {
+  display: inline-block;
+  margin: 0 2px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(153, 213, 245, 0.9);
+  background: rgba(236, 249, 255, 0.96);
+  font-family: "Times New Roman", Cambria, Georgia, serif;
+  font-size: 1.04em;
+  line-height: 1.35;
+}
+
+.mathBlock {
+  margin: 6px 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(142, 207, 242, 0.9);
+  background: rgba(235, 249, 255, 0.94);
+  color: rgba(3, 33, 50, 0.96);
+  font-family: "Times New Roman", Cambria, Georgia, serif;
+  font-size: 18px;
+  text-align: center;
+  letter-spacing: 0.01em;
+}
+
 .chatMeta {
   margin: 0;
   font-size: 12px;
-  color: rgba(5, 41, 61, 0.8);
+  color: rgba(5, 41, 61, 0.72);
 }
 
 .chatSources {
@@ -318,6 +396,8 @@ body::before {
 
 .chatProgress {
   padding: var(--spacing-3);
+  max-width: 92%;
+  margin-right: 8%;
 }
 
 .progressPulse {
@@ -362,6 +442,10 @@ body::before {
   display: flex;
   justify-content: flex-end;
   gap: var(--spacing-2);
+}
+
+.chatControls .glassButton {
+  width: 100%;
 }
 
 .errorBox {
@@ -531,6 +615,18 @@ body::before {
 
   .chatControls .glassButton {
     width: 100%;
+  }
+
+  .chatBubble {
+    max-width: 96%;
+  }
+
+  .chatBubbleUser {
+    margin-left: 2%;
+  }
+
+  .chatBubbleAssistant {
+    margin-right: 2%;
   }
 
   .topNavLeft {

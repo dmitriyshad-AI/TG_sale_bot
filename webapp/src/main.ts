@@ -813,6 +813,174 @@ function createResultsView(): HTMLElement {
   return section;
 }
 
+const SUPERSCRIPT_MAP: Record<string, string> = {
+  "0": "⁰",
+  "1": "¹",
+  "2": "²",
+  "3": "³",
+  "4": "⁴",
+  "5": "⁵",
+  "6": "⁶",
+  "7": "⁷",
+  "8": "⁸",
+  "9": "⁹",
+  "+": "⁺",
+  "-": "⁻",
+  "=": "⁼",
+  "(": "⁽",
+  ")": "⁾",
+  "n": "ⁿ",
+  "i": "ⁱ"
+};
+
+const SUBSCRIPT_MAP: Record<string, string> = {
+  "0": "₀",
+  "1": "₁",
+  "2": "₂",
+  "3": "₃",
+  "4": "₄",
+  "5": "₅",
+  "6": "₆",
+  "7": "₇",
+  "8": "₈",
+  "9": "₉",
+  "+": "₊",
+  "-": "₋",
+  "=": "₌",
+  "(": "₍",
+  ")": "₎"
+};
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function applyScriptMap(raw: string, map: Record<string, string>): string {
+  return Array.from(raw).map((char) => map[char] || char).join("");
+}
+
+function beautifyMathExpression(raw: string): string {
+  let value = raw.trim();
+
+  // Common TeX symbols
+  value = value
+    .replace(/\\cdot/g, "·")
+    .replace(/\\times/g, "×")
+    .replace(/\\pm/g, "±")
+    .replace(/\\neq/g, "≠")
+    .replace(/\\leq/g, "≤")
+    .replace(/\\geq/g, "≥")
+    .replace(/\\to/g, "→")
+    .replace(/\\infty/g, "∞")
+    .replace(/\\alpha/g, "α")
+    .replace(/\\beta/g, "β")
+    .replace(/\\gamma/g, "γ")
+    .replace(/\\delta/g, "δ")
+    .replace(/\\epsilon/g, "ε")
+    .replace(/\\theta/g, "θ")
+    .replace(/\\lambda/g, "λ")
+    .replace(/\\mu/g, "μ")
+    .replace(/\\pi/g, "π")
+    .replace(/\\sigma/g, "σ")
+    .replace(/\\phi/g, "φ")
+    .replace(/\\omega/g, "ω");
+
+  value = value.replace(/\\sqrt\{([^{}]+)\}/g, "√($1)");
+  value = value.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, "($1)/($2)");
+
+  value = value.replace(/\^(\{([^{}]+)\}|([A-Za-z0-9+\-=()]))/g, (_m, _all, braced, simple) =>
+    applyScriptMap(braced || simple || "", SUPERSCRIPT_MAP)
+  );
+  value = value.replace(/_(\{([^{}]+)\}|([A-Za-z0-9+\-=()]))/g, (_m, _all, braced, simple) =>
+    applyScriptMap(braced || simple || "", SUBSCRIPT_MAP)
+  );
+
+  return escapeHtml(value);
+}
+
+function renderMarkdownInline(raw: string): string {
+  let value = escapeHtml(raw);
+  value = value.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  value = value.replace(/(^|[\s(])\*([^*]+)\*(?=$|[\s).,!?:;])/g, "$1<em>$2</em>");
+  value = value.replace(/`([^`]+)`/g, "<code>$1</code>");
+  return value;
+}
+
+function renderInlineWithMath(raw: string): string {
+  const inlineFormulaPattern = /\\\((.+?)\\\)|\$(.+?)\$/g;
+  let cursor = 0;
+  let html = "";
+  let match: RegExpExecArray | null;
+
+  while ((match = inlineFormulaPattern.exec(raw)) !== null) {
+    const full = match[0];
+    const latex = match[1] || match[2] || "";
+    const start = match.index;
+    html += renderMarkdownInline(raw.slice(cursor, start));
+    html += `<span class="mathInline">${beautifyMathExpression(latex)}</span>`;
+    cursor = start + full.length;
+  }
+  html += renderMarkdownInline(raw.slice(cursor));
+  return html;
+}
+
+function renderRichMessageHtml(raw: string): string {
+  const blocks = raw.split(/\n{2,}/);
+  const renderedBlocks: string[] = [];
+
+  const blockFormulaPattern = /^\$\$([\s\S]+)\$\$$/;
+  const bulletLine = /^[-*•]\s+(.+)$/;
+  const orderedLine = /^\d+[.)]\s+(.+)$/;
+
+  for (const block of blocks) {
+    const trimmed = block.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const blockMatch = trimmed.match(blockFormulaPattern);
+    if (blockMatch) {
+      renderedBlocks.push(`<div class="mathBlock">${beautifyMathExpression(blockMatch[1])}</div>`);
+      continue;
+    }
+
+    const lines = trimmed
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => Boolean(line));
+
+    if (lines.length > 1 && lines.every((line) => bulletLine.test(line))) {
+      const items = lines
+        .map((line) => line.match(bulletLine)?.[1] || "")
+        .map((line) => `<li>${renderInlineWithMath(line)}</li>`)
+        .join("");
+      renderedBlocks.push(`<ul class="chatList">${items}</ul>`);
+      continue;
+    }
+
+    if (lines.length > 1 && lines.every((line) => orderedLine.test(line))) {
+      const items = lines
+        .map((line) => line.match(orderedLine)?.[1] || "")
+        .map((line) => `<li>${renderInlineWithMath(line)}</li>`)
+        .join("");
+      renderedBlocks.push(`<ol class="chatList chatListOrdered">${items}</ol>`);
+      continue;
+    }
+
+    if (lines.length > 1) {
+      renderedBlocks.push(lines.map((line) => `<p>${renderInlineWithMath(line)}</p>`).join(""));
+      continue;
+    }
+
+    renderedBlocks.push(`<p>${renderInlineWithMath(trimmed)}</p>`);
+  }
+
+  return renderedBlocks.join("");
+}
+
 function createChatMessage(item: ChatMessage): HTMLElement {
   const bubble = document.createElement("article");
   bubble.className = `glassCard chatBubble ${item.role === "user" ? "chatBubbleUser" : "chatBubbleAssistant"}`;
@@ -823,7 +991,7 @@ function createChatMessage(item: ChatMessage): HTMLElement {
 
   const text = document.createElement("p");
   text.className = "chatText";
-  text.textContent = item.text;
+  text.innerHTML = renderRichMessageHtml(item.text);
 
   bubble.append(role, text);
 
@@ -859,6 +1027,18 @@ function createChatView(): HTMLElement {
     <h3 class="sectionTitle sectionTitleCompact">Чат с ${state.advisorName}</h3>
     <p class="actionSubtitle">Пишите свободно. Отвечу по стратегии, предметам и программам.</p>
   `;
+  const introActions = document.createElement("div");
+  introActions.className = "chatIntroActions";
+  const backTop = document.createElement("button");
+  backTop.type = "button";
+  backTop.className = "glassButton";
+  backTop.textContent = "Назад к подбору";
+  backTop.addEventListener("click", () => {
+    triggerHaptic(webApp, "light");
+    navigateTo("picker");
+  });
+  introActions.appendChild(backTop);
+  intro.appendChild(introActions);
   container.appendChild(intro);
 
   const messages = document.createElement("div");
@@ -907,15 +1087,6 @@ function createChatView(): HTMLElement {
   const controls = document.createElement("div");
   controls.className = "chatControls";
 
-  const back = document.createElement("button");
-  back.type = "button";
-  back.className = "glassButton";
-  back.textContent = "К подбору";
-  back.addEventListener("click", () => {
-    triggerHaptic(webApp, "light");
-    navigateTo("picker");
-  });
-
   const send = document.createElement("button");
   send.type = "button";
   send.className = "glassButton glassButtonPrimary";
@@ -939,7 +1110,7 @@ function createChatView(): HTMLElement {
     send.disabled = state.chatLoading || state.chatInput.trim().length === 0;
   });
 
-  controls.append(back, send);
+  controls.append(send);
   composer.append(textarea, controls);
   container.appendChild(composer);
 
