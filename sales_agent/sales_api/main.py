@@ -1,28 +1,38 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
+from datetime import date
 import html
 import json
 import logging
 import secrets
 from pathlib import Path
+from typing import Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from telegram import Update
 
 from sales_agent.sales_bot import bot as bot_runtime
+from sales_agent.sales_core.catalog import CatalogValidationError, SearchCriteria, explain_match, select_top_products
 from sales_agent.sales_core.config import Settings, get_settings, project_root
 from sales_agent.sales_core.copilot import run_copilot_from_file
 from sales_agent.sales_core.crm import build_crm_client
 from sales_agent.sales_core.db import (
+    claim_webhook_update,
+    count_webhook_updates_by_status,
+    enqueue_webhook_update,
     get_connection,
     init_db,
     list_conversation_messages,
     list_recent_conversations,
     list_recent_leads,
+    mark_webhook_update_done,
+    mark_webhook_update_retry,
+    requeue_stuck_webhook_updates,
 )
 from sales_agent.sales_core.runtime_diagnostics import build_runtime_diagnostics
 from sales_agent.sales_core.telegram_webapp import verify_telegram_webapp_init_data
@@ -30,6 +40,70 @@ from sales_agent.sales_core.telegram_webapp import verify_telegram_webapp_init_d
 
 security = HTTPBasic()
 logger = logging.getLogger(__name__)
+WEBHOOK_MAX_ATTEMPTS = 5
+WEBHOOK_STALE_PROCESSING_SECONDS = 180
+WEBHOOK_RETRY_BASE_SECONDS = 2
+
+
+def _extract_tg_init_data(request: Request) -> str:
+    direct = request.headers.get("X-Tg-Init-Data", "").strip()
+    if direct:
+        return direct
+
+    legacy = request.headers.get("X-Telegram-Init-Data", "").strip()
+    if legacy:
+        return legacy
+
+    auth = request.headers.get("Authorization", "").strip()
+    if auth.lower().startswith("tma "):
+        token = auth[4:].strip()
+        if token:
+            return token
+    return ""
+
+
+def _safe_user_payload(payload: dict | None) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    user_id_raw = payload.get("id")
+    user_id = int(user_id_raw) if isinstance(user_id_raw, int) else user_id_raw
+    return {
+        "id": user_id,
+        "first_name": payload.get("first_name"),
+        "last_name": payload.get("last_name"),
+        "username": payload.get("username"),
+        "language_code": payload.get("language_code"),
+    }
+
+
+def _format_price_text(product: object) -> str:
+    sessions = getattr(product, "sessions", None)
+    if not isinstance(sessions, list) or not sessions:
+        return "Цена по запросу"
+
+    prices = [int(item.price_rub) for item in sessions if getattr(item, "price_rub", None) is not None]
+    if not prices:
+        return "Цена по запросу"
+    low = min(prices)
+    high = max(prices)
+    if low == high:
+        return f"{low:,} ₽".replace(",", " ")
+    return f"{low:,}-{high:,} ₽".replace(",", " ")
+
+
+def _format_next_start_text(product: object) -> str:
+    sessions = getattr(product, "sessions", None)
+    if not isinstance(sessions, list) or not sessions:
+        return "Старт по мере набора группы"
+
+    starts: list[date] = [item.start_date for item in sessions if isinstance(getattr(item, "start_date", None), date)]
+    if not starts:
+        return "Старт по мере набора группы"
+
+    today = date.today()
+    upcoming = [value for value in starts if value >= today]
+    target = min(upcoming or starts)
+    return target.strftime("%d.%m.%Y")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -47,15 +121,107 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         else:
             telegram_application = bot_runtime.build_application(cfg.telegram_bot_token)
 
+    async def process_next_webhook_queue_item(app_instance: FastAPI) -> bool:
+        telegram_app = getattr(app_instance.state, "telegram_application", None)
+        if telegram_app is None:
+            return False
+
+        conn = get_connection(cfg.database_path)
+        try:
+            claimed = claim_webhook_update(conn)
+        finally:
+            conn.close()
+        if not claimed:
+            return False
+
+        queue_id = int(claimed["id"])
+        payload = claimed.get("payload") if isinstance(claimed.get("payload"), dict) else {}
+        attempts = int(claimed.get("attempts") or 1)
+
+        try:
+            update = Update.de_json(payload, telegram_app.bot)
+            if update is None:
+                raise ValueError("Could not parse Telegram update payload.")
+            await telegram_app.process_update(update)
+        except Exception as exc:
+            delay = min(60, WEBHOOK_RETRY_BASE_SECONDS ** max(1, min(attempts, 5)))
+            conn_retry = get_connection(cfg.database_path)
+            try:
+                final_state = mark_webhook_update_retry(
+                    conn_retry,
+                    queue_id=queue_id,
+                    error=str(exc),
+                    retry_delay_seconds=delay,
+                    max_attempts=WEBHOOK_MAX_ATTEMPTS,
+                )
+            finally:
+                conn_retry.close()
+            if final_state == "failed":
+                logger.exception("Webhook update failed permanently (queue_id=%s)", queue_id)
+            else:
+                logger.exception("Webhook update failed; queued for retry (queue_id=%s)", queue_id)
+            return True
+
+        conn_done = get_connection(cfg.database_path)
+        try:
+            mark_webhook_update_done(conn_done, queue_id=queue_id)
+        finally:
+            conn_done.close()
+        return True
+
+    async def webhook_worker_loop(app_instance: FastAPI) -> None:
+        event = getattr(app_instance.state, "webhook_worker_event", None)
+        if event is None:
+            return
+        while True:
+            processed = False
+            try:
+                while await process_next_webhook_queue_item(app_instance):
+                    processed = True
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Webhook worker loop iteration failed")
+
+            if processed:
+                continue
+
+            try:
+                await asyncio.wait_for(event.wait(), timeout=1.5)
+            except asyncio.TimeoutError:
+                continue
+            finally:
+                event.clear()
+
     @asynccontextmanager
     async def lifespan(app_instance: FastAPI):
         if telegram_application is not None:
             app_instance.state.telegram_application = telegram_application
             await telegram_application.initialize()
             await telegram_application.start()
+            app_instance.state.webhook_worker_event = asyncio.Event()
+            conn = get_connection(cfg.database_path)
+            try:
+                restored = requeue_stuck_webhook_updates(
+                    conn,
+                    stale_after_seconds=WEBHOOK_STALE_PROCESSING_SECONDS,
+                )
+            finally:
+                conn.close()
+            if restored:
+                logger.warning("Requeued %s stale webhook updates after restart", restored)
+            app_instance.state.webhook_worker_task = asyncio.create_task(webhook_worker_loop(app_instance))
+            app_instance.state.webhook_worker_event.set()
             logger.info("Telegram webhook application initialized at path: %s", webhook_path)
         yield
         if telegram_application is not None:
+            worker_task = getattr(app_instance.state, "webhook_worker_task", None)
+            if worker_task is not None:
+                worker_task.cancel()
+                try:
+                    await worker_task
+                except asyncio.CancelledError:
+                    pass
             await telegram_application.stop()
             await telegram_application.shutdown()
             logger.info("Telegram webhook application stopped")
@@ -89,7 +255,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail="ADMIN_TELEGRAM_IDS is not configured.",
             )
 
-        init_data = request.headers.get("X-Telegram-Init-Data", "").strip()
+        init_data = _extract_tg_init_data(request)
 
         auth = verify_telegram_webapp_init_data(
             init_data=init_data,
@@ -131,12 +297,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 headers={"WWW-Authenticate": "Basic"},
             )
         return credentials.username
-
-    async def process_telegram_update_async(telegram_app, update: Update) -> None:
-        try:
-            await telegram_app.process_update(update)
-        except Exception:
-            logger.exception("Failed to process Telegram update in background")
 
     def render_page(title: str, body_html: str) -> HTMLResponse:
         page = f"""
@@ -220,9 +380,107 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def health():
         return {"status": "ok", "service": "sales-agent"}
 
+    @app.get("/api/auth/whoami")
+    async def auth_whoami(request: Request):
+        init_data = _extract_tg_init_data(request)
+        if not init_data:
+            return {"ok": False, "reason": "not_in_telegram", "user": None}
+        if not cfg.telegram_bot_token:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="TELEGRAM_BOT_TOKEN is not configured.",
+            )
+
+        auth = verify_telegram_webapp_init_data(
+            init_data=init_data,
+            bot_token=cfg.telegram_bot_token,
+        )
+        if not auth.ok:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid Telegram miniapp auth: {auth.reason}",
+            )
+
+        user = _safe_user_payload(auth.user)
+        if user.get("id") is None and auth.user_id is not None:
+            user["id"] = auth.user_id
+        return {"ok": True, "user": user}
+
+    @app.get("/api/catalog/search")
+    async def catalog_search(
+        brand: Optional[str] = None,
+        grade: Optional[int] = Query(default=None, ge=1, le=11),
+        goal: Optional[str] = None,
+        subject: Optional[str] = None,
+        format: Optional[str] = None,
+    ):
+        criteria = SearchCriteria(
+            brand=brand,
+            grade=grade,
+            goal=goal,
+            subject=subject,
+            format=format,
+        )
+        try:
+            products = select_top_products(
+                criteria,
+                path=cfg.catalog_path,
+                top_k=3,
+                brand_default=cfg.brand_default,
+            )
+        except CatalogValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Catalog validation error: {exc}",
+            ) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Catalog file not found: {cfg.catalog_path}",
+            ) from exc
+
+        items = []
+        for product in products:
+            items.append(
+                {
+                    "id": product.id,
+                    "title": product.title,
+                    "url": str(product.url),
+                    "usp": list(product.usp[:3]),
+                    "price_text": _format_price_text(product),
+                    "next_start_text": _format_next_start_text(product),
+                    "why_match": explain_match(product, criteria),
+                }
+            )
+
+        return {
+            "ok": True,
+            "criteria": {
+                "brand": brand or cfg.brand_default,
+                "grade": grade,
+                "goal": goal,
+                "subject": subject,
+                "format": format,
+            },
+            "count": len(items),
+            "items": items,
+        }
+
     @app.get("/api/runtime/diagnostics")
     async def runtime_diagnostics():
-        return build_runtime_diagnostics(cfg)
+        payload = build_runtime_diagnostics(cfg)
+        conn = get_connection(cfg.database_path)
+        try:
+            payload.setdefault("runtime", {})
+            payload["runtime"]["webhook_queue"] = {
+                "pending": count_webhook_updates_by_status(conn, "pending"),
+                "retry": count_webhook_updates_by_status(conn, "retry"),
+                "processing": count_webhook_updates_by_status(conn, "processing"),
+                "failed": count_webhook_updates_by_status(conn, "failed"),
+            }
+        finally:
+            conn.close()
+        return payload
 
     @app.get("/")
     async def root():
@@ -304,7 +562,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post(webhook_path)
-    async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
+    async def telegram_webhook(request: Request):
         if cfg.telegram_mode != "webhook":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -337,14 +595,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail="Telegram webhook application is not initialized.",
             )
 
-        update = Update.de_json(payload, telegram_application.bot)
-        if update is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Could not parse Telegram update payload.",
-            )
+        update_id = payload.get("update_id") if isinstance(payload.get("update_id"), int) else None
+        conn = get_connection(cfg.database_path)
+        try:
+            enqueue_result = enqueue_webhook_update(conn, payload=payload, update_id=update_id)
+        finally:
+            conn.close()
 
-        background_tasks.add_task(process_telegram_update_async, telegram_application, update)
+        event = getattr(app.state, "webhook_worker_event", None)
+        if event is not None:
+            event.set()
+
+        if not enqueue_result.get("is_new", False):
+            logger.info("Ignoring duplicate Telegram update_id=%s", update_id)
         return {"ok": True, "queued": True}
 
     @app.get("/admin/leads")

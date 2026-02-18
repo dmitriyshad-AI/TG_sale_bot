@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -103,12 +104,43 @@ class ApiWebhookTests(unittest.TestCase):
                     )
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.json(), {"ok": True, "queued": True})
+                    deadline = time.time() + 1.5
+                    while mock_tg_app.process_update.await_count == 0 and time.time() < deadline:
+                        time.sleep(0.05)
 
             mock_tg_app.initialize.assert_awaited_once()
             mock_tg_app.start.assert_awaited_once()
             mock_tg_app.process_update.assert_awaited_once()
             mock_tg_app.stop.assert_awaited_once()
             mock_tg_app.shutdown.assert_awaited_once()
+
+    def test_webhook_deduplicates_same_update_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "webhook.db"
+            mock_tg_app = _MockTelegramApplication()
+            with patch("sales_agent.sales_api.main.bot_runtime.build_application", return_value=mock_tg_app), patch(
+                "sales_agent.sales_api.main.Update.de_json", return_value=SimpleNamespace(update_id=42)
+            ):
+                app = create_app(
+                    self._settings(
+                        db_path,
+                        telegram_mode="webhook",
+                        webhook_secret="secret-4",
+                    )
+                )
+                with TestClient(app) as client:
+                    for _ in range(2):
+                        response = client.post(
+                            "/telegram/webhook",
+                            json={"update_id": 42},
+                            headers={"X-Telegram-Bot-Api-Secret-Token": "secret-4"},
+                        )
+                        self.assertEqual(response.status_code, 200)
+                    deadline = time.time() + 1.5
+                    while mock_tg_app.process_update.await_count == 0 and time.time() < deadline:
+                        time.sleep(0.05)
+
+            self.assertEqual(mock_tg_app.process_update.await_count, 1)
 
     def test_webhook_returns_400_for_invalid_json_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

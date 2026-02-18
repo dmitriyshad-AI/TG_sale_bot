@@ -193,6 +193,7 @@ docker compose -f docker-compose.prod.yml up -d --build
    curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/getWebhookInfo"
    ```
    Ожидаемый ответ от вашего backend на входящий webhook: `{"ok":true,"queued":true}`.
+   Обработка апдейтов идет через SQLite-очередь с retry, поэтому кратковременный сбой обработчика не теряет сообщения.
 4. Если нужно вернуться к polling:
    - `TELEGRAM_MODE=polling`
    - удалить webhook:
@@ -214,3 +215,11 @@ docker compose -f docker-compose.prod.yml up -d --build
 5. Miniapp API защищен:
    - Telegram WebApp `initData` (проверка подписи),
    - allowlist `ADMIN_TELEGRAM_IDS`.
+
+## 10) User Mini App API (для webapp `/app`)
+
+- `GET /api/auth/whoami`
+  - в браузере без Telegram: `{"ok":false,"reason":"not_in_telegram"}`
+  - в Telegram Mini App: передавать `initData` в `X-Tg-Init-Data` или `Authorization: tma <initData>`
+- `GET /api/catalog/search?brand=kmipt&grade=11&goal=ege&subject=math&format=online`
+  - возвращает top-3 программ с `why_match`, `price_text`, `next_start_text`, `usp`

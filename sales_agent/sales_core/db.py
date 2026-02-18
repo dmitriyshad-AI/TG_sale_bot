@@ -61,6 +61,20 @@ CREATE_TABLE_STATEMENTS = [
         FOREIGN KEY(user_id) REFERENCES users(id)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS webhook_updates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        update_id INTEGER,
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        next_attempt_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(update_id)
+    );
+    """,
 ]
 
 CREATE_INDEX_STATEMENTS = [
@@ -70,6 +84,8 @@ CREATE_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_user_unique ON sessions(user_id);",
     "CREATE INDEX IF NOT EXISTS idx_conversation_contexts_updated_at ON conversation_contexts(updated_at);",
+    "CREATE INDEX IF NOT EXISTS idx_webhook_updates_status_next_attempt ON webhook_updates(status, next_attempt_at, id);",
+    "CREATE INDEX IF NOT EXISTS idx_webhook_updates_update_id ON webhook_updates(update_id);",
 ]
 
 
@@ -359,3 +375,164 @@ def upsert_conversation_context(
         (user_id, summary_json),
     )
     conn.commit()
+
+
+def enqueue_webhook_update(
+    conn: sqlite3.Connection,
+    payload: Dict[str, Any],
+    update_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    payload_json = json.dumps(payload or {}, ensure_ascii=False)
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO webhook_updates (update_id, payload_json, status, next_attempt_at)
+            VALUES (?, ?, 'pending', CURRENT_TIMESTAMP)
+            """,
+            (update_id, payload_json),
+        )
+        conn.commit()
+        return {"id": int(cursor.lastrowid), "is_new": True}
+    except sqlite3.IntegrityError:
+        if update_id is None:
+            raise
+        row = conn.execute(
+            "SELECT id FROM webhook_updates WHERE update_id = ?",
+            (update_id,),
+        ).fetchone()
+        return {"id": int(row["id"]) if row else 0, "is_new": False}
+
+
+def claim_webhook_update(conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT id, update_id, payload_json, attempts
+            FROM webhook_updates
+            WHERE status IN ('pending', 'retry')
+              AND COALESCE(next_attempt_at, CURRENT_TIMESTAMP) <= CURRENT_TIMESTAMP
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if not row:
+            conn.execute("COMMIT")
+            return None
+
+        conn.execute(
+            """
+            UPDATE webhook_updates
+            SET status = 'processing',
+                attempts = attempts + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (int(row["id"]),),
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
+        raise
+
+    payload: Dict[str, Any]
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+
+    return {
+        "id": int(row["id"]),
+        "update_id": int(row["update_id"]) if row["update_id"] is not None else None,
+        "payload": payload,
+        "attempts": int(row["attempts"]) + 1,
+    }
+
+
+def mark_webhook_update_done(conn: sqlite3.Connection, queue_id: int) -> None:
+    conn.execute(
+        """
+        UPDATE webhook_updates
+        SET status = 'done',
+            last_error = NULL,
+            next_attempt_at = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (queue_id,),
+    )
+    conn.commit()
+
+
+def mark_webhook_update_retry(
+    conn: sqlite3.Connection,
+    queue_id: int,
+    error: str,
+    *,
+    retry_delay_seconds: int,
+    max_attempts: int,
+) -> str:
+    row = conn.execute(
+        "SELECT attempts FROM webhook_updates WHERE id = ?",
+        (queue_id,),
+    ).fetchone()
+    attempts = int(row["attempts"]) if row else 0
+    normalized_error = (error or "unknown_error").strip()[:500]
+
+    if attempts >= max_attempts:
+        conn.execute(
+            """
+            UPDATE webhook_updates
+            SET status = 'failed',
+                last_error = ?,
+                next_attempt_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (normalized_error, queue_id),
+        )
+        conn.commit()
+        return "failed"
+
+    delay = max(1, int(retry_delay_seconds))
+    conn.execute(
+        """
+        UPDATE webhook_updates
+        SET status = 'retry',
+            last_error = ?,
+            next_attempt_at = datetime('now', ?),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (normalized_error, f"+{delay} seconds", queue_id),
+    )
+    conn.commit()
+    return "retry"
+
+
+def requeue_stuck_webhook_updates(conn: sqlite3.Connection, stale_after_seconds: int = 120) -> int:
+    stale_seconds = max(1, int(stale_after_seconds))
+    cursor = conn.execute(
+        """
+        UPDATE webhook_updates
+        SET status = 'retry',
+            next_attempt_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE status = 'processing'
+          AND updated_at < datetime('now', ?)
+        """,
+        (f"-{stale_seconds} seconds",),
+    )
+    conn.commit()
+    return int(cursor.rowcount)
+
+
+def count_webhook_updates_by_status(conn: sqlite3.Connection, status: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM webhook_updates WHERE status = ?",
+        (status,),
+    ).fetchone()
+    return int(row["cnt"]) if row else 0

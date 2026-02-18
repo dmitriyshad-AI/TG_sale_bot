@@ -168,13 +168,18 @@ SALES_TONE_PATH=
      curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/getWebhookInfo"
      ```
 - В webhook-режиме endpoint создается по пути `TELEGRAM_WEBHOOK_PATH` (по умолчанию `/telegram/webhook`).
-- Webhook endpoint отвечает быстро (`{"ok":true,"queued":true}`), а обработка апдейта выполняется в background-task.
+- Webhook endpoint отвечает быстро (`{"ok":true,"queued":true}`), а обработка апдейта идёт через durable SQLite-очередь с retry.
 
 ## Команды обслуживания
 
 - Инициализация/создание БД выполняется автоматически при старте API или бота.
 - Проверка статуса API: `curl http://127.0.0.1:8000/api/health`
 - Runtime-диагностика (без секретов): `curl http://127.0.0.1:8000/api/runtime/diagnostics`
+- Проверка user Mini App auth:
+  - без Telegram: `curl http://127.0.0.1:8000/api/auth/whoami` -> `{"ok":false,"reason":"not_in_telegram",...}`
+  - в Telegram Mini App: передать `initData` в `X-Tg-Init-Data` или `Authorization: tma <initData>`.
+- API подбора каталога для Mini App:
+  - `GET /api/catalog/search?brand=kmipt&grade=11&goal=ege&subject=math&format=online`
 - Проверка пользовательского Mini App:
   - `GET /` — статус API и Mini App (`ready`/`build-required`).
   - `GET /app` — собранный пользовательский Mini App или инструкция по сборке.

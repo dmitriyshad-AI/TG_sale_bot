@@ -21,7 +21,16 @@ class DatabaseTests(unittest.TestCase):
     def test_init_db_creates_required_tables(self) -> None:
         cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         table_names = {row["name"] for row in cursor.fetchall()}
-        self.assertTrue({"users", "sessions", "messages", "leads", "conversation_contexts"}.issubset(table_names))
+        self.assertTrue(
+            {
+                "users",
+                "sessions",
+                "messages",
+                "leads",
+                "conversation_contexts",
+                "webhook_updates",
+            }.issubset(table_names)
+        )
 
     def test_get_or_create_user_is_idempotent(self) -> None:
         first = db.get_or_create_user(
@@ -289,6 +298,101 @@ class DatabaseTests(unittest.TestCase):
                 )
         finally:
             conn.close()
+
+    def test_enqueue_webhook_update_deduplicates_by_update_id(self) -> None:
+        first = db.enqueue_webhook_update(
+            self.conn,
+            payload={"update_id": 100, "message": {"text": "hello"}},
+            update_id=100,
+        )
+        second = db.enqueue_webhook_update(
+            self.conn,
+            payload={"update_id": 100, "message": {"text": "hello-again"}},
+            update_id=100,
+        )
+
+        self.assertTrue(first["is_new"])
+        self.assertFalse(second["is_new"])
+        self.assertEqual(first["id"], second["id"])
+
+    def test_claim_and_mark_webhook_update_done(self) -> None:
+        queued = db.enqueue_webhook_update(
+            self.conn,
+            payload={"update_id": 101, "message": {"text": "payload"}},
+            update_id=101,
+        )
+        self.assertTrue(queued["is_new"])
+
+        claimed = db.claim_webhook_update(self.conn)
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["id"], queued["id"])
+        self.assertEqual(claimed["attempts"], 1)
+        self.assertEqual(claimed["payload"]["update_id"], 101)
+
+        db.mark_webhook_update_done(self.conn, queue_id=queued["id"])
+        done_count = db.count_webhook_updates_by_status(self.conn, "done")
+        self.assertEqual(done_count, 1)
+
+    def test_mark_webhook_update_retry_then_failed(self) -> None:
+        queued = db.enqueue_webhook_update(
+            self.conn,
+            payload={"update_id": 102},
+            update_id=102,
+        )
+        self.assertTrue(queued["is_new"])
+
+        first_claim = db.claim_webhook_update(self.conn)
+        self.assertIsNotNone(first_claim)
+        first_status = db.mark_webhook_update_retry(
+            self.conn,
+            queue_id=queued["id"],
+            error="temporary-error",
+            retry_delay_seconds=1,
+            max_attempts=2,
+        )
+        self.assertEqual(first_status, "retry")
+
+        # Force immediate retry in test environment.
+        self.conn.execute(
+            "UPDATE webhook_updates SET next_attempt_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (queued["id"],),
+        )
+        self.conn.commit()
+
+        second_claim = db.claim_webhook_update(self.conn)
+        self.assertIsNotNone(second_claim)
+        self.assertEqual(second_claim["attempts"], 2)
+        second_status = db.mark_webhook_update_retry(
+            self.conn,
+            queue_id=queued["id"],
+            error="permanent-error",
+            retry_delay_seconds=1,
+            max_attempts=2,
+        )
+        self.assertEqual(second_status, "failed")
+        failed_count = db.count_webhook_updates_by_status(self.conn, "failed")
+        self.assertEqual(failed_count, 1)
+
+    def test_requeue_stuck_webhook_updates(self) -> None:
+        queued = db.enqueue_webhook_update(
+            self.conn,
+            payload={"update_id": 103},
+            update_id=103,
+        )
+        self.assertTrue(queued["is_new"])
+        claimed = db.claim_webhook_update(self.conn)
+        self.assertIsNotNone(claimed)
+
+        self.conn.execute(
+            "UPDATE webhook_updates SET updated_at = datetime('now', '-10 minutes') WHERE id = ?",
+            (queued["id"],),
+        )
+        self.conn.commit()
+
+        moved = db.requeue_stuck_webhook_updates(self.conn, stale_after_seconds=60)
+        self.assertEqual(moved, 1)
+        retry_count = db.count_webhook_updates_by_status(self.conn, "retry")
+        self.assertEqual(retry_count, 1)
 
 
 if __name__ == "__main__":

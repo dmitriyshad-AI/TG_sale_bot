@@ -95,6 +95,69 @@ body::before {
   color: var(--text-muted);
 }
 
+.pickerStack {
+  display: grid;
+  gap: var(--spacing-3);
+}
+
+.pickerSection {
+  padding: var(--spacing-3);
+  display: grid;
+  gap: var(--spacing-2);
+}
+
+.chipGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  gap: var(--spacing-2);
+}
+
+.pickerControls {
+  display: flex;
+  gap: var(--spacing-2);
+  justify-content: flex-end;
+}
+
+.resultsGrid {
+  display: grid;
+  gap: var(--spacing-3);
+}
+
+.resultCard {
+  padding: var(--spacing-3);
+  display: grid;
+  gap: var(--spacing-2);
+}
+
+.resultMeta {
+  margin: 0;
+  font-size: 14px;
+  color: rgba(4, 43, 65, 0.86);
+  font-weight: 600;
+}
+
+.uspList {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.resultLink {
+  text-decoration: none;
+  display: inline-flex;
+  width: fit-content;
+}
+
+.errorBox {
+  padding: var(--spacing-2) var(--spacing-3);
+  color: #7f1d1d;
+  border-color: rgba(252, 165, 165, 0.65);
+  background: rgba(255, 228, 228, 0.5);
+}
+
 .bottomDock {
   border-radius: var(--dock-radius);
   padding: var(--spacing-3) var(--spacing-4);
@@ -124,6 +187,10 @@ body::before {
   .appShell {
     padding-left: var(--spacing-3);
     padding-right: var(--spacing-3);
+  }
+
+  .pickerControls {
+    flex-direction: column;
   }
 
   .bottomDock {
