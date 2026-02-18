@@ -91,6 +91,8 @@ docker compose -f docker-compose.prod.yml up -d --build
 Важно:
 - Один токен нельзя запускать одновременно локально и в Render.
 - Free Web Service может уходить в sleep при простое; для стабильного 24/7 обычно переходят на paid или webhook-архитектуру.
+- Если persistent disk не подключен и `/var/data` недоступен, сервис автоматически использует `/tmp`
+  для SQLite и metadata vector store (стартует без ручной настройки, но данные будут временными).
 
 ## Структура
 

@@ -175,12 +175,22 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(settings.tallanto_read_only)
 
     @patch.dict(os.environ, {"RENDER": "true"}, clear=True)
-    def test_render_defaults_use_var_data_for_database_and_vector_meta(self) -> None:
+    @patch("sales_agent.sales_core.config._path_is_writable_directory", return_value=True)
+    def test_render_defaults_use_var_data_when_writable(self, _mock_writable: object) -> None:
         settings = get_settings()
         self.assertTrue(settings.running_on_render)
         self.assertEqual(settings.persistent_data_root, Path("/var/data"))
         self.assertEqual(settings.database_path, Path("/var/data/sales_agent.db"))
         self.assertEqual(settings.vector_store_meta_path, Path("/var/data/vector_store.json"))
+
+    @patch.dict(os.environ, {"RENDER": "true"}, clear=True)
+    @patch("sales_agent.sales_core.config._path_is_writable_directory", return_value=False)
+    def test_render_defaults_fallback_to_tmp_when_var_data_unavailable(self, _mock_writable: object) -> None:
+        settings = get_settings()
+        self.assertTrue(settings.running_on_render)
+        self.assertEqual(settings.persistent_data_root, Path("/tmp"))
+        self.assertEqual(settings.database_path, Path("/tmp/sales_agent.db"))
+        self.assertEqual(settings.vector_store_meta_path, Path("/tmp/vector_store.json"))
 
     @patch.dict(os.environ, {"PERSISTENT_DATA_PATH": "/tmp/persistent-sales-data"}, clear=True)
     def test_explicit_persistent_data_path_overrides_defaults(self) -> None:

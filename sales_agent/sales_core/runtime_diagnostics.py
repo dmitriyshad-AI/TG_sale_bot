@@ -153,8 +153,7 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
     vector_meta_on_persistent_storage = False
     if settings.running_on_render:
         persistent_root = settings.persistent_data_root
-        has_persistent_root = persistent_root != Path()
-        if not has_persistent_root:
+        if persistent_root == Path():
             issues.append(
                 DiagnosticIssue(
                     severity="warning",
@@ -162,6 +161,17 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
                     message=(
                         "Render environment detected but persistent data root is not configured. "
                         "Set PERSISTENT_DATA_PATH (for example /var/data)."
+                    ),
+                )
+            )
+        elif persistent_root == Path("/tmp"):
+            issues.append(
+                DiagnosticIssue(
+                    severity="warning",
+                    code="render_ephemeral_storage_fallback",
+                    message=(
+                        "Render persistent storage is not configured, using /tmp fallback. "
+                        "Database and vector metadata will reset after redeploy/restart."
                     ),
                 )
             )

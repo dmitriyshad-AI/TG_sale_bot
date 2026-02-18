@@ -53,6 +53,10 @@ def project_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
+def _path_is_writable_directory(path: Path) -> bool:
+    return path.exists() and path.is_dir() and os.access(path, os.W_OK)
+
+
 def get_settings() -> Settings:
     root = project_root()
     running_on_render = any(
@@ -63,11 +67,14 @@ def get_settings() -> Settings:
         os.getenv("PERSISTENT_DATA_PATH", "").strip()
         or os.getenv("RENDER_PERSISTENT_DATA_PATH", "").strip()
     )
-    persistent_data_root = (
-        Path(persistent_data_env)
-        if persistent_data_env
-        else (Path("/var/data") if running_on_render else Path())
-    )
+    if persistent_data_env:
+        persistent_data_root = Path(persistent_data_env)
+    elif running_on_render:
+        render_default = Path("/var/data")
+        # Render Free may have no mounted persistent disk; keep startup working with /tmp fallback.
+        persistent_data_root = render_default if _path_is_writable_directory(render_default) else Path("/tmp")
+    else:
+        persistent_data_root = Path()
     has_persistent_root = persistent_data_root != Path()
 
     database_path = os.getenv("DATABASE_PATH")

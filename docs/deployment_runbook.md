@@ -179,6 +179,8 @@ docker compose -f docker-compose.prod.yml up -d --build
    BRAND_DEFAULT=kmipt
    CRM_PROVIDER=none
    ```
+   Если persistent disk на Render не подключен, сервис теперь автоматически использует `/tmp`
+   для SQLite и метаданных vector store (работает, но данные будут сбрасываться после redeploy/restart).
 5. Health Check Path: `/api/health`.
 6. Запустите deploy и проверьте логи сервиса:
    - `Starting API on 0.0.0.0...`

@@ -266,6 +266,42 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         self.assertTrue(runtime["database_on_persistent_storage"])
         self.assertTrue(runtime["vector_meta_on_persistent_storage"])
 
+    def test_diagnostics_warns_when_render_uses_tmp_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            catalog_path = root / "catalog.yaml"
+            _write_catalog(catalog_path)
+            knowledge_path = root / "knowledge"
+            knowledge_path.mkdir(parents=True, exist_ok=True)
+            (knowledge_path / "faq_general.md").write_text("FAQ", encoding="utf-8")
+
+            db_path = Path("/tmp/sales_agent_test_runtime.db")
+            settings = Settings(
+                telegram_bot_token="tg-token",
+                openai_api_key="sk-test",
+                openai_model="gpt-4.1",
+                tallanto_api_url="",
+                tallanto_api_key="",
+                brand_default="kmipt",
+                database_path=db_path,
+                catalog_path=catalog_path,
+                knowledge_path=knowledge_path,
+                vector_store_meta_path=Path("/tmp/vector_store_test_runtime.json"),
+                openai_vector_store_id="vs_123",
+                admin_user="",
+                admin_pass="",
+                running_on_render=True,
+                persistent_data_root=Path("/tmp"),
+            )
+            diagnostics = build_runtime_diagnostics(settings)
+
+        self.assertEqual(diagnostics["status"], "warn")
+        issue_codes = {item["code"] for item in diagnostics["issues"]}
+        self.assertIn("render_ephemeral_storage_fallback", issue_codes)
+        runtime = diagnostics["runtime"]
+        self.assertFalse(runtime["database_on_persistent_storage"])
+        self.assertFalse(runtime["vector_meta_on_persistent_storage"])
+
     def test_diagnostics_warns_for_render_without_persistent_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
