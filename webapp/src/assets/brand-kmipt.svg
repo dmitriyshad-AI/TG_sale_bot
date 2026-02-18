@@ -1,33 +1,43 @@
-<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="24" y1="24" x2="232" y2="232" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#5CC8FF"/>
-      <stop offset="1" stop-color="#1E8ED6"/>
-    </linearGradient>
-    <linearGradient id="glass" x1="60" y1="52" x2="198" y2="184" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#FFFFFF" stop-opacity="0.82"/>
-      <stop offset="1" stop-color="#D9F3FF" stop-opacity="0.18"/>
-    </linearGradient>
-    <filter id="shadow" x="18" y="14" width="220" height="228" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+    <radialGradient id="bg" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(188 144) rotate(50) scale(440 440)">
+      <stop stop-color="#4BAFF3"/>
+      <stop offset="1" stop-color="#1A67AE"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(274 152) rotate(90) scale(70 120)">
+      <stop stop-color="#BEE7FF" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#BEE7FF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="20" y="20" width="472" height="472" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
       <feFlood flood-opacity="0" result="BackgroundImageFix"/>
-      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
-      <feOffset dy="8"/>
-      <feGaussianBlur stdDeviation="8"/>
-      <feColorMatrix type="matrix" values="0 0 0 0 0.0352941 0 0 0 0 0.317647 0 0 0 0 0.505882 0 0 0 0.28 0"/>
-      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
-      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+      <feGaussianBlur in="BackgroundImageFix" stdDeviation="6"/>
+      <feComposite in2="SourceAlpha" operator="in" result="effect1_backgroundBlur_13_2"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_backgroundBlur_13_2" result="shape"/>
+    </filter>
+    <filter id="textGlow" x="40" y="140" width="432" height="300" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feGaussianBlur stdDeviation="6"/>
+      <feComposite in2="SourceAlpha" operator="in" result="effect1_backgroundBlur_13_3"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_backgroundBlur_13_3" result="shape"/>
     </filter>
   </defs>
-  <rect x="24" y="24" width="208" height="208" rx="52" fill="url(#bg)"/>
-  <g filter="url(#shadow)">
-    <rect x="40" y="36" width="176" height="176" rx="44" fill="url(#glass)"/>
-    <rect x="40.8" y="36.8" width="174.4" height="174.4" rx="43.2" stroke="white" stroke-opacity="0.42" stroke-width="1.6"/>
+  <circle cx="256" cy="256" r="252" fill="url(#bg)"/>
+  <g opacity="0.22">
+    <text x="98" y="112" fill="#9FD8FF" font-size="64" font-family="Avenir Next, Segoe UI, sans-serif">Cos²(a)</text>
+    <text x="46" y="228" fill="#9FD8FF" font-size="58" font-family="Avenir Next, Segoe UI, sans-serif">(a)=√(1-c</text>
+    <text x="94" y="328" fill="#9FD8FF" font-size="58" font-family="Avenir Next, Segoe UI, sans-serif">1+tg²(a)</text>
+    <text x="264" y="430" fill="#9FD8FF" font-size="58" font-family="Avenir Next, Segoe UI, sans-serif">sec</text>
   </g>
-  <path d="M56 92C88 72 120 66 168 72C186 74 201 82 212 94V112C196 98 180 92 160 90C122 86 92 92 56 112V92Z" fill="white" fill-opacity="0.38"/>
-  <path d="M60 154C92 174 124 182 172 176C190 174 205 166 216 154V136C200 150 184 156 164 158C126 162 96 156 60 136V154Z" fill="white" fill-opacity="0.22"/>
-  <g fill="#0A3A5A">
-    <path d="M72 160V96H88V124L116 96H136L108 124L138 160H118L96 132L88 140V160H72Z"/>
-    <path d="M142 160V96H158V160H142Z"/>
-    <path d="M164 160V96H180L198 124L216 96H232V160H216V122L202 146H194L180 122V160H164Z"/>
+  <ellipse cx="276" cy="150" rx="96" ry="64" fill="url(#glow)"/>
+  <g filter="url(#soft)">
+    <ellipse cx="278" cy="150" rx="100" ry="52" stroke="#F4FBFF" stroke-width="6"/>
+    <ellipse cx="278" cy="150" rx="34" ry="114" stroke="#F4FBFF" stroke-width="6"/>
+    <ellipse cx="278" cy="150" rx="30" ry="112" transform="rotate(56 278 150)" stroke="#F4FBFF" stroke-width="6"/>
+    <circle cx="278" cy="150" r="24" fill="#F4FBFF"/>
+    <circle cx="230" cy="214" r="9" fill="#F4FBFF"/>
+    <circle cx="356" cy="82" r="9" fill="#F4FBFF"/>
+  </g>
+  <g filter="url(#textGlow)">
+    <text x="76" y="404" fill="#FDFBF2" font-size="360" font-family="Times New Roman, Georgia, serif" font-style="italic" font-weight="700">m</text>
   </g>
 </svg>

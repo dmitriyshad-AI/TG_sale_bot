@@ -223,6 +223,8 @@ const COACHMARKS = [
   "3/3 Получите варианты или задайте вопрос Гиду."
 ];
 const CUSTOM_BRAND_LOGO_URL = "/brand-kmipt.png";
+const DEFAULT_MANAGER_TELEGRAM_USERNAME = "unpk_mipt";
+const MAX_MANAGER_CONTEXT_LENGTH = 900;
 
 const rootNode = document.getElementById("app");
 if (!rootNode) {
@@ -419,16 +421,113 @@ function createBrandMark(): HTMLElement {
 }
 
 function openManagerChat(): void {
-  const target = state.managerChatUrl.trim();
-  if (target) {
-    const opened = openExternalLink(webApp, target);
-    if (!opened) {
-      state.error = "Не удалось открыть чат менеджера. Попробуйте снова.";
-      render();
+  const contextText = buildManagerContextSummary();
+  const encoded = encodeURIComponent(contextText);
+  const username = resolveManagerUsername();
+  const preferredLinks = [
+    `tg://resolve?domain=${username}&text=${encoded}`,
+    `https://t.me/${username}?text=${encoded}`,
+  ];
+
+  for (const link of preferredLinks) {
+    if (openExternalLink(webApp, link)) {
+      return;
     }
-    return;
   }
+
   sendConsultationRequestToChat();
+  state.error = "Не удалось открыть чат менеджера напрямую. Контекст отправлен в бот.";
+  render();
+}
+
+function resolveManagerUsername(): string {
+  const direct = DEFAULT_MANAGER_TELEGRAM_USERNAME.trim();
+  if (direct) {
+    return direct;
+  }
+  const fromMeta = state.managerChatUrl.trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "");
+  return fromMeta || "unpk_mipt";
+}
+
+function compactValue(value: string | null | undefined, fallback = "не указано"): string {
+  const normalized = (value || "").trim();
+  return normalized || fallback;
+}
+
+function compactCriteriaSummary(): string {
+  const grade = state.criteria.grade ? `${state.criteria.grade} кл.` : "класс не указан";
+  const goalMap: Record<string, string> = {
+    ege: "ЕГЭ",
+    oge: "ОГЭ",
+    olympiad: "олимпиады",
+    camp: "лагерь",
+    base: "успеваемость",
+  };
+  const subjectMap: Record<string, string> = {
+    math: "математика",
+    physics: "физика",
+    informatics: "информатика",
+  };
+  const formatMap: Record<string, string> = {
+    online: "онлайн",
+    offline: "очно",
+    hybrid: "гибрид",
+  };
+  const goal = goalMap[state.criteria.goal || ""] || compactValue(state.criteria.goal);
+  const subject = subjectMap[state.criteria.subject || ""] || compactValue(state.criteria.subject);
+  const mode = formatMap[state.criteria.format || ""] || compactValue(state.criteria.format);
+  return `${grade}; цель: ${goal}; предмет: ${subject}; формат: ${mode}`;
+}
+
+function compactProductsSummary(): string {
+  if (!state.results.length) {
+    return "подбор пока без финального совпадения";
+  }
+  const titles = state.results.slice(0, 3).map((item) => item.title.trim()).filter(Boolean);
+  return titles.length ? titles.join(" | ") : "подбор есть, названия уточняются";
+}
+
+function compactDialogueSummary(): string {
+  const userMessages = state.chatMessages.filter((item) => item.role === "user").slice(-2);
+  if (!userMessages.length) {
+    return "в Mini App еще не было свободного вопроса";
+  }
+  return userMessages
+    .map((item, index) => `${index + 1}) ${item.text.replace(/\s+/g, " ").trim()}`)
+    .join(" ");
+}
+
+function trimForManager(text: string): string {
+  const normalized = text.replace(/\s+\n/g, "\n").trim();
+  if (normalized.length <= MAX_MANAGER_CONTEXT_LENGTH) {
+    return normalized;
+  }
+  return `${normalized.slice(0, MAX_MANAGER_CONTEXT_LENGTH - 1).trimEnd()}…`;
+}
+
+function buildManagerContextSummary(): string {
+  const personParts: string[] = [];
+  if (state.user?.first_name) {
+    personParts.push(state.user.first_name);
+  }
+  if (state.user?.username) {
+    personParts.push(`@${state.user.username}`);
+  }
+  if (typeof state.user?.id === "number") {
+    personParts.push(`id:${state.user.id}`);
+  }
+  const who = personParts.length ? personParts.join(" ") : "пользователь Mini App";
+
+  const lines = [
+    "Здравствуйте! Это запрос из клиентского Mini App УНПК МФТИ.",
+    `Клиент: ${who}.`,
+    `Контекст запроса: ${compactCriteriaSummary()}.`,
+    `Подобранные программы: ${compactProductsSummary()}.`,
+    `Последние вопросы клиента: ${compactDialogueSummary()}.`,
+    "Просьба: связаться и дать персональную траекторию обучения.",
+  ];
+
+  return trimForManager(lines.join("\n"));
 }
 
 function createTopNav(): HTMLElement {
@@ -437,16 +536,18 @@ function createTopNav(): HTMLElement {
 
   const left = document.createElement("div");
   left.className = "topNavLeft";
-  const back = document.createElement("button");
-  back.type = "button";
-  back.className = "glassButton navBackButton";
-  back.textContent = "Назад";
-  back.disabled = !canGoBack();
-  back.addEventListener("click", () => {
-    triggerHaptic(webApp, "light");
-    goBack();
-  });
-  left.append(back, createBrandMark());
+  if (canGoBack()) {
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "glassButton navBackButton";
+    back.textContent = "Назад";
+    back.addEventListener("click", () => {
+      triggerHaptic(webApp, "light");
+      goBack();
+    });
+    left.appendChild(back);
+  }
+  left.append(createBrandMark());
 
   const tabs = document.createElement("div");
   tabs.className = "topNavTabs";
