@@ -298,6 +298,8 @@ products:
         self.assertIn("косинус", payload["answer_text"].lower())
         self.assertIn("manager_offer", payload)
         self.assertIn("processing_note", payload)
+        self.assertTrue(response.headers.get("X-Request-ID"))
+        self.assertEqual(payload.get("request_id"), response.headers.get("X-Request-ID"))
 
     def test_assistant_ask_returns_consultative_with_recommendation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -341,6 +343,29 @@ products:
         self.assertIn("manager_offer", payload)
         self.assertGreaterEqual(len(payload["recommended_products"]), 1)
         self.assertEqual(payload["recommended_products"][0]["id"], "kmipt-ege-math")
+        self.assertTrue(response.headers.get("X-Request-ID"))
+        self.assertEqual(payload.get("request_id"), response.headers.get("X-Request-ID"))
+
+    def test_assistant_ask_empty_question_returns_user_message_and_request_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            app = create_app(_settings(root / "app.db", root / "missing_dist"))
+            client = TestClient(app)
+            response = client.post(
+                "/api/assistant/ask",
+                json={
+                    "question": "   ",
+                    "criteria": {"brand": "kmipt"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.json()
+        detail = payload.get("detail")
+        self.assertIsInstance(detail, dict)
+        self.assertEqual(detail.get("code"), "empty_question")
+        self.assertIn("Напишите вопрос", detail.get("user_message", ""))
+        self.assertEqual(detail.get("request_id"), response.headers.get("X-Request-ID"))
 
 
 if __name__ == "__main__":

@@ -60,6 +60,7 @@ type AssistantRecommendedItem = {
 
 type AssistantResponse = {
   ok: boolean;
+  request_id?: string;
   mode: "knowledge" | "consultative" | "general";
   answer_text: string;
   sources: string[];
@@ -72,6 +73,13 @@ type AssistantResponse = {
     call_to_action: string;
   };
   processing_note: string;
+};
+
+type AssistantErrorDetail = {
+  code?: string;
+  message?: string;
+  user_message?: string;
+  request_id?: string;
 };
 
 type MiniappMetaResponse = {
@@ -103,6 +111,18 @@ type ChatMessage = {
   sources?: string[];
   meta?: string;
 };
+
+class AssistantApiError extends Error {
+  readonly userMessage: string;
+  readonly requestId: string | null;
+
+  constructor(userMessage: string, requestId: string | null) {
+    super(userMessage);
+    this.name = "AssistantApiError";
+    this.userMessage = userMessage;
+    this.requestId = requestId;
+  }
+}
 
 type ManagerOffer = {
   recommended: boolean;
@@ -1163,6 +1183,56 @@ function toCatalogItem(item: AssistantRecommendedItem): CatalogItem {
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+async function readAssistantApiError(response: Response): Promise<AssistantApiError> {
+  const fallbackMessage = "Не удалось получить ответ. Попробуйте еще раз через несколько секунд.";
+  let userMessage = fallbackMessage;
+  let requestId = (response.headers.get("X-Request-ID") || "").trim() || null;
+
+  try {
+    const payload = (await response.json()) as unknown;
+    if (isRecord(payload)) {
+      if (typeof payload.user_message === "string" && payload.user_message.trim()) {
+        userMessage = payload.user_message.trim();
+      }
+      if (!requestId && typeof payload.request_id === "string" && payload.request_id.trim()) {
+        requestId = payload.request_id.trim();
+      }
+
+      const detail = payload.detail;
+      if (typeof detail === "string") {
+        if (detail.trim() && response.status < 500) {
+          userMessage = detail.trim();
+        }
+      } else if (isRecord(detail)) {
+        const typedDetail = detail as AssistantErrorDetail;
+        if (typeof typedDetail.user_message === "string" && typedDetail.user_message.trim()) {
+          userMessage = typedDetail.user_message.trim();
+        } else if (typeof typedDetail.message === "string" && typedDetail.message.trim() && response.status < 500) {
+          userMessage = typedDetail.message.trim();
+        }
+        if (!requestId && typeof typedDetail.request_id === "string" && typedDetail.request_id.trim()) {
+          requestId = typedDetail.request_id.trim();
+        }
+      }
+    }
+  } catch (_error) {
+    // Keep fallback message for non-JSON API failures.
+  }
+
+  return new AssistantApiError(userMessage, requestId);
+}
+
+function normalizeAssistantApiError(error: unknown): AssistantApiError {
+  if (error instanceof AssistantApiError) {
+    return error;
+  }
+  return new AssistantApiError("Не удалось получить ответ. Попробуйте еще раз через несколько секунд.", null);
+}
+
 async function askAssistantQuestion(questionOverride?: string): Promise<void> {
   const question = (questionOverride || state.chatInput).trim();
   if (!question || state.chatLoading) {
@@ -1191,19 +1261,25 @@ async function askAssistantQuestion(questionOverride?: string): Promise<void> {
       })
     });
     if (!response.ok) {
-      throw new Error(`assistant ask failed: ${response.status}`);
+      throw await readAssistantApiError(response);
     }
 
     const payload = (await response.json()) as AssistantResponse;
     if (!payload.ok) {
-      throw new Error("assistant returned not ok");
+      throw new AssistantApiError(
+        "Сервис ответа вернул некорректный результат. Попробуйте еще раз через несколько секунд.",
+        payload.request_id || null
+      );
     }
 
+    const responseRequestId = payload.request_id || (response.headers.get("X-Request-ID") || "").trim() || "";
+    const metaText = payload.processing_note || "";
+    const metaWithRequestId = responseRequestId ? `${metaText} Код запроса: ${responseRequestId}` : metaText;
     state.chatMessages.push({
       role: "assistant",
       text: payload.answer_text,
       sources: Array.isArray(payload.sources) ? payload.sources : [],
-      meta: payload.processing_note || undefined
+      meta: metaWithRequestId || undefined
     });
 
     if (Array.isArray(payload.recommended_products) && payload.recommended_products.length > 0) {
@@ -1221,11 +1297,17 @@ async function askAssistantQuestion(questionOverride?: string): Promise<void> {
       state.managerMessage = payload.manager_offer.message || state.managerMessage;
       state.managerCallToAction = payload.manager_offer.call_to_action || state.managerCallToAction;
     }
-  } catch (_error) {
-    state.error = "Не удалось получить ответ. Попробуйте еще раз через несколько секунд.";
+  } catch (error) {
+    const apiError = normalizeAssistantApiError(error);
+    state.error = apiError.requestId
+      ? `${apiError.userMessage} Код запроса: ${apiError.requestId}`
+      : apiError.userMessage;
+    const assistantErrorText = apiError.requestId
+      ? `Я на связи, но сейчас не удалось завершить обработку. Попробуйте повторить вопрос. Код запроса: ${apiError.requestId}.`
+      : "Я на связи, просто сейчас не удалось завершить обработку запроса. Попробуйте повторить вопрос.";
     state.chatMessages.push({
       role: "assistant",
-      text: "Я на связи, просто сейчас не удалось завершить обработку запроса. Попробуйте повторить вопрос."
+      text: assistantErrorText
     });
   } finally {
     stopChatProgress();

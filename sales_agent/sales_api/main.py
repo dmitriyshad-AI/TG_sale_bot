@@ -9,11 +9,12 @@ import logging
 import secrets
 from pathlib import Path
 from typing import Any, Dict, Optional
+from uuid import uuid4
 from urllib.parse import quote_plus
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from telegram import Update
@@ -57,6 +58,7 @@ WEBHOOK_STALE_PROCESSING_SECONDS = 180
 WEBHOOK_RETRY_BASE_SECONDS = 2
 CRM_CACHE_TTL_SECONDS = 3 * 3600
 ASSISTANT_TIMEOUT_SECONDS = 36.0
+REQUEST_ID_HEADER = "X-Request-ID"
 ASSISTANT_KNOWLEDGE_HINTS = {
     "договор",
     "документ",
@@ -275,6 +277,13 @@ def _safe_user_payload(payload: dict | None) -> dict:
     }
 
 
+def _request_id_from_request(request: Request) -> str:
+    request_id = getattr(request.state, "request_id", "")
+    if isinstance(request_id, str) and request_id.strip():
+        return request_id.strip()
+    return "unknown"
+
+
 def _format_price_text(product: object) -> str:
     sessions = getattr(product, "sessions", None)
     if not isinstance(sessions, list) or not sessions:
@@ -426,6 +435,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.info("Telegram webhook application stopped")
 
     app = FastAPI(title="sales-agent", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def request_id_middleware(request: Request, call_next):
+        incoming = request.headers.get(REQUEST_ID_HEADER, "").strip()
+        request_id = incoming if incoming else uuid4().hex[:12]
+        request.state.request_id = request_id
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.exception("Unhandled API error (request_id=%s, path=%s)", request_id, request.url.path)
+            response = JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={
+                    "ok": False,
+                    "detail": {
+                        "code": "internal_error",
+                        "message": "Unexpected server error.",
+                        "user_message": "Сервис временно недоступен. Попробуйте еще раз через минуту.",
+                        "request_id": request_id,
+                    },
+                },
+            )
+        response.headers[REQUEST_ID_HEADER] = request_id
+        return response
+
     miniapp_dir = project_root() / "sales_agent" / "sales_api" / "static" / "admin_miniapp"
     if miniapp_dir.exists():
         app.mount(
@@ -717,112 +751,136 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post("/api/assistant/ask")
-    async def assistant_ask(payload: AssistantAskPayload):
+    async def assistant_ask(payload: AssistantAskPayload, request: Request):
+        request_id = _request_id_from_request(request)
         question = payload.question.strip()
         if not question:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Question is empty.")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "empty_question",
+                    "message": "Question is empty.",
+                    "user_message": "Сообщение получилось пустым. Напишите вопрос текстом.",
+                    "request_id": request_id,
+                },
+            )
 
-        criteria = _criteria_from_payload(payload.criteria, brand_default=cfg.brand_default)
         try:
-            top_products = select_top_products(
-                criteria,
-                path=cfg.catalog_path,
-                top_k=3,
-                brand_default=cfg.brand_default,
-            )
-        except (CatalogValidationError, FileNotFoundError, OSError):
-            top_products = []
-
-        match_quality = _evaluate_match_quality(criteria, top_products)
-        manager_offer = _build_manager_offer(match_quality, has_results=bool(top_products))
-        mode = _assistant_mode(question, criteria)
-
-        llm_client = LLMClient(
-            api_key=cfg.openai_api_key,
-            model=cfg.openai_model,
-            timeout_seconds=ASSISTANT_TIMEOUT_SECONDS,
-        )
-        user_context: Dict[str, Any] = {}
-        if isinstance(payload.context_summary, str) and payload.context_summary.strip():
-            user_context["summary_text"] = payload.context_summary.strip()
-
-        answer_text = ""
-        sources: list[str] = []
-        used_fallback = False
-        recommended_ids: list[str] = []
-
-        if mode == "knowledge":
-            vector_store_id = cfg.openai_vector_store_id or load_vector_store_id(cfg.vector_store_meta_path)
-            knowledge_reply = await llm_client.answer_knowledge_question_async(
-                question=question,
-                vector_store_id=vector_store_id,
-                user_context=user_context,
-                allow_web_fallback=cfg.openai_web_fallback_enabled,
-                site_domain=cfg.openai_web_fallback_domain,
-            )
-            answer_text = knowledge_reply.answer_text
-            sources = list(knowledge_reply.sources)
-            used_fallback = knowledge_reply.used_fallback
-        elif mode == "consultative":
-            consult_reply = await llm_client.build_consultative_reply_async(
-                user_message=question,
-                criteria=criteria,
-                top_products=top_products,
-                missing_fields=_missing_criteria_fields(criteria),
-                repeat_count=0,
-                product_offer_allowed=match_quality != "none",
-                recent_history=[],
-                user_context=user_context,
-            )
-            answer_text = consult_reply.answer_text
-            used_fallback = consult_reply.used_fallback
-            recommended_ids = list(consult_reply.recommended_product_ids)
-        else:
-            general_reply = await llm_client.build_general_help_reply_async(
-                user_message=question,
-                dialogue_state=None,
-                recent_history=[],
-                user_context=user_context,
-            )
-            answer_text = general_reply.answer_text
-            used_fallback = general_reply.used_fallback
-
-        recommended_products: list[Dict[str, str]] = []
-        if top_products:
-            allowed_ids = {item.id for item in top_products}
-            filtered_ids = [item_id for item_id in recommended_ids if item_id in allowed_ids]
-            if mode == "consultative" and not filtered_ids:
-                filtered_ids = [top_products[0].id]
-            for product in top_products:
-                if product.id not in filtered_ids:
-                    continue
-                recommended_products.append(
-                    {
-                        "id": product.id,
-                        "title": product.title,
-                        "url": str(product.url),
-                        "why_match": explain_match(product, criteria),
-                    }
+            criteria = _criteria_from_payload(payload.criteria, brand_default=cfg.brand_default)
+            try:
+                top_products = select_top_products(
+                    criteria,
+                    path=cfg.catalog_path,
+                    top_k=3,
+                    brand_default=cfg.brand_default,
                 )
+            except (CatalogValidationError, FileNotFoundError, OSError):
+                top_products = []
 
-        return {
-            "ok": True,
-            "mode": mode,
-            "answer_text": answer_text,
-            "sources": sources,
-            "used_fallback": used_fallback,
-            "criteria": {
-                "brand": criteria.brand or cfg.brand_default,
-                "grade": criteria.grade,
-                "goal": criteria.goal,
-                "subject": criteria.subject,
-                "format": criteria.format,
-            },
-            "match_quality": match_quality,
-            "recommended_products": recommended_products,
-            "manager_offer": manager_offer,
-            "processing_note": "Спасибо за ожидание. Запрос проработан подробно, можно продолжать диалог.",
-        }
+            match_quality = _evaluate_match_quality(criteria, top_products)
+            manager_offer = _build_manager_offer(match_quality, has_results=bool(top_products))
+            mode = _assistant_mode(question, criteria)
+
+            llm_client = LLMClient(
+                api_key=cfg.openai_api_key,
+                model=cfg.openai_model,
+                timeout_seconds=ASSISTANT_TIMEOUT_SECONDS,
+            )
+            user_context: Dict[str, Any] = {}
+            if isinstance(payload.context_summary, str) and payload.context_summary.strip():
+                user_context["summary_text"] = payload.context_summary.strip()
+
+            answer_text = ""
+            sources: list[str] = []
+            used_fallback = False
+            recommended_ids: list[str] = []
+
+            if mode == "knowledge":
+                vector_store_id = cfg.openai_vector_store_id or load_vector_store_id(cfg.vector_store_meta_path)
+                knowledge_reply = await llm_client.answer_knowledge_question_async(
+                    question=question,
+                    vector_store_id=vector_store_id,
+                    user_context=user_context,
+                    allow_web_fallback=cfg.openai_web_fallback_enabled,
+                    site_domain=cfg.openai_web_fallback_domain,
+                )
+                answer_text = knowledge_reply.answer_text
+                sources = list(knowledge_reply.sources)
+                used_fallback = knowledge_reply.used_fallback
+            elif mode == "consultative":
+                consult_reply = await llm_client.build_consultative_reply_async(
+                    user_message=question,
+                    criteria=criteria,
+                    top_products=top_products,
+                    missing_fields=_missing_criteria_fields(criteria),
+                    repeat_count=0,
+                    product_offer_allowed=match_quality != "none",
+                    recent_history=[],
+                    user_context=user_context,
+                )
+                answer_text = consult_reply.answer_text
+                used_fallback = consult_reply.used_fallback
+                recommended_ids = list(consult_reply.recommended_product_ids)
+            else:
+                general_reply = await llm_client.build_general_help_reply_async(
+                    user_message=question,
+                    dialogue_state=None,
+                    recent_history=[],
+                    user_context=user_context,
+                )
+                answer_text = general_reply.answer_text
+                used_fallback = general_reply.used_fallback
+
+            recommended_products: list[Dict[str, str]] = []
+            if top_products:
+                allowed_ids = {item.id for item in top_products}
+                filtered_ids = [item_id for item_id in recommended_ids if item_id in allowed_ids]
+                if mode == "consultative" and not filtered_ids:
+                    filtered_ids = [top_products[0].id]
+                for product in top_products:
+                    if product.id not in filtered_ids:
+                        continue
+                    recommended_products.append(
+                        {
+                            "id": product.id,
+                            "title": product.title,
+                            "url": str(product.url),
+                            "why_match": explain_match(product, criteria),
+                        }
+                    )
+
+            return {
+                "ok": True,
+                "request_id": request_id,
+                "mode": mode,
+                "answer_text": answer_text,
+                "sources": sources,
+                "used_fallback": used_fallback,
+                "criteria": {
+                    "brand": criteria.brand or cfg.brand_default,
+                    "grade": criteria.grade,
+                    "goal": criteria.goal,
+                    "subject": criteria.subject,
+                    "format": criteria.format,
+                },
+                "match_quality": match_quality,
+                "recommended_products": recommended_products,
+                "manager_offer": manager_offer,
+                "processing_note": "Спасибо за ожидание. Запрос проработан подробно, можно продолжать диалог.",
+            }
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Assistant ask failed (request_id=%s)", request_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "assistant_unavailable",
+                    "message": "Assistant request failed.",
+                    "user_message": "Сервис ответа временно недоступен. Повторите вопрос через минуту.",
+                    "request_id": request_id,
+                },
+            )
 
     @app.get("/api/crm/meta/modules")
     async def crm_meta_modules():
