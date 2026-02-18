@@ -1,4 +1,5 @@
 import logging
+import json
 import re
 import time
 from datetime import datetime
@@ -244,6 +245,11 @@ FORMAT_LABELS = {
     "online": "Онлайн",
     "offline": "Очно",
     "hybrid": "Гибрид",
+}
+
+WEBAPP_FLOW_LABELS = {
+    "catalog": "подбор из Mini App",
+    "consultation_request": "запрос консультации из Mini App",
 }
 
 STITCH_WINDOW_SECONDS = 210
@@ -1012,6 +1018,119 @@ def _target_message(update: Update) -> Optional[Message]:
     if update.callback_query and update.callback_query.message:
         return update.callback_query.message
     return update.message
+
+
+def _shorten_text(value: str, max_len: int = 500) -> str:
+    compact = value.strip()
+    if len(compact) <= max_len:
+        return compact
+    return compact[: max_len - 3] + "..."
+
+
+def _normalize_webapp_payload(raw_data: str) -> Dict[str, object]:
+    try:
+        payload = json.loads(raw_data)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def _normalize_webapp_grade(value: object) -> Optional[int]:
+    if isinstance(value, int) and 1 <= value <= 11:
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+        if 1 <= parsed <= 11:
+            return parsed
+    return None
+
+
+def _normalize_webapp_label(value: object, *, mapping: Dict[str, str]) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    return mapping.get(normalized, value.strip())
+
+
+def _extract_webapp_top(payload: Dict[str, object]) -> List[Dict[str, str]]:
+    raw_top = payload.get("top")
+    if not isinstance(raw_top, list):
+        return []
+    top: List[Dict[str, str]] = []
+    for item in raw_top[:3]:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or "").strip()
+        title = str(item.get("title") or "").strip()
+        url = str(item.get("url") or "").strip()
+        if not (title or url):
+            continue
+        top.append(
+            {
+                "id": item_id,
+                "title": title or "Программа без названия",
+                "url": url,
+            }
+        )
+    return top
+
+
+def _build_webapp_data_reply_text(raw_data: str) -> tuple[str, str]:
+    payload = _normalize_webapp_payload(raw_data)
+    if not payload:
+        return (
+            "Получил данные из Mini App, но не смог их распознать. "
+            "Напишите в чат, что для вас в приоритете, и я продолжу подбор вручную.",
+            "unknown",
+        )
+
+    flow_raw = payload.get("flow")
+    flow = str(flow_raw).strip().lower() if isinstance(flow_raw, str) else "unknown"
+    flow_label = WEBAPP_FLOW_LABELS.get(flow, "данные из Mini App")
+
+    criteria = payload.get("criteria") if isinstance(payload.get("criteria"), dict) else {}
+    grade = _normalize_webapp_grade(criteria.get("grade"))
+    goal = _normalize_webapp_label(criteria.get("goal"), mapping=GOAL_LABELS)
+    subject = _normalize_webapp_label(criteria.get("subject"), mapping=SUBJECT_LABELS)
+    learning_format = _normalize_webapp_label(criteria.get("format"), mapping=FORMAT_LABELS)
+
+    top = _extract_webapp_top(payload)
+
+    lines = [f"Принял {flow_label}. Зафиксировал ваш контекст:"]
+    criteria_lines: List[str] = []
+    if grade is not None:
+        criteria_lines.append(f"• Класс: {grade}")
+    if goal:
+        criteria_lines.append(f"• Цель: {goal}")
+    if subject:
+        criteria_lines.append(f"• Предмет: {subject}")
+    if learning_format:
+        criteria_lines.append(f"• Формат: {learning_format}")
+
+    if criteria_lines:
+        lines.extend(criteria_lines)
+    else:
+        lines.append("• Параметры не переданы, продолжим уточнение в чате.")
+
+    if top:
+        lines.append("")
+        lines.append("Варианты из Mini App:")
+        for index, item in enumerate(top, start=1):
+            item_title = _shorten_text(item["title"], max_len=140)
+            line = f"{index}. {item_title}"
+            if item["url"]:
+                line = f"{line}\nСсылка: {item['url']}"
+            lines.append(line)
+
+    lines.append("")
+    lines.append(
+        "Если удобно, оставьте телефон одним сообщением: помогу спокойно сравнить варианты и выбрать следующий шаг."
+    )
+    return "\n".join(lines), flow
 
 
 def _outbound_dedup_cache_key(update: Update, text: str) -> Optional[str]:
@@ -1928,6 +2047,52 @@ async def adminapp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         conn.close()
 
 
+async def on_web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not update.message or not getattr(update.message, "web_app_data", None):
+        return
+    if _is_duplicate_update(update):
+        logger.info("Skipping duplicate web_app_data update_id=%s", getattr(update, "update_id", None))
+        return
+
+    raw_data = str(getattr(update.message.web_app_data, "data", "") or "").strip()
+    inbound_preview = _shorten_text(raw_data, max_len=700)
+
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        db_module.log_message(
+            conn,
+            user_id,
+            "inbound",
+            inbound_preview or "[empty-web_app_data]",
+            {"type": "web_app_data", "handler": "webapp-data", **_user_meta(update)},
+        )
+    finally:
+        conn.close()
+
+    response_text, flow = _build_webapp_data_reply_text(raw_data)
+    delivered_text = await _reply(update, response_text)
+
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        db_module.log_message(
+            conn,
+            user_id,
+            "outbound",
+            delivered_text,
+            {
+                "handler": "webapp-data",
+                "flow": flow,
+                "quality": _quality_meta(delivered_text),
+                **_user_meta(update),
+            },
+        )
+    finally:
+        conn.close()
+
+
 async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
@@ -2113,6 +2278,7 @@ def _configure_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("kbtest", kbtest))
     application.add_handler(CommandHandler("adminapp", adminapp))
     application.add_handler(CallbackQueryHandler(on_callback_query))
+    application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, on_web_app_data))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
 
 

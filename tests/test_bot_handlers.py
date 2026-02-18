@@ -1,4 +1,5 @@
 import unittest
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -45,6 +46,20 @@ def _make_callback_update(callback_data: str = "goal:ege"):
         callback_query=callback_query,
         effective_user=_make_user(),
         effective_chat=SimpleNamespace(id=5001),
+    )
+
+
+def _make_update_with_web_app_data(data: str):
+    message = AsyncMock()
+    message.text = None
+    message.web_app_data = SimpleNamespace(data=data)
+    message.reply_text = AsyncMock()
+    return SimpleNamespace(
+        message=message,
+        callback_query=None,
+        effective_user=_make_user(),
+        effective_chat=SimpleNamespace(id=5001),
+        update_id=9001,
     )
 
 
@@ -112,7 +127,7 @@ class BotSyncCoverageTests(unittest.TestCase):
             bot.main()
 
         builder.token.assert_called_once_with("tg-token")
-        self.assertEqual(app_mock.add_handler.call_count, 6)
+        self.assertEqual(app_mock.add_handler.call_count, 7)
         app_mock.run_polling.assert_called_once()
 
     def test_main_raises_in_webhook_mode(self) -> None:
@@ -355,6 +370,44 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
         kwargs = update.message.reply_text.call_args.kwargs
         self.assertIn("reply_markup", kwargs)
         self.assertIsNotNone(kwargs["reply_markup"])
+
+    async def test_on_web_app_data_handles_catalog_payload(self) -> None:
+        payload = {
+            "flow": "catalog",
+            "criteria": {"grade": 11, "goal": "ege", "subject": "physics", "format": "online"},
+            "top": [{"id": "p-1", "title": "ЕГЭ по физике", "url": "https://kmipt.ru/courses/EGE/fizika_ege/"}],
+        }
+        update = _make_update_with_web_app_data(json.dumps(payload, ensure_ascii=False))
+        context = SimpleNamespace(user_data={})
+
+        with patch.object(bot, "_is_duplicate_update", return_value=False), patch.object(
+            bot.db_module, "get_connection", return_value=_DummyConn()
+        ), patch.object(bot, "_get_or_create_user_id", return_value=1), patch.object(
+            bot.db_module, "log_message"
+        ) as mock_log:
+            await bot.on_web_app_data(update=update, context=context)
+
+        update.message.reply_text.assert_awaited_once()
+        reply_text = update.message.reply_text.call_args.args[0]
+        self.assertIn("Mini App", reply_text)
+        self.assertIn("ЕГЭ по физике", reply_text)
+        self.assertIn("Класс: 11", reply_text)
+        self.assertGreaterEqual(mock_log.call_count, 2)
+
+    async def test_on_web_app_data_handles_invalid_payload(self) -> None:
+        update = _make_update_with_web_app_data("{invalid")
+        context = SimpleNamespace(user_data={})
+
+        with patch.object(bot, "_is_duplicate_update", return_value=False), patch.object(
+            bot.db_module, "get_connection", return_value=_DummyConn()
+        ), patch.object(bot, "_get_or_create_user_id", return_value=1), patch.object(
+            bot.db_module, "log_message"
+        ):
+            await bot.on_web_app_data(update=update, context=context)
+
+        update.message.reply_text.assert_awaited_once()
+        reply_text = update.message.reply_text.call_args.args[0]
+        self.assertIn("не смог их распознать", reply_text)
 
     async def test_handle_flow_step_regular_prompt(self) -> None:
         update = _make_update_with_message("10")

@@ -45,6 +45,12 @@ type CatalogResponse = {
   items: CatalogItem[];
 };
 
+type MiniAppCatalogPayload = {
+  flow: "catalog";
+  criteria: SearchCriteria;
+  top: Array<{ id: string; title: string; url: string }>;
+};
+
 type AuthResponse =
   | { ok: true; user: TelegramWebAppUser }
   | { ok: false; reason: string; user: null };
@@ -368,6 +374,19 @@ function createResultsView(): HTMLElement {
     card.append(title, why, meta, uspList, link);
     section.appendChild(card);
   }
+
+  const actions = document.createElement("div");
+  actions.className = "resultsActions";
+
+  const sendToChat = document.createElement("button");
+  sendToChat.type = "button";
+  sendToChat.className = "glassButton glassButtonPrimary";
+  sendToChat.textContent = "Отправить в чат";
+  sendToChat.addEventListener("click", () => {
+    sendCatalogSelectionToChat();
+  });
+  actions.appendChild(sendToChat);
+  section.appendChild(actions);
   return section;
 }
 
@@ -485,21 +504,41 @@ function clearTelegramMainButtonHandler(target: TelegramWebApp | null): void {
   mainButtonHandler = null;
 }
 
-function requestConsultationFromMiniApp(): void {
-  triggerHaptic(webApp, "medium");
-  const payload = JSON.stringify({
-    flow: "consultation_request",
+function buildCatalogSelectionPayload(): string | null {
+  const payload: MiniAppCatalogPayload = {
+    flow: "catalog",
     criteria: state.criteria,
     top: state.results.slice(0, 3).map((item) => ({ id: item.id, title: item.title, url: item.url }))
-  });
-  if (payload.length < 4096 && webApp?.sendData) {
-    try {
-      webApp.sendData(payload);
-    } catch (_error) {
-      // keep local confirmation message as fallback
-    }
+  };
+  const serialized = JSON.stringify(payload);
+  if (serialized.length >= 4096) {
+    return null;
   }
-  state.error = "Запрос на консультацию отправлен. Можно вернуться в чат и продолжить диалог.";
+  return serialized;
+}
+
+function sendCatalogSelectionToChat(): void {
+  triggerHaptic(webApp, "medium");
+  const payload = buildCatalogSelectionPayload();
+  if (!payload) {
+    state.error = "Подбор слишком большой для отправки. Уменьшите критерии и попробуйте снова.";
+    render();
+    return;
+  }
+  if (!webApp?.sendData) {
+    state.error = "Отправка в чат доступна только внутри Telegram Mini App.";
+    render();
+    return;
+  }
+  try {
+    webApp.sendData(payload);
+    webApp.close?.();
+  } catch (_error) {
+    state.error = "Не удалось отправить данные в чат. Попробуйте еще раз.";
+    render();
+    return;
+  }
+  state.error = "Подбор отправлен в чат. Продолжим диалог в Telegram.";
   render();
 }
 
@@ -529,7 +568,7 @@ function syncTelegramMainButton(): void {
   if (state.view === "results") {
     button.setText("Записаться на консультацию");
     button.enable();
-    mainButtonHandler = () => requestConsultationFromMiniApp();
+    mainButtonHandler = () => sendCatalogSelectionToChat();
     button.onClick(mainButtonHandler);
     button.show();
     return;
