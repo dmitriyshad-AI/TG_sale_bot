@@ -219,7 +219,7 @@ const COACHMARKS = [
 ];
 const CUSTOM_BRAND_LOGO_URL = "/brand-kmipt.png";
 const DEFAULT_MANAGER_TELEGRAM_USERNAME = "unpk_mipt";
-const MAX_MANAGER_CONTEXT_LENGTH = 900;
+const MAX_MANAGER_CONTEXT_LENGTH = 420;
 
 const rootNode = document.getElementById("app");
 if (!rootNode) {
@@ -417,12 +417,14 @@ function createBrandMark(): HTMLElement {
 
 function openManagerChat(): void {
   const contextText = buildManagerContextSummary();
-  const encoded = encodeURIComponent(contextText);
-  const username = resolveManagerUsername();
-  const preferredLinks = [
-    `tg://resolve?domain=${username}&text=${encoded}`,
-    `https://t.me/${username}?text=${encoded}`,
-  ];
+  const managerUrl = new URL(resolveManagerTelegramUrl());
+  managerUrl.searchParams.set("text", contextText);
+
+  const shareUrl = new URL("https://t.me/share/url");
+  shareUrl.searchParams.set("url", resolveManagerTelegramUrl());
+  shareUrl.searchParams.set("text", contextText);
+
+  const preferredLinks = [managerUrl.toString(), shareUrl.toString()];
 
   for (const link of preferredLinks) {
     if (openExternalLink(webApp, link)) {
@@ -436,12 +438,24 @@ function openManagerChat(): void {
 }
 
 function resolveManagerUsername(): string {
-  const direct = DEFAULT_MANAGER_TELEGRAM_USERNAME.trim();
-  if (direct) {
-    return direct;
+  const configured = state.managerChatUrl.trim();
+  if (configured) {
+    const cleaned = configured
+      .replace(/^https?:\/\/t\.me\//i, "")
+      .replace(/^tg:\/\/resolve\?domain=/i, "")
+      .replace(/[/?#].*$/, "")
+      .replace(/^@/, "")
+      .trim();
+    if (cleaned) {
+      return cleaned;
+    }
   }
-  const fromMeta = state.managerChatUrl.trim().replace(/^https?:\/\/t\.me\//i, "").replace(/^@/, "");
-  return fromMeta || "unpk_mipt";
+  return DEFAULT_MANAGER_TELEGRAM_USERNAME;
+}
+
+function resolveManagerTelegramUrl(): string {
+  const username = resolveManagerUsername();
+  return `https://t.me/${username}`;
 }
 
 function compactValue(value: string | null | undefined, fallback = "не указано"): string {
@@ -483,13 +497,11 @@ function compactProductsSummary(): string {
 }
 
 function compactDialogueSummary(): string {
-  const userMessages = state.chatMessages.filter((item) => item.role === "user").slice(-2);
+  const userMessages = state.chatMessages.filter((item) => item.role === "user").slice(-1);
   if (!userMessages.length) {
-    return "в Mini App еще не было свободного вопроса";
+    return "пока без свободного вопроса в чате";
   }
-  return userMessages
-    .map((item, index) => `${index + 1}) ${item.text.replace(/\s+/g, " ").trim()}`)
-    .join(" ");
+  return userMessages[0].text.replace(/\s+/g, " ").trim();
 }
 
 function trimForManager(text: string): string {
@@ -501,25 +513,14 @@ function trimForManager(text: string): string {
 }
 
 function buildManagerContextSummary(): string {
-  const personParts: string[] = [];
-  if (state.user?.first_name) {
-    personParts.push(state.user.first_name);
-  }
-  if (state.user?.username) {
-    personParts.push(`@${state.user.username}`);
-  }
-  if (typeof state.user?.id === "number") {
-    personParts.push(`id:${state.user.id}`);
-  }
-  const who = personParts.length ? personParts.join(" ") : "пользователь Mini App";
-
+  const who = state.user?.first_name?.trim() || "Клиент из Mini App";
   const lines = [
-    "Здравствуйте! Это запрос из клиентского Mini App УНПК МФТИ.",
-    `Клиент: ${who}.`,
-    `Контекст запроса: ${compactCriteriaSummary()}.`,
-    `Подобранные программы: ${compactProductsSummary()}.`,
-    `Последние вопросы клиента: ${compactDialogueSummary()}.`,
-    "Просьба: связаться и дать персональную траекторию обучения.",
+    `Здравствуйте! Я ${who}.`,
+    "Хочу консультацию по обучению в УНПК МФТИ.",
+    `Мой контекст: ${compactCriteriaSummary()}.`,
+    `Что уже подобрано: ${compactProductsSummary()}.`,
+    `Ключевой запрос: ${compactDialogueSummary()}.`,
+    "Подскажите, пожалуйста, оптимальный следующий шаг.",
   ];
 
   return trimForManager(lines.join("\n"));
