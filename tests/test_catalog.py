@@ -60,7 +60,7 @@ class CatalogTests(unittest.TestCase):
 
         self.assertIn("duplicate product ids", str(exc.exception))
 
-    def test_parse_catalog_rejects_camp_without_sessions(self) -> None:
+    def test_parse_catalog_allows_camp_without_sessions(self) -> None:
         raw_catalog = {
             "products": [
                 {
@@ -79,10 +79,8 @@ class CatalogTests(unittest.TestCase):
             ]
         }
 
-        with self.assertRaises(CatalogValidationError) as exc:
-            parse_catalog(raw_catalog, Path("memory://catalog.yaml"))
-
-        self.assertIn("camp products must include at least one session", str(exc.exception))
+        parsed = parse_catalog(raw_catalog, Path("memory://catalog.yaml"))
+        self.assertEqual(parsed.products[0].sessions, [])
 
     def test_parse_catalog_rejects_short_usp(self) -> None:
         raw_catalog = {

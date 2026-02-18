@@ -74,11 +74,9 @@ class Product(BaseModel):
         return cleaned
 
     @model_validator(mode="after")
-    def validate_grade_and_sessions(self) -> "Product":
+    def validate_grade_range(self) -> "Product":
         if self.grade_min > self.grade_max:
             raise ValueError("grade_min must be <= grade_max")
-        if self.category == "camp" and not self.sessions:
-            raise ValueError("camp products must include at least one session")
         return self
 
 

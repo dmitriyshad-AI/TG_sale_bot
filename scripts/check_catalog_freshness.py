@@ -92,8 +92,9 @@ def main() -> int:
         all_issues.extend(_check_product(product=product, today=today, stale_days=max(1, args.stale_days)))
 
     camp_products = [product for product in catalog.products if product.category == "camp"]
-    if camp_products:
-        has_future_camp = any(_has_future_or_active_session(product, today) for product in camp_products)
+    camp_products_with_sessions = [product for product in camp_products if product.sessions]
+    if camp_products_with_sessions:
+        has_future_camp = any(_has_future_or_active_session(product, today) for product in camp_products_with_sessions)
         if not has_future_camp:
             all_issues.append(f"catalog: no camp has upcoming sessions after {today.isoformat()}")
 

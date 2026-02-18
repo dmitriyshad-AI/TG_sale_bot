@@ -1,235 +1,585 @@
 products:
-  - id: kmipt-camp-winter-math-2026
-    brand: kmipt
-    title: "Зимняя ФизМат и IT школа KMIPT 2026"
-    url: "https://kmipt.ru/courses/Zimnyaya_shkola/"
-    category: camp
-    grade_min: 5
-    grade_max: 11
-    subjects:
-      - math
-      - physics
-      - informatics
-    format: offline
-    sessions:
-      - name: "Зимняя смена"
-        start_date: "2026-01-02"
-        end_date: "2026-01-09"
-        price_rub: 88200
-    usp:
-      - "Выездной интенсив с предметными треками"
-      - "Подходит для школьников 5-11 классов"
-      - "Данные по цене взяты с публичной страницы, уточняются перед оплатой"
-
-  - id: kmipt-camp-summer-stem-2026
-    brand: kmipt
-    title: "Летняя выездная школа KMIPT 2026"
-    url: "https://kmipt.ru/courses/Letnyaya_shkola/"
-    category: camp
-    grade_min: 5
-    grade_max: 11
-    subjects:
-      - math
-      - physics
-      - informatics
-    format: offline
-    sessions:
-      - name: "Летняя смена"
-        start_date: "2026-06-20"
-        end_date: "2026-07-03"
-        price_rub: 83300
-    usp:
-      - "Выездной формат с учебной и проектной программой"
-      - "Для учеников с разным уровнем подготовки"
-      - "Итоговая стоимость и смена подтверждаются менеджером"
-
-  - id: kmipt-ege-math-pro
-    brand: kmipt
-    title: "Подготовка к ЕГЭ по математике"
-    url: "https://kmipt.ru/courses/EGE/matematika_ege/"
-    category: ege
-    grade_min: 10
-    grade_max: 11
-    subjects:
-      - math
-    format: hybrid
-    sessions:
-      - name: "Учебный год 2025/2026"
-        start_date: "2025-09-01"
-        end_date: "2026-05-31"
-        price_rub: 82000
-    usp:
-      - "Годовой трек подготовки к ЕГЭ"
-      - "Семестровый и годовой форматы обучения"
-      - "Есть офлайн и онлайн варианты"
-
-  - id: kmipt-ege-physics-pro
-    brand: kmipt
-    title: "Подготовка к ЕГЭ по физике"
-    url: "https://kmipt.ru/courses/EGE/fizika_ege/"
-    category: ege
-    grade_min: 10
-    grade_max: 11
-    subjects:
-      - physics
-    format: hybrid
-    sessions:
-      - name: "Учебный год 2025/2026"
-        start_date: "2025-09-01"
-        end_date: "2026-05-31"
-        price_rub: 82000
-    usp:
-      - "Системная подготовка под формат ЕГЭ"
-      - "Есть выбор семестр/год"
-      - "Поддержка в офлайн и онлайн форматах"
-
-  - id: kmipt-ege-informatics-pro
-    brand: kmipt
-    title: "Подготовка к ЕГЭ по информатике"
-    url: "https://kmipt.ru/courses/EGE/informatika_ege/"
-    category: ege
-    grade_min: 10
-    grade_max: 11
-    subjects:
-      - informatics
-    format: hybrid
-    sessions:
-      - name: "Учебный год 2025/2026"
-        start_date: "2025-09-01"
-        end_date: "2026-05-31"
-        price_rub: 82000
-    usp:
-      - "Фокус на экзаменационных задачах и алгоритмах"
-      - "Гибкий формат обучения"
-      - "Стоимость подтверждается на странице записи"
-
-  - id: kmipt-oge-math-start
-    brand: kmipt
-    title: "Подготовка к ОГЭ по математике"
-    url: "https://kmipt.ru/courses/9_klass/matematika_9/"
-    category: oge
-    grade_min: 8
-    grade_max: 9
-    subjects:
-      - math
-    format: hybrid
-    sessions:
-      - name: "Учебный год 2025/2026"
-        start_date: "2025-09-01"
-        end_date: "2026-05-31"
-        price_rub: 82000
-    usp:
-      - "Подготовка под структуру ОГЭ"
-      - "Для 8-9 классов"
-      - "Регулярные контрольные точки"
-
-  - id: kmipt-oge-physics-start
-    brand: kmipt
-    title: "Подготовка к ОГЭ по физике"
-    url: "https://kmipt.ru/courses/9_klass/fizika_9/"
-    category: oge
-    grade_min: 8
-    grade_max: 9
-    subjects:
-      - physics
-    format: hybrid
-    sessions:
-      - name: "Учебный год 2025/2026"
-        start_date: "2025-09-01"
-        end_date: "2026-05-31"
-        price_rub: 82000
-    usp:
-      - "Охват всей школьной базы для ОГЭ"
-      - "Офлайн и онлайн обучение"
-      - "Стоимость уточняется по действующему прайсу"
-
-  - id: kmipt-oge-informatics-start
-    brand: kmipt
-    title: "Подготовка к ОГЭ по информатике"
-    url: "https://kmipt.ru/courses/9_klass/informatika_9/"
-    category: oge
-    grade_min: 8
-    grade_max: 9
-    subjects:
-      - informatics
-    format: hybrid
-    sessions:
-      - name: "Учебный год 2025/2026"
-        start_date: "2025-09-01"
-        end_date: "2026-05-31"
-        price_rub: 82000
-    usp:
-      - "Пошаговая подготовка к экзамену"
-      - "Тренировка в экзаменационном формате"
-      - "Есть онлайн формат"
-
-  - id: kmipt-olymp-math-8-11
-    brand: kmipt
-    title: "Олимпиадная математика"
-    url: "https://kmipt.ru/courses/olimpiads/olimpiad_matematika/"
-    category: olympiad
-    grade_min: 8
-    grade_max: 11
-    subjects:
-      - math
-    format: hybrid
-    usp:
-      - "Подготовка к олимпиадным этапам"
-      - "Разбор сложных нестандартных задач"
-      - "Индивидуальная траектория в группе"
-
-  - id: kmipt-olymp-physics-8-11
-    brand: kmipt
-    title: "Олимпиадная физика"
-    url: "https://kmipt.ru/courses/olimpiads/olimpiad_fizika/"
-    category: olympiad
-    grade_min: 8
-    grade_max: 11
-    subjects:
-      - physics
-    format: hybrid
-    usp:
-      - "Развитие олимпиадного мышления"
-      - "Подготовка к задачам повышенной сложности"
-      - "Формат офлайн и онлайн"
-
-  - id: kmipt-base-math-5-8
-    brand: kmipt
-    title: "Математика 5-8 класс"
-    url: "https://kmipt.ru/courses/5_8_klass/matematika_5_8/"
-    category: base
-    grade_min: 5
-    grade_max: 8
-    subjects:
-      - math
-    format: hybrid
-    sessions:
-      - name: "Учебный год 2025/2026"
-        start_date: "2025-09-01"
-        end_date: "2026-05-31"
-        price_rub: 82000
-    usp:
-      - "Углубленное изучение школьной программы"
-      - "Устранение пробелов и развитие базы"
-      - "Доступен выбор формата"
-
-  - id: kmipt-base-informatics-5-8
-    brand: kmipt
-    title: "Информатика 5-8 класс"
-    url: "https://kmipt.ru/courses/5_8_klass/informatika_5_8/"
-    category: base
-    grade_min: 5
-    grade_max: 8
-    subjects:
-      - informatics
-    format: hybrid
-    sessions:
-      - name: "Учебный год 2025/2026"
-        start_date: "2025-09-01"
-        end_date: "2026-05-31"
-        price_rub: 82000
-    usp:
-      - "Основа программирования и алгоритмов"
-      - "Подходит для старта и систематизации"
-      - "Гибридный формат обучения"
-
+- id: kmipt-courses-1_4_klass-informatika_1_4
+  brand: kmipt
+  title: Занимательная информатика 1 - 4 классы
+  url: https://kmipt.ru/courses/1_4_klass/Informatika_1_4/
+  category: base
+  grade_min: 1
+  grade_max: 4
+  subjects:
+  - informatics
+  format: hybrid
+  usp:
+  - 'Название на странице: Занимательная информатика 1 - 4 классы'
+  - 'Источник: https://kmipt.ru/courses/1_4_klass/Informatika_1_4/'
+  - 'Уровень по разделу сайта: 1-4 класс, формат смешанный'
+  - 'Описание страницы: Курс от азов компьютерной грамотности до программирования.
+    Профессиональные педагоги. Маленькие группы 4-8 человек. Эффективнее чем репетитор.
+    От 450р/час. Записывайтесь!'
+  - 'Цена на странице: 26900 руб.'
+- id: kmipt-courses-1_4_klass-matematika_1_41597
+  brand: kmipt
+  title: Занимательная математика 1 - 4 классы
+  url: https://kmipt.ru/courses/1_4_klass/Matematika_1_41597/
+  category: base
+  grade_min: 1
+  grade_max: 4
+  subjects:
+  - math
+  format: hybrid
+  usp:
+  - 'Название на странице: Занимательная математика 1 - 4 классы'
+  - 'Источник: https://kmipt.ru/courses/1_4_klass/Matematika_1_41597/'
+  - 'Уровень по разделу сайта: 1-4 класс, формат смешанный'
+  - 'Описание страницы: Комплексное развитие. Профессиональные педагоги. Индивидуальный
+    подход. Маленькие группы 4-8 человек. Эффективнее чем репетитор. От 450р/час.
+    Записывайтесь!'
+  - 'Цена на странице: 26900 руб.'
+- id: kmipt-courses-1_4_klass-fizika_1_4
+  brand: kmipt
+  title: Занимательная физика 1 - 4 классы
+  url: https://kmipt.ru/courses/1_4_klass/fizika_1_4/
+  category: base
+  grade_min: 1
+  grade_max: 4
+  subjects:
+  - physics
+  format: hybrid
+  usp:
+  - 'Название на странице: Занимательная физика 1 - 4 классы'
+  - 'Источник: https://kmipt.ru/courses/1_4_klass/fizika_1_4/'
+  - 'Уровень по разделу сайта: 1-4 класс, формат смешанный'
+  - 'Описание страницы: Уникальный курс. Учим физике в опытах. Профессиональные педагоги.
+    Индивидуальный подход. Маленькие группы 4-8 человек. Эффективнее чем репетитор.
+    От 450р/час. Записывайтесь!'
+  - 'Цена на странице: 26900 руб.'
+- id: kmipt-courses-ege-fizika_ege
+  brand: kmipt
+  title: Физика ЕГЭ
+  url: https://kmipt.ru/courses/EGE/Fizika_EGE/
+  category: ege
+  grade_min: 10
+  grade_max: 11
+  subjects:
+  - physics
+  format: offline
+  usp:
+  - 'Название на странице: Физика ЕГЭ'
+  - 'Источник: https://kmipt.ru/courses/EGE/Fizika_EGE/'
+  - 'Уровень по разделу сайта: 10-11 класс, формат очно'
+  - 'Описание страницы: Преподаватели - эксперты ЕГЭ и олимпиад помогут успешно сдать
+    ЕГЭ 2025 по Физике. Мини-группы 7-9 человек. Удобное место и время занятий. От
+    500р/час. Записывайся сейчас!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-ege-informatika_ege
+  brand: kmipt
+  title: Информатика ЕГЭ
+  url: https://kmipt.ru/courses/EGE/Informatika_EGE/
+  category: ege
+  grade_min: 10
+  grade_max: 11
+  subjects:
+  - informatics
+  format: offline
+  usp:
+  - 'Название на странице: Информатика ЕГЭ'
+  - 'Источник: https://kmipt.ru/courses/EGE/Informatika_EGE/'
+  - 'Уровень по разделу сайта: 10-11 класс, формат очно'
+  - 'Описание страницы: Преподаватели - эксперты ЕГЭ и олимпиад помогут успешно сдать
+    ЕГЭ 2025 по Информатике. Мини-группы 7-9 человек. Удобное место и время занятий.
+    От 500р/час. Записывайся сейчас!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-ege-matematika_ege
+  brand: kmipt
+  title: Математика ЕГЭ
+  url: https://kmipt.ru/courses/EGE/Matematika_EGE/
+  category: ege
+  grade_min: 10
+  grade_max: 11
+  subjects:
+  - math
+  format: offline
+  usp:
+  - 'Название на странице: Математика ЕГЭ'
+  - 'Источник: https://kmipt.ru/courses/EGE/Matematika_EGE/'
+  - 'Уровень по разделу сайта: 10-11 класс, формат очно'
+  - 'Описание страницы: Преподаватели - эксперты ЕГЭ и олимпиад помогут успешно сдать
+    ЕГЭ 2025 по Профильной Математике. Мини-группы 7-9 человек. Лучше чем репетитор.
+    От 500р/час. Записывайся сейчас!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-ege-russkiy_yazyk_ege
+  brand: kmipt
+  title: Русский язык ЕГЭ
+  url: https://kmipt.ru/courses/EGE/Russkiy_yazyk_EGE/
+  category: ege
+  grade_min: 10
+  grade_max: 11
+  subjects:
+  - russian
+  format: offline
+  usp:
+  - 'Название на странице: Русский язык ЕГЭ'
+  - 'Источник: https://kmipt.ru/courses/EGE/Russkiy_yazyk_EGE/'
+  - 'Уровень по разделу сайта: 10-11 класс, формат очно'
+  - 'Описание страницы: Лингвисты и эксперты ЕГЭ и олимпиад помогут успешно сдать
+    ЕГЭ. Мини-группы 7-9 человек. Более 25 лет в сфере образования. Лучше чем репетитор.
+    От 600р/час. Записывайся сейчас!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-ege_10-ege_matematika_10
+  brand: kmipt
+  title: Математика 10 класс
+  url: https://kmipt.ru/courses/EGE_10/EGE_Matematika_10/
+  category: ege
+  grade_min: 10
+  grade_max: 10
+  subjects:
+  - math
+  format: offline
+  usp:
+  - 'Название на странице: Математика 10 класс'
+  - 'Источник: https://kmipt.ru/courses/EGE_10/EGE_Matematika_10/'
+  - 'Уровень по разделу сайта: 10-10 класс, формат очно'
+  - 'Описание страницы: Преподаватели - эксперты ЕГЭ и олимпиад подготовят к сдаче
+    ЕГЭ по Математике. Углубленный курс на 2 года. Мини-группы. Эффективнее чем репетитор.
+    От 600р/час. Записывайся!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-ege_10-fizika_10
+  brand: kmipt
+  title: Физика 10 класс
+  url: https://kmipt.ru/courses/EGE_10/Fizika_10/
+  category: ege
+  grade_min: 10
+  grade_max: 10
+  subjects:
+  - physics
+  format: offline
+  usp:
+  - 'Название на странице: Физика 10 класс'
+  - 'Источник: https://kmipt.ru/courses/EGE_10/Fizika_10/'
+  - 'Уровень по разделу сайта: 10-10 класс, формат очно'
+  - 'Описание страницы: Преподаватели - эксперты ЕГЭ и олимпиад подготовят к сдаче
+    ЕГЭ по Физике. Углубленный курс на 2 года. Мини-группы. Эффективнее чем репетитор.
+    От 600р/час. Записывайся!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-ege_10-informatika_10
+  brand: kmipt
+  title: Информатика 10 класс
+  url: https://kmipt.ru/courses/EGE_10/Informatika_10/
+  category: ege
+  grade_min: 10
+  grade_max: 10
+  subjects:
+  - informatics
+  format: offline
+  usp:
+  - 'Название на странице: Информатика 10 класс'
+  - 'Источник: https://kmipt.ru/courses/EGE_10/Informatika_10/'
+  - 'Уровень по разделу сайта: 10-10 класс, формат очно'
+  - 'Описание страницы: Преподаватели - эксперты ЕГЭ и олимпиад подготовят к сдаче
+    ЕГЭ по Информатике. Углубленный курс на 2 года. Мини-группы. Эффективнее чем репетитор.
+    От 600р/час. Записывайся!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-ege_10-russkiy_yazyk_10
+  brand: kmipt
+  title: Русский язык 10 класс
+  url: https://kmipt.ru/courses/EGE_10/Russkiy_yazyk_10/
+  category: ege
+  grade_min: 10
+  grade_max: 10
+  subjects:
+  - russian
+  format: offline
+  usp:
+  - 'Название на странице: Русский язык 10 класс'
+  - 'Источник: https://kmipt.ru/courses/EGE_10/Russkiy_yazyk_10/'
+  - 'Уровень по разделу сайта: 10-10 класс, формат очно'
+  - 'Описание страницы: Лингвисты, эксперты ЕГЭ и олимпиад подготовят к сдаче ЕГЭ
+    по Русскому Языку. Углубленный курс на 2 года. Мини-группы. Эффективнее чем репетитор.
+    От 600р/час. Записывайся!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-kanikuly-letnyaya_vyezdnaya_fizikomatematicheskay
+  brand: kmipt
+  title: Выездные ФизМат и IT школы 5 — 11 кл — летний лагерь 2026
+  url: https://kmipt.ru/courses/Kanikuly/Letnyaya_vyezdnaya_fizikomatematicheskaya_shkola_8__11_kl/
+  category: camp
+  grade_min: 8
+  grade_max: 11
+  subjects:
+  - math
+  - physics
+  format: offline
+  usp:
+  - 'Название на странице: Выездные ФизМат и IT школы 5 — 11 кл — летний лагерь 2026'
+  - 'Источник: https://kmipt.ru/courses/Kanikuly/Letnyaya_vyezdnaya_fizikomatematicheskaya_shkola_8__11_kl/'
+  - 'Уровень по разделу сайта: 8-11 класс, формат очно'
+  - 'Описание страницы: Цельный курс физико-математического направления со спортивными
+    и развлекательными мероприятиями. 9 фантастических дней в учебном комплексе в
+    Подмосковье. Смена с 5 по 15 июля.'
+  - 'Цена на странице: 99600 руб.'
+- id: kmipt-courses-school_5_8-fizika_5_8
+  brand: kmipt
+  title: Физика 7—8 класс
+  url: https://kmipt.ru/courses/School_5_8/Fizika_5_8/
+  category: olympiad
+  grade_min: 7
+  grade_max: 8
+  subjects:
+  - physics
+  format: offline
+  usp:
+  - 'Название на странице: Физика 7—8 класс'
+  - 'Источник: https://kmipt.ru/courses/School_5_8/Fizika_5_8/'
+  - 'Уровень по разделу сайта: 7-8 класс, формат очно'
+  - 'Описание страницы: Базовый и олимпиадный уровень. Лучшие преподаватели из МФТИ
+    и МГУ. Индивидуальный подход. Маленькие группы 7-9 человек. Эффективнее чем репетитор.
+    От 600р/час. Записывайтесь!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-school_5_8-matematika_5_8
+  brand: kmipt
+  title: Математика 5—8 класс
+  url: https://kmipt.ru/courses/School_5_8/Matematika_5_8/
+  category: olympiad
+  grade_min: 5
+  grade_max: 8
+  subjects:
+  - math
+  format: offline
+  usp:
+  - 'Название на странице: Математика 5—8 класс'
+  - 'Источник: https://kmipt.ru/courses/School_5_8/Matematika_5_8/'
+  - 'Уровень по разделу сайта: 5-8 класс, формат очно'
+  - 'Описание страницы: Базовый и олимпиадный уровень. Лучшие преподаватели из МФТИ
+    и МГУ. Индивидуальный подход. Маленькие группы 7-9 человек. Эффективнее чем репетитор.
+    От 600р/час. Записывайтесь!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-aktualnyi_nabor-nabor_ochno
+  brand: kmipt
+  title: Набор на очные курсы для 1—11 классов 2025—2026 учебный год
+  url: https://kmipt.ru/courses/aktualnyi_nabor/Nabor_ochno/
+  category: oge
+  grade_min: 1
+  grade_max: 11
+  subjects:
+  - general
+  format: hybrid
+  usp:
+  - 'Название на странице: Набор на очные курсы для 1—11 классов 2025—2026 учебный
+    год'
+  - 'Источник: https://kmipt.ru/courses/aktualnyi_nabor/Nabor_ochno/'
+  - 'Уровень по разделу сайта: 1-11 класс, формат смешанный'
+  - 'Описание страницы: УНПК МФТИ объявляет набор на 2025-2026 год! Подготовка к ЕГЭ,
+    ОГЭ и Олимпиадам с преподавателями МГУ и МФТИ! Звони и записывайся!'
+  - 'Цена на странице: 49000 руб.'
+- id: kmipt-courses-aktualnyi_nabor-nabor_online_5-11kl
+  brand: kmipt
+  title: Набор на онлайн обучение для 5 – 11 классов 2025—2026 учебный год
+  url: https://kmipt.ru/courses/aktualnyi_nabor/Nabor_online_5-11kl/
+  category: oge
+  grade_min: 5
+  grade_max: 11
+  subjects:
+  - math
+  format: online
+  usp:
+  - 'Название на странице: Набор на онлайн обучение для 5 – 11 классов 2025—2026 учебный
+    год'
+  - 'Источник: https://kmipt.ru/courses/aktualnyi_nabor/Nabor_online_5-11kl/'
+  - 'Уровень по разделу сайта: 5-11 класс, формат онлайн'
+  - 'Описание страницы: УНПК МФТИ объявляет набор на 2025-2026 год! Подготовка к ЕГЭ,
+    ОГЭ, ВПР, математической вертикали и Олимпиадам с преподавателями МГУ и МФТИ!
+    Звони и записывайся!'
+  - 'Цена на странице: 41800 руб.'
+- id: kmipt-courses-nabor_online-olimp_math_phys
+  brand: kmipt
+  title: Подготовка к олимпиадам по математике и физике очно
+  url: https://kmipt.ru/courses/nabor_online/olimp_math_phys/
+  category: olympiad
+  grade_min: 5
+  grade_max: 11
+  subjects:
+  - math
+  - physics
+  format: offline
+  usp:
+  - 'Название на странице: Подготовка к олимпиадам по математике и физике очно'
+  - 'Источник: https://kmipt.ru/courses/nabor_online/olimp_math_phys/'
+  - 'Уровень по разделу сайта: 5-11 класс, формат очно'
+  - 'Описание страницы: Преподаватели МФТИ, члены жюри олимпиад помогут стать победителем
+    олимпиад по Математике и Физике. Эффективнее чем репетитор. От 600р/час. Записывайся
+    сейчас!'
+  - 'Цена на странице: 49000 руб.'
+- id: kmipt-courses-oge-fizika_oge_9
+  brand: kmipt
+  title: Физика ОГЭ 9 класс
+  url: https://kmipt.ru/courses/oge/Fizika_OGE_9/
+  category: oge
+  grade_min: 9
+  grade_max: 9
+  subjects:
+  - physics
+  format: offline
+  usp:
+  - 'Название на странице: Физика ОГЭ 9 класс'
+  - 'Источник: https://kmipt.ru/courses/oge/Fizika_OGE_9/'
+  - 'Уровень по разделу сайта: 9-9 класс, формат очно'
+  - 'Описание страницы: Преподаватели - эксперты ОГЭ и олимпиад помогут успешно сдать
+    ОГЭ 2025 по Физике. Мини-группы 7-9 человек. Эффективнее чем репетитор. От 600р/час.
+    Записывайся сейчас!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-oge-matematika_oge_9
+  brand: kmipt
+  title: Математика ОГЭ 9 кл
+  url: https://kmipt.ru/courses/oge/Matematika_OGE_9/
+  category: oge
+  grade_min: 9
+  grade_max: 9
+  subjects:
+  - math
+  format: offline
+  usp:
+  - 'Название на странице: Математика ОГЭ 9 кл'
+  - 'Источник: https://kmipt.ru/courses/oge/Matematika_OGE_9/'
+  - 'Уровень по разделу сайта: 9-9 класс, формат очно'
+  - 'Описание страницы: Преподаватели - эксперты ОГЭ и олимпиад помогут успешно сдать
+    ОГЭ 2025 по Математике. Мини-группы 7-9 человек. Эффективнее чем репетитор. От
+    600р/час. Записывайся сейчас!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-oge-russkiy_yazyk_oge_9
+  brand: kmipt
+  title: Русский язык ОГЭ 9 кл
+  url: https://kmipt.ru/courses/oge/Russkiy_yazyk_OGE_9/
+  category: oge
+  grade_min: 9
+  grade_max: 9
+  subjects:
+  - russian
+  format: offline
+  usp:
+  - 'Название на странице: Русский язык ОГЭ 9 кл'
+  - 'Источник: https://kmipt.ru/courses/oge/Russkiy_yazyk_OGE_9/'
+  - 'Уровень по разделу сайта: 9-9 класс, формат очно'
+  - 'Описание страницы: Лингвисты, эксперты ОГЭ и олимпиад помогут успешно сдать ОГЭ
+    2025 по Русскому языку. Мини-группы 7-9 человек. Эффективнее чем репетитор. От
+    500р/час. Записывайся сейчас!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-oge-informatika_oge_9
+  brand: kmipt
+  title: Информатика ОГЭ 9 кл
+  url: https://kmipt.ru/courses/oge/informatika_OGE_9/
+  category: oge
+  grade_min: 9
+  grade_max: 9
+  subjects:
+  - informatics
+  format: offline
+  usp:
+  - 'Название на странице: Информатика ОГЭ 9 кл'
+  - 'Источник: https://kmipt.ru/courses/oge/informatika_OGE_9/'
+  - 'Уровень по разделу сайта: 9-9 класс, формат очно'
+  - 'Описание страницы: Преподаватели - эксперты ОГЭ и олимпиад помогут успешно сдать
+    ОГЭ 2025 по Информатике. Мини-группы 7-9 человек. Эффективнее чем репетитор. От
+    600р/час. Записывайся сейчас!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-olimp-fiztech_olymp
+  brand: kmipt
+  title: Онлайн подготовка к олимпиаде "Физтех 2025" по Математике и Физике
+  url: https://kmipt.ru/courses/olimp/Fiztech_olymp/
+  category: olympiad
+  grade_min: 5
+  grade_max: 11
+  subjects:
+  - math
+  - physics
+  format: online
+  usp:
+  - 'Название на странице: Онлайн подготовка к олимпиаде "Физтех 2025" по Математике
+    и Физике'
+  - 'Источник: https://kmipt.ru/courses/olimp/Fiztech_olymp/'
+  - 'Уровень по разделу сайта: 5-11 класс, формат онлайн'
+  - 'Описание страницы: Преподаватели МФТИ, составители олимпиад помогут успешно стать
+    победителем олимпиады Физтех. Эффективнее чем репетитор. Онлайн занятия от 550р/час.
+    Записывайся сейчас!'
+  - 'Цена на странице: 39000 руб.'
+- id: kmipt-courses-online-courses_10
+  brand: kmipt
+  title: Онлайн—курсы для 10 класса
+  url: https://kmipt.ru/courses/online/courses_10/
+  category: ege
+  grade_min: 10
+  grade_max: 10
+  subjects:
+  - general
+  format: online
+  usp:
+  - 'Название на странице: Онлайн—курсы для 10 класса'
+  - 'Источник: https://kmipt.ru/courses/online/courses_10/'
+  - 'Уровень по разделу сайта: 10-10 класс, формат онлайн'
+  - 'Описание страницы: Онлайн подготовка к ЕГЭ. Занятия с преподавателями ведущих
+    технических ВУЗов: МФТИ, МГУ, МГТУ на современной платформе онлайн образования.
+    Высокие баллы гарантированны.'
+  - 'Цена на странице: 31350 руб.'
+- id: kmipt-courses-online-online_11
+  brand: kmipt
+  title: Онлайн—курсы для 11 класса
+  url: https://kmipt.ru/courses/online/online_11/
+  category: ege
+  grade_min: 11
+  grade_max: 11
+  subjects:
+  - general
+  format: online
+  usp:
+  - 'Название на странице: Онлайн—курсы для 11 класса'
+  - 'Источник: https://kmipt.ru/courses/online/online_11/'
+  - 'Уровень по разделу сайта: 11-11 класс, формат онлайн'
+  - 'Описание страницы: Онлайн подготовка к ЕГЭ. Занятия с преподавателями ведущих
+    технических ВУЗов: МФТИ, МГУ, МГТУ на современной платформе онлайн образования.
+    Высокие баллы гарантированны.'
+  - 'Цена на странице: 31350 руб.'
+- id: kmipt-courses-online-online_oge
+  brand: kmipt
+  title: Онлайн—курсы для 9 класса
+  url: https://kmipt.ru/courses/online/online_oge/
+  category: oge
+  grade_min: 9
+  grade_max: 9
+  subjects:
+  - general
+  format: online
+  usp:
+  - 'Название на странице: Онлайн—курсы для 9 класса'
+  - 'Источник: https://kmipt.ru/courses/online/online_oge/'
+  - 'Уровень по разделу сайта: 9-9 класс, формат онлайн'
+  - 'Описание страницы: Онлайн подготовка к ОГЭ. Занятия с преподавателями ведущих
+    технических ВУЗов: МФТИ, МГУ, МГТУ на современной платформе онлайн образования.
+    Высокие баллы гарантированны.'
+  - 'Цена на странице: 27540 руб.'
+- id: kmipt-courses-online_5_8-courses_7
+  brand: kmipt
+  title: Онлайн—курсы для 7 класса
+  url: https://kmipt.ru/courses/online_5_8/Courses_7/
+  category: olympiad
+  grade_min: 7
+  grade_max: 7
+  subjects:
+  - general
+  format: online
+  usp:
+  - 'Название на странице: Онлайн—курсы для 7 класса'
+  - 'Источник: https://kmipt.ru/courses/online_5_8/Courses_7/'
+  - 'Уровень по разделу сайта: 7-7 класс, формат онлайн'
+  - 'Описание страницы: Базовый и олимпиадный уровень. Лучшие преподаватели из МФТИ
+    и МГУ. Индивидуальный подход. Маленькие группы. Эффективнее чем репетитор. От
+    250р/час. Записывайтесь!'
+  - 'Цена на странице: 27540 руб.'
+- id: kmipt-courses-online_5_8-courses_5
+  brand: kmipt
+  title: Онлайн—курсы для 5 класса
+  url: https://kmipt.ru/courses/online_5_8/courses_5/
+  category: olympiad
+  grade_min: 5
+  grade_max: 5
+  subjects:
+  - general
+  format: online
+  usp:
+  - 'Название на странице: Онлайн—курсы для 5 класса'
+  - 'Источник: https://kmipt.ru/courses/online_5_8/courses_5/'
+  - 'Уровень по разделу сайта: 5-5 класс, формат онлайн'
+  - 'Описание страницы: Базовый и олимпиадный уровень. Лучшие преподаватели из МФТИ
+    и МГУ. Индивидуальный подход. Маленькие группы. Эффективнее чем репетитор. От
+    250р/час. Записывайтесь!'
+  - 'Цена на странице: 27540 руб.'
+- id: kmipt-courses-online_5_8-courses_6
+  brand: kmipt
+  title: Онлайн—курс для 6 класса
+  url: https://kmipt.ru/courses/online_5_8/courses_6/
+  category: olympiad
+  grade_min: 6
+  grade_max: 6
+  subjects:
+  - general
+  format: online
+  usp:
+  - 'Название на странице: Онлайн—курс для 6 класса'
+  - 'Источник: https://kmipt.ru/courses/online_5_8/courses_6/'
+  - 'Уровень по разделу сайта: 6-6 класс, формат онлайн'
+  - 'Описание страницы: Базовый и олимпиадный уровень. Лучшие преподаватели из МФТИ
+    и МГУ. Индивидуальный подход. Маленькие группы. Эффективнее чем репетитор. От
+    250р/час. Записывайтесь!'
+  - 'Цена на странице: 27540 руб.'
+- id: kmipt-courses-online_5_8-courses_8
+  brand: kmipt
+  title: Онлайн—курсы для 8 класса
+  url: https://kmipt.ru/courses/online_5_8/courses_8/
+  category: base
+  grade_min: 8
+  grade_max: 8
+  subjects:
+  - informatics
+  format: online
+  usp:
+  - 'Название на странице: Онлайн—курсы для 8 класса'
+  - 'Источник: https://kmipt.ru/courses/online_5_8/courses_8/'
+  - 'Уровень по разделу сайта: 8-8 класс, формат онлайн'
+  - 'Описание страницы: Информатика и программирование. Лучшие преподаватели из МФТИ
+    и МГУ. Индивидуальный подход. Маленькие группы. Эффективнее чем репетитор. От
+    250р/час. Записывайтесь!'
+  - 'Цена на странице: 27540 руб.'
+- id: kmipt-courses-online_5_8-courses_online_3_4
+  brand: kmipt
+  title: Онлайн—курсы для 3—4 класса
+  url: https://kmipt.ru/courses/online_5_8/courses_online_3_4/
+  category: olympiad
+  grade_min: 3
+  grade_max: 4
+  subjects:
+  - general
+  format: online
+  usp:
+  - 'Название на странице: Онлайн—курсы для 3—4 класса'
+  - 'Источник: https://kmipt.ru/courses/online_5_8/courses_online_3_4/'
+  - 'Уровень по разделу сайта: 3-4 класс, формат онлайн'
+  - 'Описание страницы: Базовый и олимпиадный уровень. Лучшие преподаватели из МФТИ
+    и МГУ. Индивидуальный подход. Маленькие группы. Эффективнее чем репетитор. От
+    250р/час. Записывайтесь!'
+  - 'Цена на странице: 22500 руб.'
+- id: kmipt-courses-progr-informatika_5_8
+  brand: kmipt
+  title: Информатика 5—8 класс
+  url: https://kmipt.ru/courses/progr/Informatika_5_8/
+  category: base
+  grade_min: 5
+  grade_max: 8
+  subjects:
+  - informatics
+  format: hybrid
+  usp:
+  - 'Название на странице: Информатика 5—8 класс'
+  - 'Источник: https://kmipt.ru/courses/progr/Informatika_5_8/'
+  - 'Уровень по разделу сайта: 5-8 класс, формат смешанный'
+  - 'Описание страницы: Информатика и программирование. Лучшие преподаватели из МФТИ
+    и МГУ. Индивидуальный подход. Маленькие группы 7-9 человек. Эффективнее чем репетитор.
+    От 600р/час. Записывайтесь!'
+  - 'Цена на странице: 36900 руб.'
+- id: kmipt-courses-zhukovskiy-ochnie
+  brand: kmipt
+  title: Очные курсы по математике, физике, информатике и русскому языку в г. Жуковский
+  url: https://kmipt.ru/courses/zhukovskiy/ochnie/
+  category: oge
+  grade_min: 8
+  grade_max: 9
+  subjects:
+  - math
+  - physics
+  - informatics
+  - russian
+  format: offline
+  usp:
+  - 'Название на странице: Очные курсы по математике, физике, информатике и русскому
+    языку в г. Жуковский'
+  - 'Источник: https://kmipt.ru/courses/zhukovskiy/ochnie/'
+  - 'Уровень по разделу сайта: 8-9 класс, формат очно'
+  - 'Описание страницы: УНПК МФТИ объявляет набор на 2025-2026 год! Подготовка к ЕГЭ,
+    ОГЭ и Олимпиадам с преподавателями МГУ и МФТИ! Звони и записывайся!'
+  - 'Цена на странице: 6400 руб.'

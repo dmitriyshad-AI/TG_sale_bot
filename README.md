@@ -272,6 +272,14 @@ SALES_TONE_PATH=
   ```bash
   python3 scripts/check_catalog_freshness.py
   ```
+- Полная синхронизация каталога KMIPT с сайта (sitemap + страницы курсов):
+  ```bash
+  python3 scripts/sync_kmipt_catalog.py
+  ```
+  - Проверка соответствия текущего каталога живому сайту:
+    ```bash
+    python3 scripts/sync_kmipt_catalog.py --check-catalog catalog/products.yaml
+    ```
 - Автогенерация чернового каталога с публичных страниц kmipt.ru:
   ```bash
   python3 scripts/build_catalog_draft.py

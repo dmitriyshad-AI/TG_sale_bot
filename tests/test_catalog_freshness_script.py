@@ -78,6 +78,31 @@ class CatalogFreshnessScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             self.assertIn("[OK] Catalog freshness check passed", result.stdout)
 
+    def test_script_skips_camp_rule_when_camp_has_no_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "catalog.yaml"
+            path.write_text(
+                yaml.safe_dump(
+                    {
+                        "products": [
+                            _product(
+                                product_id="kmipt-camp-without-sessions",
+                                category="camp",
+                                sessions=[],
+                                format_value="offline",
+                            )
+                        ]
+                    },
+                    sort_keys=False,
+                    allow_unicode=True,
+                ),
+                encoding="utf-8",
+            )
+
+            result = self._run(path, "--today", "2026-02-13")
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertIn("[OK] Catalog freshness check passed", result.stdout)
+
     def test_script_fails_for_past_camp_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "catalog.yaml"
