@@ -137,6 +137,18 @@ class PreflightAuditScriptTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["status"], "fail")
 
+    def test_main_returns_fail_when_get_settings_raises_value_error(self) -> None:
+        with patch.object(preflight_audit, "get_settings", side_effect=ValueError("bad webhook config")), patch(
+            "sys.stdout", new_callable=StringIO
+        ) as stdout:
+            result = preflight_audit.main(["--json"])
+
+        self.assertEqual(result, 1)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(payload["issues"][0]["code"], "invalid_configuration")
+        self.assertIn("webhook", payload["issues"][0]["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

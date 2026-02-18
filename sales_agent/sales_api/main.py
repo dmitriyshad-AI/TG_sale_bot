@@ -118,6 +118,8 @@ def _format_next_start_text(product: object) -> str:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or get_settings()
+    if cfg.telegram_mode == "webhook" and not cfg.telegram_webhook_secret:
+        raise ValueError("TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_MODE=webhook")
     init_db(cfg.database_path)
     webhook_path = cfg.telegram_webhook_path if cfg.telegram_webhook_path.startswith("/") else f"/{cfg.telegram_webhook_path}"
     telegram_application = None

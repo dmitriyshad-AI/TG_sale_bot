@@ -105,12 +105,14 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.openai_vector_store_id, "")
         self.assertEqual(settings.admin_user, "")
         self.assertEqual(settings.admin_pass, "")
-        self.assertEqual(settings.crm_provider, "tallanto")
+        self.assertEqual(settings.crm_provider, "none")
         self.assertEqual(settings.amo_api_url, "")
         self.assertEqual(settings.amo_access_token, "")
         self.assertEqual(settings.tallanto_api_token, "")
         self.assertFalse(settings.tallanto_read_only)
         self.assertEqual(settings.tallanto_default_contact_module, "")
+        self.assertFalse(settings.running_on_render)
+        self.assertEqual(settings.persistent_data_root, Path())
 
     @patch.dict(
         os.environ,
@@ -130,6 +132,11 @@ class ConfigTests(unittest.TestCase):
         settings = get_settings()
         self.assertEqual(settings.telegram_mode, "polling")
 
+    @patch.dict(os.environ, {"TELEGRAM_MODE": "webhook"}, clear=True)
+    def test_webhook_mode_requires_secret(self) -> None:
+        with self.assertRaises(ValueError):
+            get_settings()
+
     @patch.dict(os.environ, {"ADMIN_MINIAPP_ENABLED": "yes", "ADMIN_TELEGRAM_IDS": "1, 2, bad,3"}, clear=True)
     def test_admin_miniapp_settings_parse_values(self) -> None:
         settings = get_settings()
@@ -145,6 +152,22 @@ class ConfigTests(unittest.TestCase):
         settings = get_settings()
         self.assertEqual(settings.tallanto_api_token, "legacy-key")
         self.assertFalse(settings.tallanto_read_only)
+
+    @patch.dict(os.environ, {"RENDER": "true"}, clear=True)
+    def test_render_defaults_use_var_data_for_database_and_vector_meta(self) -> None:
+        settings = get_settings()
+        self.assertTrue(settings.running_on_render)
+        self.assertEqual(settings.persistent_data_root, Path("/var/data"))
+        self.assertEqual(settings.database_path, Path("/var/data/sales_agent.db"))
+        self.assertEqual(settings.vector_store_meta_path, Path("/var/data/vector_store.json"))
+
+    @patch.dict(os.environ, {"PERSISTENT_DATA_PATH": "/tmp/persistent-sales-data"}, clear=True)
+    def test_explicit_persistent_data_path_overrides_defaults(self) -> None:
+        settings = get_settings()
+        self.assertFalse(settings.running_on_render)
+        self.assertEqual(settings.persistent_data_root, Path("/tmp/persistent-sales-data"))
+        self.assertEqual(settings.database_path, Path("/tmp/persistent-sales-data/sales_agent.db"))
+        self.assertEqual(settings.vector_store_meta_path, Path("/tmp/persistent-sales-data/vector_store.json"))
 
 
 if __name__ == "__main__":

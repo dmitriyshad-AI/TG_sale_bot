@@ -167,6 +167,12 @@ class ApiWebhookTests(unittest.TestCase):
                     self.assertIn("invalid telegram payload", response.json()["detail"].lower())
                     mock_tg_app.process_update.assert_not_awaited()
 
+    def test_create_app_rejects_webhook_mode_without_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "webhook.db"
+            with self.assertRaises(ValueError):
+                create_app(self._settings(db_path, telegram_mode="webhook", webhook_secret=""))
+
 
 if __name__ == "__main__":
     unittest.main()

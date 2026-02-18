@@ -4,7 +4,11 @@ from pathlib import Path
 import json
 
 from sales_agent.sales_core.config import Settings
-from sales_agent.sales_core.runtime_diagnostics import build_runtime_diagnostics
+from sales_agent.sales_core.runtime_diagnostics import (
+    _is_path_within,
+    _safe_md_count,
+    build_runtime_diagnostics,
+)
 
 
 def _write_catalog(path: Path) -> None:
@@ -30,6 +34,20 @@ products:
 
 
 class RuntimeDiagnosticsTests(unittest.TestCase):
+    def test_helper_path_within_and_md_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            docs = root / "docs"
+            docs.mkdir(parents=True, exist_ok=True)
+            (docs / "a.md").write_text("x", encoding="utf-8")
+            (docs / "b.txt").write_text("x", encoding="utf-8")
+            (docs / "c.pdf").write_text("x", encoding="utf-8")
+            (docs / "d.json").write_text("x", encoding="utf-8")
+
+            self.assertEqual(_safe_md_count(docs), 3)
+            self.assertTrue(_is_path_within(docs / "a.md", docs))
+            self.assertFalse(_is_path_within(root / "other.md", docs))
+
     def test_diagnostics_reports_fail_when_critical_settings_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -169,6 +187,109 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["status"], "warn")
         issue_codes = {item["code"] for item in diagnostics["issues"]}
         self.assertIn("tallanto_readonly_incomplete", issue_codes)
+
+    def test_diagnostics_warns_for_render_non_persistent_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            catalog_path = root / "catalog.yaml"
+            _write_catalog(catalog_path)
+            knowledge_path = root / "knowledge"
+            knowledge_path.mkdir(parents=True, exist_ok=True)
+            (knowledge_path / "faq_general.md").write_text("FAQ", encoding="utf-8")
+
+            settings = Settings(
+                telegram_bot_token="tg-token",
+                openai_api_key="sk-test",
+                openai_model="gpt-4.1",
+                tallanto_api_url="",
+                tallanto_api_key="",
+                brand_default="kmipt",
+                database_path=root / "data" / "sales_agent.db",
+                catalog_path=catalog_path,
+                knowledge_path=knowledge_path,
+                vector_store_meta_path=root / "data" / "vector_store.json",
+                openai_vector_store_id="vs_123",
+                admin_user="",
+                admin_pass="",
+                running_on_render=True,
+                persistent_data_root=Path("/var/data"),
+            )
+            settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+            diagnostics = build_runtime_diagnostics(settings)
+
+        self.assertEqual(diagnostics["status"], "warn")
+        issue_codes = {item["code"] for item in diagnostics["issues"]}
+        self.assertIn("render_database_not_persistent", issue_codes)
+        self.assertIn("render_vector_meta_not_persistent", issue_codes)
+
+    def test_diagnostics_reports_render_paths_ok_when_under_persistent_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            catalog_path = root / "catalog.yaml"
+            _write_catalog(catalog_path)
+            knowledge_path = root / "knowledge"
+            knowledge_path.mkdir(parents=True, exist_ok=True)
+            (knowledge_path / "faq_general.md").write_text("FAQ", encoding="utf-8")
+
+            persistent = root / "persistent"
+            persistent.mkdir(parents=True, exist_ok=True)
+            settings = Settings(
+                telegram_bot_token="tg-token",
+                openai_api_key="sk-test",
+                openai_model="gpt-4.1",
+                tallanto_api_url="",
+                tallanto_api_key="",
+                brand_default="kmipt",
+                database_path=persistent / "sales_agent.db",
+                catalog_path=catalog_path,
+                knowledge_path=knowledge_path,
+                vector_store_meta_path=persistent / "vector_store.json",
+                openai_vector_store_id="vs_123",
+                admin_user="",
+                admin_pass="",
+                running_on_render=True,
+                persistent_data_root=persistent,
+            )
+            diagnostics = build_runtime_diagnostics(settings)
+
+        self.assertEqual(diagnostics["status"], "ok")
+        runtime = diagnostics["runtime"]
+        self.assertTrue(runtime["database_on_persistent_storage"])
+        self.assertTrue(runtime["vector_meta_on_persistent_storage"])
+
+    def test_diagnostics_warns_for_render_without_persistent_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            catalog_path = root / "catalog.yaml"
+            _write_catalog(catalog_path)
+            knowledge_path = root / "knowledge"
+            knowledge_path.mkdir(parents=True, exist_ok=True)
+            (knowledge_path / "faq_general.md").write_text("FAQ", encoding="utf-8")
+
+            db_path = root / "data" / "sales_agent.db"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            settings = Settings(
+                telegram_bot_token="tg-token",
+                openai_api_key="sk-test",
+                openai_model="gpt-4.1",
+                tallanto_api_url="",
+                tallanto_api_key="",
+                brand_default="kmipt",
+                database_path=db_path,
+                catalog_path=catalog_path,
+                knowledge_path=knowledge_path,
+                vector_store_meta_path=root / "data" / "vector_store.json",
+                openai_vector_store_id="vs_123",
+                admin_user="",
+                admin_pass="",
+                running_on_render=True,
+                persistent_data_root=Path(),
+            )
+            diagnostics = build_runtime_diagnostics(settings)
+
+        self.assertEqual(diagnostics["status"], "warn")
+        issue_codes = {item["code"] for item in diagnostics["issues"]}
+        self.assertIn("persistent_data_root_missing", issue_codes)
 
 
 if __name__ == "__main__":

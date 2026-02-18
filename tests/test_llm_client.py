@@ -4,6 +4,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError, URLError
 
+import httpx
+
 try:
     from sales_agent.sales_core.catalog import SearchCriteria, parse_catalog
     from sales_agent.sales_core.llm_client import KnowledgeReply, LLMClient
@@ -431,6 +433,192 @@ class LLMClientTests(unittest.TestCase):
             )
         )
 
+    def test_should_use_site_fallback_false_for_confident_reply(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        self.assertFalse(
+            client._should_use_site_fallback(
+                KnowledgeReply(answer_text="Нашел точный ответ по документам.", sources=["docs.md"], used_fallback=False)
+            )
+        )
+
+    def test_apply_site_fallback_keeps_primary_when_site_search_fails(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        primary = KnowledgeReply(answer_text="Недостаточно данных.", sources=[], used_fallback=False)
+        failed_site = KnowledgeReply(answer_text="Ошибка поиска.", sources=[], used_fallback=True, error="timeout")
+        with patch.object(client, "_answer_knowledge_via_site_search", return_value=failed_site):
+            resolved = client._apply_site_fallback(
+                question="Какие документы?",
+                primary_reply=primary,
+                user_context={},
+                site_domain="kmipt.ru",
+            )
+        self.assertIs(resolved, primary)
+
+    def test_answer_knowledge_via_site_search_handles_error(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        with patch.object(client, "_send_request", return_value=(None, "timeout")):
+            result = client._answer_knowledge_via_site_search(
+                question="Что известно про лагерь?",
+                user_context={"summary_text": "интерес к лагерю"},
+                site_domain="kmipt.ru",
+            )
+        self.assertTrue(result.used_fallback)
+        self.assertIn("не удалось", result.answer_text.lower())
+        self.assertIn("timeout", result.error or "")
+
+    def test_answer_knowledge_via_site_search_handles_empty_text(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        with patch.object(client, "_send_request", return_value=({"output": []}, None)):
+            result = client._answer_knowledge_via_site_search(
+                question="Что известно про лагерь?",
+                user_context={"summary_text": "интерес к лагерю"},
+                site_domain="kmipt.ru",
+            )
+        self.assertTrue(result.used_fallback)
+        self.assertIn("не удалось получить факты", result.answer_text.lower())
+
+    def test_extract_text_prefers_output_text(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        text = client._extract_text(
+            {"output_text": "  Готовый ответ  ", "output": [{"content": [{"text": "Лишний"}]}]}
+        )
+        self.assertEqual(text, "Готовый ответ")
+
+    def test_fallback_consultative_reply_without_product_offer(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        reply = client._fallback_consultative_reply(
+            criteria=SearchCriteria(brand="kmipt", grade=None, goal=None, subject=None, format=None),
+            top_products=self.top_products,
+            missing_fields=["grade"],
+            product_offer_allowed=False,
+        )
+        self.assertTrue(reply.used_fallback)
+        self.assertNotIn("Course 1", reply.answer_text)
+        self.assertIn("класс", reply.next_question or "")
+
+    def test_fallback_general_help_reply_and_flow_followup_variants(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+
+        sinus = client._fallback_general_help_reply(user_message="Что такое синус?")
+        self.assertIn("Синус", sinus.answer_text)
+
+        mgu = client._fallback_general_help_reply(user_message="Как поступить в МГУ?")
+        self.assertIn("МГУ", mgu.answer_text)
+
+        generic = client._fallback_general_help_reply(user_message="Объясни тему", dialogue_state="ask_goal")
+        self.assertIn("можем вернуться", generic.answer_text)
+
+        followup = client._fallback_flow_followup_reply(
+            base_message="Укажите класс ученика",
+            next_state="ask_subject",
+            criteria={"grade": 10},
+        )
+        self.assertIn("Для 10 класса", followup.answer_text)
+
+        followup_goal = client._fallback_flow_followup_reply(
+            base_message="Какая цель подготовки?",
+            next_state="ask_goal",
+            criteria={},
+        )
+        self.assertIn("Нужен еще один ориентир", followup_goal.answer_text)
+
+        followup_format = client._fallback_flow_followup_reply(
+            base_message="Какой формат удобнее?",
+            next_state="ask_format",
+            criteria={},
+        )
+        self.assertIn("последний организационный вопрос", followup_format.answer_text)
+
+        followup_contact = client._fallback_flow_followup_reply(
+            base_message="Оставьте телефон",
+            next_state="ask_contact",
+            criteria={},
+        )
+        self.assertIn("передадим запрос менеджеру", followup_contact.answer_text)
+
+    def test_answer_knowledge_question_sync_edge_cases(self) -> None:
+        configured = LLMClient(api_key="sk-test", model="gpt-4.1")
+        empty = configured.answer_knowledge_question("   ", vector_store_id="vs_test")
+        self.assertTrue(empty.used_fallback)
+        self.assertIn("задайте вопрос", empty.answer_text.lower())
+
+        unconfigured = LLMClient(api_key="", model="gpt-4.1")
+        no_key = unconfigured.answer_knowledge_question("Как оплатить?", vector_store_id="vs_test")
+        self.assertTrue(no_key.used_fallback)
+        self.assertIn("OPENAI_API_KEY", no_key.error or "")
+
+    def test_answer_knowledge_question_sync_handles_request_error_and_empty_text(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        with patch.object(client, "_send_request", return_value=(None, "upstream error")):
+            errored = client.answer_knowledge_question("Как оплатить?", vector_store_id="vs_test")
+        self.assertTrue(errored.used_fallback)
+        self.assertIn("upstream error", errored.error or "")
+
+        with patch.object(client, "_send_request", return_value=({"output": []}, None)):
+            empty = client.answer_knowledge_question("Как оплатить?", vector_store_id="vs_test")
+        self.assertTrue(empty.used_fallback)
+        self.assertIn("переформулировать", empty.answer_text.lower())
+
+    def test_send_request_http_error_without_details(self) -> None:
+        class _NoBodyHTTPError(HTTPError):
+            def read(self):
+                raise RuntimeError("cannot read body")
+
+        err = _NoBodyHTTPError(
+            url="https://api.openai.com/v1/responses",
+            code=503,
+            msg="Service Unavailable",
+            hdrs=None,
+            fp=None,
+        )
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        with patch("sales_agent.sales_core.llm_client.urlopen", side_effect=err):
+            raw, error = client._send_request({"model": "gpt-4.1", "input": "ping"})
+        self.assertIsNone(raw)
+        self.assertEqual(error, "OpenAI HTTP error: 503")
+
+    def test_extract_helpers_cover_non_happy_paths(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        self.assertEqual(client._extract_text({"output": "wrong-type"}), "")
+        self.assertEqual(client._extract_text({"output": [{"content": "wrong"}]}), "")
+        self.assertEqual(client._extract_source_names({"output": "wrong-type"}), [])
+        self.assertEqual(client._source_label_from_annotation({"unknown": "value"}), "")
+        self.assertIsNone(client._extract_json_object(""))
+        self.assertIsNone(client._extract_json_object("no json here"))
+
+    def test_product_payload_includes_sessions(self) -> None:
+        catalog = parse_catalog(
+            {
+                "products": [
+                    {
+                        "id": "p-s",
+                        "brand": "kmipt",
+                        "title": "Session Product",
+                        "url": "https://example.com/s",
+                        "category": "camp",
+                        "grade_min": 8,
+                        "grade_max": 11,
+                        "subjects": ["math"],
+                        "format": "offline",
+                        "sessions": [
+                            {
+                                "name": "Лето",
+                                "start_date": "2026-06-10",
+                                "end_date": "2026-06-20",
+                                "price_rub": 59000,
+                            }
+                        ],
+                        "usp": ["u1", "u2", "u3"],
+                    }
+                ]
+            },
+            Path("memory://catalog-with-sessions.yaml"),
+        )
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        payload = client._product_payload(catalog.products[0])
+        self.assertEqual(payload["sessions"][0]["name"], "Лето")
+        self.assertEqual(payload["sessions"][0]["price_rub"], 59000)
+
 
 @unittest.skipUnless(HAS_LLM_DEPS, "llm dependencies are not installed")
 class LLMClientAsyncTests(unittest.IsolatedAsyncioTestCase):
@@ -661,6 +849,140 @@ class LLMClientAsyncTests(unittest.IsolatedAsyncioTestCase):
             raw, error = await client._send_request_async({"model": "gpt-4.1", "input": "ping"})
         self.assertIsNone(raw)
         self.assertIn("not valid json", (error or "").lower())
+
+    async def test_send_request_async_handles_request_error_and_http_without_body(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+
+        class _FailingAsyncClient:
+            async def __aenter__(self):
+                raise httpx.RequestError("network down")
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with patch("sales_agent.sales_core.llm_client.httpx.AsyncClient", return_value=_FailingAsyncClient()):
+            raw, error = await client._send_request_async({"model": "gpt-4.1", "input": "ping"})
+        self.assertIsNone(raw)
+        self.assertIn("connection error", (error or "").lower())
+
+        response = _MockAsyncResponse(502, {})
+        response.text = ""
+        with patch(
+            "sales_agent.sales_core.llm_client.httpx.AsyncClient",
+            return_value=_MockAsyncClient(response),
+        ):
+            raw, error = await client._send_request_async({"model": "gpt-4.1", "input": "ping"})
+        self.assertIsNone(raw)
+        self.assertEqual(error, "OpenAI HTTP error: 502")
+
+    async def test_build_consultative_reply_async_uses_fallback_without_key(self) -> None:
+        client = LLMClient(api_key="", model="gpt-4.1")
+        result = await client.build_consultative_reply_async(
+            user_message="Хочу план поступления в МФТИ",
+            criteria=SearchCriteria(brand="kmipt", grade=11, goal="ege", subject="math", format=None),
+            top_products=_products(),
+            missing_fields=["format"],
+            repeat_count=0,
+            product_offer_allowed=True,
+        )
+        self.assertTrue(result.used_fallback)
+        self.assertIn("OPENAI_API_KEY", result.error or "")
+
+    async def test_build_general_help_reply_async_handles_empty_message(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        result = await client.build_general_help_reply_async(user_message="   ")
+        self.assertTrue(result.used_fallback)
+        self.assertIn("сформулируйте", result.answer_text.lower())
+
+    async def test_build_flow_followup_reply_async_handles_empty_base_message(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        result = await client.build_flow_followup_reply_async(
+            user_message="Спасибо",
+            base_message="   ",
+            current_state="ask_goal",
+            next_state="ask_goal",
+            criteria={"brand": "kmipt"},
+        )
+        self.assertTrue(result.used_fallback)
+        self.assertIn("как лучше вам помочь", result.answer_text.lower())
+
+    async def test_build_consultative_reply_async_handles_error_and_parse_fallback(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        with patch.object(client, "_send_request_async", new=AsyncMock(return_value=(None, "downstream"))):
+            errored = await client.build_consultative_reply_async(
+                user_message="Хочу стратегию поступления",
+                criteria=SearchCriteria(brand="kmipt", grade=11, goal="ege", subject="math", format=None),
+                top_products=_products(),
+                missing_fields=["format"],
+                product_offer_allowed=True,
+            )
+        self.assertTrue(errored.used_fallback)
+        self.assertEqual(errored.error, "downstream")
+
+        with patch.object(client, "_send_request_async", new=AsyncMock(return_value=({"output_text": "not-json"}, None))):
+            parsed_fail = await client.build_consultative_reply_async(
+                user_message="Хочу стратегию поступления",
+                criteria=SearchCriteria(brand="kmipt", grade=11, goal="ege", subject="math", format=None),
+                top_products=_products(),
+                missing_fields=["format"],
+                product_offer_allowed=True,
+            )
+        self.assertTrue(parsed_fail.used_fallback)
+        self.assertIn("parse structured", parsed_fail.error or "")
+
+    async def test_build_general_and_flow_async_handle_error_and_empty_text(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        with patch.object(client, "_send_request_async", new=AsyncMock(return_value=(None, "upstream"))):
+            general_error = await client.build_general_help_reply_async(user_message="что такое косинус?")
+        self.assertTrue(general_error.used_fallback)
+        self.assertEqual(general_error.error, "upstream")
+
+        with patch.object(client, "_send_request_async", new=AsyncMock(return_value=({"output": []}, None))):
+            general_empty = await client.build_general_help_reply_async(user_message="что такое косинус?")
+        self.assertTrue(general_empty.used_fallback)
+        self.assertEqual(general_empty.error, "empty response text")
+
+        with patch.object(client, "_send_request_async", new=AsyncMock(return_value=(None, "downstream"))):
+            flow_error = await client.build_flow_followup_reply_async(
+                user_message="спасибо",
+                base_message="Укажите класс",
+                current_state="ask_grade",
+                next_state="ask_grade",
+                criteria={"brand": "kmipt"},
+            )
+        self.assertTrue(flow_error.used_fallback)
+        self.assertEqual(flow_error.error, "downstream")
+
+        with patch.object(client, "_send_request_async", new=AsyncMock(return_value=({"output": []}, None))):
+            flow_empty = await client.build_flow_followup_reply_async(
+                user_message="спасибо",
+                base_message="Укажите класс",
+                current_state="ask_grade",
+                next_state="ask_grade",
+                criteria={"brand": "kmipt"},
+            )
+        self.assertTrue(flow_empty.used_fallback)
+        self.assertEqual(flow_empty.error, "empty response text")
+
+    async def test_answer_knowledge_question_async_edge_cases(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        empty = await client.answer_knowledge_question_async("   ", vector_store_id="vs")
+        self.assertTrue(empty.used_fallback)
+
+        no_key_client = LLMClient(api_key="", model="gpt-4.1")
+        no_key = await no_key_client.answer_knowledge_question_async("Как оплатить?", vector_store_id="vs")
+        self.assertTrue(no_key.used_fallback)
+        self.assertIn("OPENAI_API_KEY", no_key.error or "")
+
+        with patch.object(client, "_send_request_async", new=AsyncMock(return_value=(None, "err"))):
+            errored = await client.answer_knowledge_question_async("Как оплатить?", vector_store_id="vs")
+        self.assertTrue(errored.used_fallback)
+        self.assertEqual(errored.error, "err")
+
+        with patch.object(client, "_send_request_async", new=AsyncMock(return_value=({"output": []}, None))):
+            empty_text = await client.answer_knowledge_question_async("Как оплатить?", vector_store_id="vs")
+        self.assertTrue(empty_text.used_fallback)
+        self.assertEqual(empty_text.error, "empty response text")
 
 
 if __name__ == "__main__":

@@ -126,7 +126,7 @@ TALLANTO_API_TOKEN=
 TALLANTO_READ_ONLY=0
 TALLANTO_DEFAULT_CONTACT_MODULE=
 TALLANTO_MOCK_MODE=false
-CRM_PROVIDER=tallanto
+CRM_PROVIDER=none
 AMO_API_URL=
 AMO_ACCESS_TOKEN=
 BRAND_DEFAULT=kmipt
@@ -138,6 +138,7 @@ ADMIN_WEBAPP_URL=
 USER_WEBAPP_URL=
 
 # Optional overrides
+PERSISTENT_DATA_PATH=
 DATABASE_PATH=
 CATALOG_PATH=
 KNOWLEDGE_PATH=
@@ -162,7 +163,7 @@ SALES_TONE_PATH=
 - Для локальной разработки проще polling (`python3 -m sales_agent.sales_bot.bot`).
 - Для Render/Web Service можно использовать webhook:
   1. Установить в env: `TELEGRAM_MODE=webhook`.
-  2. Задать `TELEGRAM_WEBHOOK_SECRET` (рекомендуется).
+  2. Задать `TELEGRAM_WEBHOOK_SECRET` (обязательно).
   3. После деплоя выставить webhook:
      ```bash
      curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/setWebhook" \
@@ -224,6 +225,8 @@ SALES_TONE_PATH=
   - При превышении лимита 64 символа бот старается сохранить хотя бы категорию страницы (`camp/ege/oge/olymp`), чтобы не терять контекст приветствия.
 - Для локальной проверки без CRM включить mock-режим:
   - `TALLANTO_MOCK_MODE=true`
+- Для Render с SQLite храните БД и metadata на persistent disk:
+  - `PERSISTENT_DATA_PATH=/var/data` (или ваш mount path)
 - Выбор CRM-провайдера:
   - `CRM_PROVIDER=tallanto` — текущая рабочая интеграция.
   - `CRM_PROVIDER=amo` — минимальная рабочая AMO-интеграция (`/api/v4/leads` + заметка с контактом).

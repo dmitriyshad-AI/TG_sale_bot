@@ -30,7 +30,27 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    settings = get_settings()
+    try:
+        settings = get_settings()
+    except ValueError as exc:
+        payload = {
+            "status": "fail",
+            "runtime": {},
+            "issues": [
+                {
+                    "severity": "error",
+                    "code": "invalid_configuration",
+                    "message": str(exc),
+                }
+            ],
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print("Preflight status: FAIL")
+            print(f"- configuration error: {exc}")
+        return 1
+
     diagnostics = build_runtime_diagnostics(settings)
     status = str(diagnostics.get("status") or "fail").lower()
 

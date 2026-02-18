@@ -37,6 +37,22 @@ def _can_write_parent(path: Path) -> bool:
         return False
 
 
+def _is_path_within(child: Path, parent: Path) -> bool:
+    try:
+        child_resolved = child.resolve()
+        parent_resolved = parent.resolve()
+    except Exception:
+        return False
+    try:
+        return child_resolved.is_relative_to(parent_resolved)
+    except AttributeError:
+        try:
+            child_resolved.relative_to(parent_resolved)
+            return True
+        except ValueError:
+            return False
+
+
 def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
     issues: List[DiagnosticIssue] = []
     database_parent_writable = _can_write_parent(settings.database_path)
@@ -85,6 +101,48 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
                 message=f"Database parent is not writable: {settings.database_path.parent}",
             )
         )
+
+    database_on_persistent_storage = False
+    vector_meta_on_persistent_storage = False
+    if settings.running_on_render:
+        persistent_root = settings.persistent_data_root
+        has_persistent_root = persistent_root != Path()
+        if not has_persistent_root:
+            issues.append(
+                DiagnosticIssue(
+                    severity="warning",
+                    code="persistent_data_root_missing",
+                    message=(
+                        "Render environment detected but persistent data root is not configured. "
+                        "Set PERSISTENT_DATA_PATH (for example /var/data)."
+                    ),
+                )
+            )
+        else:
+            database_on_persistent_storage = _is_path_within(settings.database_path, persistent_root)
+            vector_meta_on_persistent_storage = _is_path_within(settings.vector_store_meta_path, persistent_root)
+            if not database_on_persistent_storage:
+                issues.append(
+                    DiagnosticIssue(
+                        severity="warning",
+                        code="render_database_not_persistent",
+                        message=(
+                            "DATABASE_PATH is outside persistent storage. "
+                            "Sessions/leads/context may be lost after redeploy."
+                        ),
+                    )
+                )
+            if not vector_meta_on_persistent_storage:
+                issues.append(
+                    DiagnosticIssue(
+                        severity="warning",
+                        code="render_vector_meta_not_persistent",
+                        message=(
+                            "VECTOR_STORE_META_PATH is outside persistent storage. "
+                            "Vector store metadata may be lost after redeploy."
+                        ),
+                    )
+                )
 
     catalog_ok = True
     catalog_products_count = 0
@@ -165,6 +223,14 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
             "tallanto_default_contact_module": settings.tallanto_default_contact_module,
             "database_path": str(settings.database_path),
             "database_parent_writable": database_parent_writable,
+            "running_on_render": settings.running_on_render,
+            "persistent_data_root": (
+                str(settings.persistent_data_root)
+                if settings.persistent_data_root != Path()
+                else ""
+            ),
+            "database_on_persistent_storage": database_on_persistent_storage,
+            "vector_meta_on_persistent_storage": vector_meta_on_persistent_storage,
             "catalog_path": str(settings.catalog_path),
             "catalog_ok": catalog_ok,
             "catalog_products_count": catalog_products_count,

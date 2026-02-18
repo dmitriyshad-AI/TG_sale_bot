@@ -39,6 +39,8 @@ class Settings:
     user_webapp_url: str = ""
     openai_web_fallback_enabled: bool = True
     openai_web_fallback_domain: str = "kmipt.ru"
+    running_on_render: bool = False
+    persistent_data_root: Path = Path()
 
 
 def project_root() -> Path:
@@ -48,8 +50,31 @@ def project_root() -> Path:
 
 def get_settings() -> Settings:
     root = project_root()
+    running_on_render = any(
+        os.getenv(name, "").strip()
+        for name in ("RENDER", "RENDER_SERVICE_ID", "RENDER_INSTANCE_ID")
+    )
+    persistent_data_env = (
+        os.getenv("PERSISTENT_DATA_PATH", "").strip()
+        or os.getenv("RENDER_PERSISTENT_DATA_PATH", "").strip()
+    )
+    persistent_data_root = (
+        Path(persistent_data_env)
+        if persistent_data_env
+        else (Path("/var/data") if running_on_render else Path())
+    )
+    has_persistent_root = persistent_data_root != Path()
+
     database_path = os.getenv("DATABASE_PATH")
-    db_path = Path(database_path) if database_path else root / "data" / "sales_agent.db"
+    db_path = (
+        Path(database_path)
+        if database_path
+        else (
+            persistent_data_root / "sales_agent.db"
+            if has_persistent_root
+            else root / "data" / "sales_agent.db"
+        )
+    )
     catalog_path = os.getenv("CATALOG_PATH")
     catalog = Path(catalog_path) if catalog_path else root / "catalog" / "products.yaml"
     knowledge_path = os.getenv("KNOWLEDGE_PATH")
@@ -58,7 +83,11 @@ def get_settings() -> Settings:
     vector_meta = (
         Path(vector_store_meta_path)
         if vector_store_meta_path
-        else root / "data" / "vector_store.json"
+        else (
+            persistent_data_root / "vector_store.json"
+            if has_persistent_root
+            else root / "data" / "vector_store.json"
+        )
     )
     webapp_dist_env = os.getenv("WEBAPP_DIST_PATH", "").strip()
     webapp_dist_path = Path(webapp_dist_env) if webapp_dist_env else root / "webapp" / "dist"
@@ -68,6 +97,9 @@ def get_settings() -> Settings:
     telegram_webhook_path = os.getenv("TELEGRAM_WEBHOOK_PATH", "/telegram/webhook").strip() or "/telegram/webhook"
     if not telegram_webhook_path.startswith("/"):
         telegram_webhook_path = f"/{telegram_webhook_path}"
+    telegram_webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+    if telegram_mode == "webhook" and not telegram_webhook_secret:
+        raise ValueError("TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_MODE=webhook")
     admin_miniapp_enabled = os.getenv("ADMIN_MINIAPP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
     openai_web_fallback_enabled = (
         os.getenv("OPENAI_WEB_FALLBACK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -92,7 +124,7 @@ def get_settings() -> Settings:
     return Settings(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_mode=telegram_mode,
-        telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip(),
+        telegram_webhook_secret=telegram_webhook_secret,
         telegram_webhook_path=telegram_webhook_path,
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1").strip() or "gpt-4.1",
@@ -112,11 +144,13 @@ def get_settings() -> Settings:
         tallanto_read_only=tallanto_read_only,
         tallanto_default_contact_module=tallanto_default_contact_module,
         webapp_dist_path=webapp_dist_path,
-        crm_provider=os.getenv("CRM_PROVIDER", "tallanto").strip().lower() or "tallanto",
+        crm_provider=os.getenv("CRM_PROVIDER", "none").strip().lower() or "none",
         amo_api_url=os.getenv("AMO_API_URL", "").strip(),
         amo_access_token=os.getenv("AMO_ACCESS_TOKEN", "").strip(),
         admin_miniapp_enabled=admin_miniapp_enabled,
         admin_telegram_ids=tuple(admin_telegram_ids),
         admin_webapp_url=os.getenv("ADMIN_WEBAPP_URL", "").strip(),
         user_webapp_url=os.getenv("USER_WEBAPP_URL", "").strip(),
+        running_on_render=running_on_render,
+        persistent_data_root=persistent_data_root,
     )
