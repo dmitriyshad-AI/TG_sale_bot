@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+from uuid import uuid4
 
 from sales_agent.sales_core.catalog import CatalogValidationError, load_catalog
 from sales_agent.sales_core.config import Settings
@@ -27,7 +28,7 @@ def _can_write_parent(path: Path) -> bool:
     parent = path.parent
     if not parent.exists() or not parent.is_dir():
         return False
-    probe = parent / ".write_probe"
+    probe = parent / f".write_probe_{uuid4().hex}"
     try:
         probe.write_text("ok", encoding="utf-8")
         probe.unlink(missing_ok=True)
@@ -38,6 +39,7 @@ def _can_write_parent(path: Path) -> bool:
 
 def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
     issues: List[DiagnosticIssue] = []
+    database_parent_writable = _can_write_parent(settings.database_path)
 
     if not settings.telegram_bot_token:
         issues.append(
@@ -65,7 +67,7 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
             )
         )
 
-    if not _can_write_parent(settings.database_path):
+    if not database_parent_writable:
         issues.append(
             DiagnosticIssue(
                 severity="error",
@@ -91,13 +93,33 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
             )
         )
 
-    vector_store_id = settings.openai_vector_store_id or load_vector_store_id(settings.vector_store_meta_path)
+    vector_store_id_env = settings.openai_vector_store_id.strip() if settings.openai_vector_store_id else ""
+    vector_store_id_meta = load_vector_store_id(settings.vector_store_meta_path)
+    vector_store_id = vector_store_id_env or vector_store_id_meta
+    if vector_store_id_env:
+        vector_store_source = "env"
+    elif vector_store_id_meta:
+        vector_store_source = "meta_file"
+    else:
+        vector_store_source = "missing"
+
     if not vector_store_id:
         issues.append(
             DiagnosticIssue(
                 severity="warning",
                 code="vector_store_not_configured",
                 message="OpenAI vector store id is missing (knowledge fallback may be limited).",
+            )
+        )
+    elif vector_store_source == "meta_file":
+        issues.append(
+            DiagnosticIssue(
+                severity="warning",
+                code="vector_store_env_recommended",
+                message=(
+                    "Vector store id is loaded from local metadata file. "
+                    "For Render/production set OPENAI_VECTOR_STORE_ID explicitly."
+                ),
             )
         )
 
@@ -125,9 +147,11 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
             "openai_key_set": bool(settings.openai_api_key),
             "openai_model": settings.openai_model,
             "vector_store_id_set": bool(vector_store_id),
+            "vector_store_id_source": vector_store_source,
+            "vector_store_meta_path": str(settings.vector_store_meta_path),
             "crm_provider": settings.crm_provider,
             "database_path": str(settings.database_path),
-            "database_parent_writable": _can_write_parent(settings.database_path),
+            "database_parent_writable": database_parent_writable,
             "catalog_path": str(settings.catalog_path),
             "catalog_ok": catalog_ok,
             "catalog_products_count": catalog_products_count,

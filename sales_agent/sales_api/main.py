@@ -5,8 +5,9 @@ import html
 import json
 import logging
 import secrets
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -36,6 +37,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     init_db(cfg.database_path)
     webhook_path = cfg.telegram_webhook_path if cfg.telegram_webhook_path.startswith("/") else f"/{cfg.telegram_webhook_path}"
     telegram_application = None
+    user_webapp_dist = Path(cfg.webapp_dist_path)
+    user_webapp_index = user_webapp_dist / "index.html"
+    user_webapp_ready = user_webapp_index.exists()
 
     if cfg.telegram_mode == "webhook":
         if not cfg.telegram_bot_token:
@@ -63,6 +67,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "/admin/miniapp/static",
             StaticFiles(directory=str(miniapp_dir)),
             name="admin-miniapp-static",
+        )
+    if user_webapp_ready:
+        app.mount(
+            "/app",
+            StaticFiles(directory=str(user_webapp_dist), html=True),
+            name="sales-user-miniapp",
         )
 
     def require_miniapp_user(request: Request) -> dict:
@@ -121,6 +131,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 headers={"WWW-Authenticate": "Basic"},
             )
         return credentials.username
+
+    async def process_telegram_update_async(telegram_app, update: Update) -> None:
+        try:
+            await telegram_app.process_update(update)
+        except Exception:
+            logger.exception("Failed to process Telegram update in background")
 
     def render_page(title: str, body_html: str) -> HTMLResponse:
         page = f"""
@@ -208,6 +224,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def runtime_diagnostics():
         return build_runtime_diagnostics(cfg)
 
+    @app.get("/")
+    async def root():
+        app_status = "ready" if user_webapp_ready else "build-required"
+        return {
+            "status": "ok",
+            "service": "sales-agent",
+            "user_miniapp": {
+                "status": app_status,
+                "entrypoint": "/app",
+            },
+        }
+
+    if not user_webapp_ready:
+
+        @app.get("/app", response_class=HTMLResponse)
+        async def user_miniapp_placeholder():
+            body = (
+                "<h1>User Mini App is not built yet</h1>"
+                "<p>Run:</p>"
+                "<pre>cd webapp\nnpm install\nnpm run build</pre>"
+                f"<p>Expected dist path: <code>{html.escape(str(user_webapp_dist))}</code></p>"
+            )
+            return render_page("Mini App Build Required", body)
+
     @app.get("/admin/miniapp")
     async def admin_miniapp_page():
         if not cfg.admin_miniapp_enabled:
@@ -264,7 +304,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post(webhook_path)
-    async def telegram_webhook(request: Request):
+    async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         if cfg.telegram_mode != "webhook":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -280,7 +320,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not secrets.compare_digest(header_secret, cfg.telegram_webhook_secret):
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook secret token.")
 
-        payload = await request.json()
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid Telegram payload.",
+            ) from exc
         if not isinstance(payload, dict):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid Telegram payload.")
 
@@ -298,8 +344,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail="Could not parse Telegram update payload.",
             )
 
-        await telegram_application.process_update(update)
-        return {"ok": True}
+        background_tasks.add_task(process_telegram_update_async, telegram_application, update)
+        return {"ok": True, "queued": True}
 
     @app.get("/admin/leads")
     async def admin_leads(_: str = Depends(require_admin), limit: int = 100):

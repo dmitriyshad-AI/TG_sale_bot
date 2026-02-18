@@ -29,7 +29,23 @@ MVP-каркас для sales-бота УНПК МФТИ (kmipt.ru): FastAPI API
    python3 -m sales_agent.sales_bot.bot
    ```
 
+6. Запустить пользовательский Mini App (опционально, для фронтенд-разработки):
+   ```bash
+   cd webapp
+   npm install
+   npm run dev
+   # http://127.0.0.1:5173
+   ```
+
 База `data/sales_agent.db` создаётся автоматически при первом запуске.
+
+Сборка Mini App для FastAPI (`/app`):
+```bash
+cd webapp
+npm install
+npm run build
+# далее FastAPI отдаёт webapp/dist по пути /app
+```
 
 ## Docker / Compose
 
@@ -120,6 +136,7 @@ DATABASE_PATH=
 CATALOG_PATH=
 KNOWLEDGE_PATH=
 VECTOR_STORE_META_PATH=
+WEBAPP_DIST_PATH=
 SALES_TONE_PATH=
 ```
 
@@ -151,12 +168,16 @@ SALES_TONE_PATH=
      curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/getWebhookInfo"
      ```
 - В webhook-режиме endpoint создается по пути `TELEGRAM_WEBHOOK_PATH` (по умолчанию `/telegram/webhook`).
+- Webhook endpoint отвечает быстро (`{"ok":true,"queued":true}`), а обработка апдейта выполняется в background-task.
 
 ## Команды обслуживания
 
 - Инициализация/создание БД выполняется автоматически при старте API или бота.
 - Проверка статуса API: `curl http://127.0.0.1:8000/api/health`
 - Runtime-диагностика (без секретов): `curl http://127.0.0.1:8000/api/runtime/diagnostics`
+- Проверка пользовательского Mini App:
+  - `GET /` — статус API и Mini App (`ready`/`build-required`).
+  - `GET /app` — собранный пользовательский Mini App или инструкция по сборке.
 - Предстартовый аудит окружения:
   ```bash
   python3 scripts/preflight_audit.py
@@ -222,6 +243,8 @@ SALES_TONE_PATH=
   ```
   - Скрипт сохранит `vector_store_id` в `data/vector_store.json`.
   - Повторный запуск идемпотентный: неизменённые файлы будут переиспользованы без повторной загрузки.
+  - Для Render/production обязательно продублируйте ID в env: `OPENAI_VECTOR_STORE_ID=vs_...`
+    (локальный `data/vector_store.json` в облаке может быть недолговечным).
   - Режим предпросмотра: `python3 scripts/sync_vector_store.py --dry-run`
   - Очистка устаревших файлов в vector store:
     `python3 scripts/sync_vector_store.py --prune-missing`
@@ -248,6 +271,11 @@ SALES_TONE_PATH=
 - Запуск pytest (если установлен):
   ```bash
   pytest -q
+  ```
+- Локальная quality-проверка (как в CI):
+  ```bash
+  pytest --cov=sales_agent --cov=scripts --cov-report=term-missing --cov-fail-under=80 -q
+  cd webapp && npm ci && npm run typecheck && npm run build
   ```
 
 - Точечные тесты CLI-утилит:

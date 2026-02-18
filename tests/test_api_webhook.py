@@ -102,13 +102,38 @@ class ApiWebhookTests(unittest.TestCase):
                         headers={"X-Telegram-Bot-Api-Secret-Token": "secret-2"},
                     )
                     self.assertEqual(response.status_code, 200)
-                    self.assertEqual(response.json(), {"ok": True})
+                    self.assertEqual(response.json(), {"ok": True, "queued": True})
 
             mock_tg_app.initialize.assert_awaited_once()
             mock_tg_app.start.assert_awaited_once()
             mock_tg_app.process_update.assert_awaited_once()
             mock_tg_app.stop.assert_awaited_once()
             mock_tg_app.shutdown.assert_awaited_once()
+
+    def test_webhook_returns_400_for_invalid_json_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "webhook.db"
+            mock_tg_app = _MockTelegramApplication()
+            with patch("sales_agent.sales_api.main.bot_runtime.build_application", return_value=mock_tg_app):
+                app = create_app(
+                    self._settings(
+                        db_path,
+                        telegram_mode="webhook",
+                        webhook_secret="secret-3",
+                    )
+                )
+                with TestClient(app) as client:
+                    response = client.post(
+                        "/telegram/webhook",
+                        data="{invalid",
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-Telegram-Bot-Api-Secret-Token": "secret-3",
+                        },
+                    )
+                    self.assertEqual(response.status_code, 400)
+                    self.assertIn("invalid telegram payload", response.json()["detail"].lower())
+                    mock_tg_app.process_update.assert_not_awaited()
 
 
 if __name__ == "__main__":

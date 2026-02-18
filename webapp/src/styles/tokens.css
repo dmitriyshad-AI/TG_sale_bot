@@ -1,0 +1,23 @@
+:root {
+  --bg-0: #88d2f4;
+  --bg-1: #60b9ea;
+  --bg-2: #2a8fcf;
+  --text-main: #072a3f;
+  --text-muted: rgba(5, 39, 58, 0.78);
+  --glass-bg: rgba(228, 246, 255, 0.36);
+  --glass-border: rgba(255, 255, 255, 0.52);
+  --glass-shadow: 0 20px 48px rgba(12, 64, 97, 0.24);
+  --card-radius: 20px;
+  --dock-radius: 18px;
+  --spacing-1: 8px;
+  --spacing-2: 12px;
+  --spacing-3: 16px;
+  --spacing-4: 24px;
+  --spacing-5: 32px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --glass-shadow: 0 12px 26px rgba(12, 64, 97, 0.18);
+  }
+}

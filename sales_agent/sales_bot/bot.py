@@ -16,6 +16,14 @@ from telegram.ext import (
 )
 
 from sales_agent.sales_core import db as db_module
+from sales_agent.sales_bot.context_engine import (
+    build_context_summary_text as build_context_summary_text_engine,
+    build_stitched_user_text as build_stitched_user_text_engine,
+    extract_intent_tags as extract_intent_tags_engine,
+    merge_unique_texts as merge_unique_texts_engine,
+    parse_db_timestamp as parse_db_timestamp_engine,
+)
+from sales_agent.sales_bot.message_router import build_route_plan
 from sales_agent.sales_core.catalog import SearchCriteria, explain_match, select_top_products
 from sales_agent.sales_core.config import get_settings
 from sales_agent.sales_core.crm import build_crm_client
@@ -576,136 +584,32 @@ def _recent_dialogue_for_llm(conn, user_id: int, limit: int = 8) -> List[Dict[st
 
 
 def _parse_db_timestamp(raw_value: object) -> Optional[datetime]:
-    if not isinstance(raw_value, str):
-        return None
-    value = raw_value.strip()
-    if not value:
-        return None
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
-        try:
-            return datetime.strptime(value, fmt)
-        except ValueError:
-            continue
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return None
+    return parse_db_timestamp_engine(raw_value)
 
 
 def _build_stitched_user_text(conn, user_id: int, current_text: str) -> str:
-    base_text = current_text.strip()
-    if not base_text:
-        return current_text
-    if _is_structured_flow_input(base_text):
-        return current_text
-
     recent = db_module.list_recent_messages(conn, user_id=user_id, limit=16)
-    now = datetime.utcnow()
-    parts: List[str] = [base_text]
-    seen = {_normalize_text(base_text)}
-    current_size = len(base_text)
-
-    for item in reversed(recent):
-        direction = str(item.get("direction") or "")
-        if direction != "inbound":
-            continue
-        previous = str(item.get("text") or "").strip()
-        if not previous or previous.startswith("/"):
-            continue
-        normalized_prev = _normalize_text(previous)
-        if not normalized_prev or normalized_prev in seen:
-            continue
-
-        created_at = _parse_db_timestamp(item.get("created_at"))
-        if created_at is not None and (now - created_at).total_seconds() > STITCH_WINDOW_SECONDS:
-            continue
-
-        if current_size + len(previous) + 1 > STITCH_MAX_CHARS:
-            break
-
-        parts.insert(0, previous)
-        seen.add(normalized_prev)
-        current_size += len(previous) + 1
-        if len(parts) >= STITCH_MAX_PARTS:
-            break
-
-    stitched = " ".join(part for part in parts if part).strip()
-    return stitched or current_text
+    return build_stitched_user_text_engine(
+        current_text=current_text,
+        recent_messages=recent,
+        normalize_text_fn=_normalize_text,
+        is_structured_flow_input_fn=_is_structured_flow_input,
+        stitch_window_seconds=STITCH_WINDOW_SECONDS,
+        stitch_max_parts=STITCH_MAX_PARTS,
+        stitch_max_chars=STITCH_MAX_CHARS,
+    )
 
 
 def _merge_unique_texts(items: List[str], limit: int = 8) -> List[str]:
-    result: List[str] = []
-    seen = set()
-    for item in items:
-        normalized = _normalize_text(item)
-        if not normalized or normalized in seen:
-            continue
-        result.append(item.strip())
-        seen.add(normalized)
-    return result[-limit:]
+    return merge_unique_texts_engine(items, normalize_text_fn=_normalize_text, limit=limit)
 
 
 def _extract_intent_tags(text: str) -> List[str]:
-    normalized = _normalize_text(text)
-    mapping = [
-        ("поступление", ("поступить", "поступлен")),
-        ("стратегия", ("стратег", "план", "маршрут")),
-        ("егэ", ("егэ",)),
-        ("огэ", ("огэ",)),
-        ("олимпиады", ("олимп",)),
-        ("успеваемость", ("успеваем", "база")),
-        ("условия", ("условия", "договор", "документ")),
-        ("оплата", ("оплата", "стоимость", "цена", "рассроч", "вычет")),
-        ("расписание", ("расписан", "время", "график")),
-    ]
-    tags: List[str] = []
-    for label, keywords in mapping:
-        if any(keyword in normalized for keyword in keywords):
-            tags.append(label)
-    return tags
+    return extract_intent_tags_engine(text, normalize_text_fn=_normalize_text)
 
 
 def _build_context_summary_text(summary: Dict[str, object]) -> str:
-    profile = summary.get("profile") if isinstance(summary.get("profile"), dict) else {}
-    intents = summary.get("intents") if isinstance(summary.get("intents"), list) else []
-    recent_requests = (
-        summary.get("recent_user_requests")
-        if isinstance(summary.get("recent_user_requests"), list)
-        else []
-    )
-
-    chunks: List[str] = []
-    grade = profile.get("grade")
-    goal = profile.get("goal")
-    subject = profile.get("subject")
-    study_format = profile.get("format")
-    target = profile.get("target")
-
-    profile_parts: List[str] = []
-    if grade:
-        profile_parts.append(f"{grade} класс")
-    if goal:
-        profile_parts.append(f"цель: {goal}")
-    if subject:
-        profile_parts.append(f"предмет: {subject}")
-    if study_format:
-        profile_parts.append(f"формат: {study_format}")
-    if target:
-        profile_parts.append(f"вуз/цель: {target}")
-    if profile_parts:
-        chunks.append("Профиль: " + "; ".join(profile_parts) + ".")
-
-    if intents:
-        normalized_intents = [str(item).strip() for item in intents if str(item).strip()]
-        if normalized_intents:
-            chunks.append("Интересы: " + ", ".join(normalized_intents) + ".")
-
-    if recent_requests:
-        request_chunks = [str(item).strip() for item in recent_requests[-2:] if str(item).strip()]
-        if request_chunks:
-            chunks.append("Последние запросы: " + " | ".join(request_chunks) + ".")
-
-    return " ".join(chunks).strip()
+    return build_context_summary_text_engine(summary)
 
 
 def _update_user_context_summary(
@@ -1511,10 +1415,13 @@ async def _handle_consultative_query(
     text: str,
     *,
     force: bool = False,
+    llm_text: Optional[str] = None,
     user_context: Optional[Dict[str, object]] = None,
 ) -> bool:
     if (not force) and (not _is_consultative_query(text)):
         return False
+
+    semantic_text = llm_text.strip() if isinstance(llm_text, str) and llm_text.strip() else text
 
     recent_history: List[Dict[str, str]] = []
     conn = db_module.get_connection(settings.database_path)
@@ -1537,9 +1444,9 @@ async def _handle_consultative_query(
         criteria = state.get("criteria") if isinstance(state.get("criteria"), dict) else {}
         previous_criteria = dict(criteria)
 
-        grade_hint = _extract_grade_hint(text)
-        goal_hint = _extract_goal_hint(text)
-        subject_hint = _extract_subject_hint(text)
+        grade_hint = _extract_grade_hint(semantic_text)
+        goal_hint = _extract_goal_hint(semantic_text)
+        subject_hint = _extract_subject_hint(semantic_text)
 
         if grade_hint and criteria.get("grade") != grade_hint:
             criteria["grade"] = grade_hint
@@ -1595,7 +1502,7 @@ async def _handle_consultative_query(
     llm_error: Optional[str] = None
     if repeated_without_new_info:
         response_text = _build_consultative_fallback_text(
-            text=text,
+            text=semantic_text,
             criteria=state["criteria"],
             products=products,
             next_question=next_question,
@@ -1607,7 +1514,7 @@ async def _handle_consultative_query(
         try:
             llm_client = LLMClient(api_key=settings.openai_api_key, model=settings.openai_model)
             llm_reply = await llm_client.build_consultative_reply_async(
-                user_message=text,
+                user_message=semantic_text,
                 criteria=criteria_obj,
                 top_products=products,
                 missing_fields=missing_fields,
@@ -1639,7 +1546,7 @@ async def _handle_consultative_query(
             logger.exception("Failed to build consultative LLM reply")
             llm_error = str(exc)
             response_text = _build_consultative_fallback_text(
-                text=text,
+                text=semantic_text,
                 criteria=state["criteria"],
                 products=products,
                 next_question=next_question,
@@ -1650,7 +1557,7 @@ async def _handle_consultative_query(
 
     if not response_text:
         response_text = _build_consultative_fallback_text(
-            text=text,
+            text=semantic_text,
             criteria=state["criteria"],
             products=products,
             next_question=next_question,
@@ -2090,8 +1997,21 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         message_text=text,
         current_state_payload=current_state_payload,
     )
+    raw_text = text
+    route_plan = build_route_plan(
+        raw_text=raw_text,
+        current_state=current_state,
+        current_state_payload=current_state_payload,
+        is_program_info_query=_is_program_info_query,
+        is_knowledge_query=_is_knowledge_query,
+        is_general_education_query=_is_general_education_query,
+        is_flow_interrupt_question=_is_flow_interrupt_question,
+        is_active_flow_state=_is_active_flow_state,
+        looks_like_fragmented_context_message=_looks_like_fragmented_context_message,
+    )
+    context_enriched_question = effective_text if route_plan.should_force_consultative else raw_text
 
-    if _is_program_info_query(effective_text):
+    if route_plan.is_program_info:
         conn = db_module.get_connection(settings.database_path)
         try:
             user_id = _get_or_create_user_id(update, conn)
@@ -2099,31 +2019,35 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 conn,
                 user_id,
                 "inbound",
-                effective_text,
+                raw_text,
                 {"type": "message", "handler": "program-info-auto", **_user_meta(update)},
             )
         finally:
             conn.close()
 
-        await _answer_knowledge_question(update, question=effective_text, user_context=user_context)
+        await _answer_knowledge_question(update, question=context_enriched_question, user_context=user_context)
         return
 
-    handled_consultative = await _handle_consultative_query(
-        update=update,
-        text=effective_text,
-        user_context=user_context,
-    )
-    if (not handled_consultative) and _looks_like_fragmented_context_message(effective_text, current_state_payload):
+    handled_consultative = False
+    if route_plan.should_try_consultative:
         handled_consultative = await _handle_consultative_query(
             update=update,
-            text=effective_text,
+            text=raw_text,
+            llm_text=effective_text,
+            user_context=user_context,
+        )
+    if (not handled_consultative) and route_plan.should_force_consultative:
+        handled_consultative = await _handle_consultative_query(
+            update=update,
+            text=raw_text,
             force=True,
+            llm_text=effective_text,
             user_context=user_context,
         )
     if handled_consultative:
         return
 
-    if _is_knowledge_query(effective_text):
+    if route_plan.is_knowledge:
         conn = db_module.get_connection(settings.database_path)
         try:
             user_id = _get_or_create_user_id(update, conn)
@@ -2131,29 +2055,29 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 conn,
                 user_id,
                 "inbound",
-                effective_text,
+                raw_text,
                 {"type": "message", "handler": "kb-auto", **_user_meta(update)},
             )
         finally:
             conn.close()
 
-        await _answer_knowledge_question(update, question=effective_text, user_context=user_context)
+        await _answer_knowledge_question(update, question=context_enriched_question, user_context=user_context)
         return
 
-    if _is_general_education_query(effective_text):
+    if route_plan.is_general_education:
         handled_general = await _answer_general_education_question(
             update=update,
-            question=effective_text,
+            question=context_enriched_question,
             current_state=current_state,
             user_context=user_context,
         )
         if handled_general:
             return
 
-    if _is_active_flow_state(current_state) and _is_flow_interrupt_question(effective_text):
+    if route_plan.is_flow_interrupt_general:
         handled_general = await _answer_general_education_question(
             update=update,
-            question=effective_text,
+            question=context_enriched_question,
             current_state=current_state,
             user_context=user_context,
         )

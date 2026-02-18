@@ -99,6 +99,28 @@ class BotRoutingTests(unittest.IsolatedAsyncioTestCase):
         mock_answer.assert_not_awaited()
         mock_consult.assert_awaited_once()
 
+    async def test_on_text_message_uses_raw_text_for_routing_not_stitched_text(self) -> None:
+        update = _update_with_text("11")
+        context = _context_with_flags()
+
+        with patch.object(
+            bot, "_load_current_state_payload", return_value={"state": "ask_grade", "criteria": {}, "contact": None}
+        ), patch.object(
+            bot, "_prepare_effective_text_and_context",
+            return_value=("Что ты знаешь про IT лагерь УНПК МФТИ?", {}),
+        ), patch.object(
+            bot, "_answer_knowledge_question", new_callable=AsyncMock
+        ) as mock_kb, patch.object(
+            bot, "_handle_consultative_query", new_callable=AsyncMock, return_value=False
+        ) as mock_consult, patch.object(
+            bot, "_handle_flow_step", new_callable=AsyncMock
+        ) as mock_flow:
+            await bot.on_text_message(update, context)
+
+        mock_kb.assert_not_awaited()
+        mock_consult.assert_awaited_once()
+        mock_flow.assert_awaited_once()
+
     async def test_on_text_message_routes_to_general_help_for_education_question(self) -> None:
         update = _update_with_text("Что такое косинус?")
         context = _context_with_flags()
@@ -210,6 +232,9 @@ class BotRoutingTests(unittest.IsolatedAsyncioTestCase):
             await bot.on_text_message(update, context)
 
         self.assertEqual(mock_consult.await_count, 2)
+        first_call = mock_consult.await_args_list[0]
+        self.assertEqual(first_call.kwargs.get("text"), "Ты лучше понял, что мне нужно")
+        self.assertEqual(first_call.kwargs.get("llm_text"), "Ты лучше понял, что мне нужно")
         forced_call = mock_consult.await_args_list[1]
         self.assertEqual(forced_call.kwargs.get("force"), True)
         mock_flow.assert_not_awaited()

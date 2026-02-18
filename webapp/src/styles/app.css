@@ -1,0 +1,139 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  font-family: "SF Pro Text", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--text-main);
+}
+
+body {
+  background:
+    radial-gradient(72rem 30rem at 8% -5%, rgba(255, 255, 255, 0.35), transparent 65%),
+    radial-gradient(48rem 24rem at 100% 0%, rgba(191, 235, 255, 0.34), transparent 52%),
+    radial-gradient(70rem 34rem at 50% 110%, rgba(18, 122, 182, 0.33), transparent 55%),
+    linear-gradient(155deg, var(--bg-0), var(--bg-1), var(--bg-2));
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: -30%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.23;
+  background:
+    repeating-radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.38) 0 3px, transparent 4px 12px),
+    repeating-radial-gradient(circle at 80% 70%, rgba(175, 231, 255, 0.34) 0 2px, transparent 3px 11px);
+}
+
+#app {
+  position: relative;
+  z-index: 1;
+}
+
+.appShell {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: max(env(safe-area-inset-top), var(--spacing-4)) var(--spacing-4)
+    max(env(safe-area-inset-bottom), var(--spacing-4));
+  display: grid;
+  gap: var(--spacing-4);
+}
+
+.hero {
+  padding: var(--spacing-4);
+}
+
+.eyebrow {
+  margin: 0 0 var(--spacing-1) 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(7, 49, 73, 0.75);
+}
+
+.heroTitle {
+  margin: 0;
+  font-size: clamp(28px, 6.4vw, 44px);
+  line-height: 1.03;
+  letter-spacing: -0.03em;
+}
+
+.heroSubtitle {
+  margin: var(--spacing-2) 0 0;
+  font-size: 15px;
+  color: var(--text-muted);
+}
+
+.actions {
+  display: grid;
+  gap: var(--spacing-3);
+}
+
+.actionCard {
+  width: 100%;
+  border: none;
+  text-align: left;
+  padding: var(--spacing-4);
+  display: grid;
+  gap: var(--spacing-2);
+  background: transparent;
+  cursor: pointer;
+  animation: card-enter 520ms ease both;
+  animation-delay: calc(var(--index, 0) * 90ms);
+}
+
+.actionSubtitle {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.bottomDock {
+  border-radius: var(--dock-radius);
+  padding: var(--spacing-3) var(--spacing-4);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-2);
+}
+
+.dockLabel {
+  font-size: 13px;
+  color: rgba(7, 49, 73, 0.82);
+}
+
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 600px) {
+  .appShell {
+    padding-left: var(--spacing-3);
+    padding-right: var(--spacing-3);
+  }
+
+  .bottomDock {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .actionCard {
+    animation: none;
+  }
+}

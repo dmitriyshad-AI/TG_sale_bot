@@ -1,0 +1,55 @@
+.glassCard {
+  position: relative;
+  border-radius: var(--card-radius);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow);
+  overflow: hidden;
+}
+
+.glassCard::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 80% at 10% -10%, rgba(255, 255, 255, 0.42), transparent 54%),
+    radial-gradient(100% 70% at 90% 110%, rgba(203, 241, 255, 0.22), transparent 58%);
+  pointer-events: none;
+}
+
+@supports (backdrop-filter: blur(10px)) {
+  .glassCard {
+    backdrop-filter: blur(12px) saturate(130%);
+  }
+}
+
+.glassButton {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.38), rgba(245, 252, 255, 0.2));
+  color: var(--text-main);
+  border-radius: 999px;
+  padding: 10px 18px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 999px;
+  color: rgba(6, 38, 57, 0.8);
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.56);
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.01em;
+  color: var(--text-main);
+}

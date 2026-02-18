@@ -8,3 +8,5 @@ __pycache__/
 .venv/
 data/
 .DS_Store
+webapp/node_modules/
+webapp/dist/

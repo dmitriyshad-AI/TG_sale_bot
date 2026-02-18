@@ -317,7 +317,8 @@ class LLMClient:
             primary_reply = KnowledgeReply(
                 answer_text=(
                     "База знаний пока не подключена. Запустите синхронизацию: "
-                    "python3 scripts/sync_vector_store.py"
+                    "python3 scripts/sync_vector_store.py. "
+                    "Для Render/production также задайте OPENAI_VECTOR_STORE_ID в env."
                 ),
                 sources=[],
                 used_fallback=True,
@@ -400,7 +401,8 @@ class LLMClient:
             primary_reply = KnowledgeReply(
                 answer_text=(
                     "База знаний пока не подключена. Запустите синхронизацию: "
-                    "python3 scripts/sync_vector_store.py"
+                    "python3 scripts/sync_vector_store.py. "
+                    "Для Render/production также задайте OPENAI_VECTOR_STORE_ID в env."
                 ),
                 sources=[],
                 used_fallback=True,

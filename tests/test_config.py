@@ -39,6 +39,7 @@ class ConfigTests(unittest.TestCase):
             "CATALOG_PATH": "/tmp/custom_products.yaml",
             "KNOWLEDGE_PATH": "/tmp/custom_knowledge",
             "VECTOR_STORE_META_PATH": "/tmp/custom_vector_store.json",
+            "WEBAPP_DIST_PATH": "/tmp/custom_webapp_dist",
             "OPENAI_VECTOR_STORE_ID": "vs_test_123",
             "ADMIN_USER": "admin",
             "ADMIN_PASS": "secret",
@@ -68,6 +69,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.catalog_path, Path("/tmp/custom_products.yaml"))
         self.assertEqual(settings.knowledge_path, Path("/tmp/custom_knowledge"))
         self.assertEqual(settings.vector_store_meta_path, Path("/tmp/custom_vector_store.json"))
+        self.assertEqual(settings.webapp_dist_path, Path("/tmp/custom_webapp_dist"))
         self.assertEqual(settings.openai_vector_store_id, "vs_test_123")
         self.assertEqual(settings.admin_user, "admin")
         self.assertEqual(settings.admin_pass, "secret")
@@ -93,6 +95,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.catalog_path, root / "catalog" / "products.yaml")
         self.assertEqual(settings.knowledge_path, root / "knowledge")
         self.assertEqual(settings.vector_store_meta_path, root / "data" / "vector_store.json")
+        self.assertEqual(settings.webapp_dist_path, root / "webapp" / "dist")
         self.assertEqual(settings.openai_vector_store_id, "")
         self.assertEqual(settings.admin_user, "")
         self.assertEqual(settings.admin_pass, "")

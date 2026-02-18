@@ -616,6 +616,63 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Вот 2 направления", response_text)
         self.assertNotIn("профильный трек", response_text)
 
+    async def test_handle_consultative_query_uses_llm_text_for_semantics(self) -> None:
+        update = _make_update_with_message("Ты лучше понял?")
+        session_state = {
+            "state": "ask_goal",
+            "criteria": {"brand": "kmipt", "grade": None, "goal": None, "subject": None, "format": None},
+            "contact": None,
+        }
+        prompt = FlowStep(
+            message="Какая цель подготовки?",
+            next_state="ask_goal",
+            state_data=session_state,
+            keyboard=[],
+        )
+        llm_reply = SimpleNamespace(
+            answer_text="Соберу аккуратный план, чтобы без перегруза прийти к цели.",
+            next_question="Какая цель подготовки?",
+            call_to_action="",
+            recommended_product_ids=[],
+            used_fallback=False,
+            error=None,
+        )
+        llm_client = SimpleNamespace(build_consultative_reply_async=AsyncMock(return_value=llm_reply))
+        semantic_text = "У меня ученик 10 класса. Хочу стратегию поступления в МФТИ."
+
+        with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
+            bot, "_get_or_create_user_id", return_value=1
+        ), patch.object(
+            bot.db_module, "list_recent_messages", return_value=[]
+        ), patch.object(
+            bot.db_module, "get_session", return_value={"state": session_state, "meta": {}}
+        ), patch.object(
+            bot.db_module, "log_message"
+        ), patch.object(
+            bot.db_module, "upsert_session_state"
+        ), patch.object(
+            bot, "_select_products", return_value=_sample_products()
+        ), patch.object(
+            bot, "build_prompt", return_value=prompt
+        ), patch.object(
+            bot, "LLMClient", return_value=llm_client
+        ), patch.object(
+            bot, "_reply", new_callable=AsyncMock
+        ):
+            handled = await bot._handle_consultative_query(
+                update=update,
+                text="Ты лучше понял?",
+                force=True,
+                llm_text=semantic_text,
+            )
+
+        self.assertTrue(handled)
+        llm_client.build_consultative_reply_async.assert_awaited_once()
+        self.assertEqual(
+            llm_client.build_consultative_reply_async.await_args.kwargs["user_message"],
+            semantic_text,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

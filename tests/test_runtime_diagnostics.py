@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+import json
 
 from sales_agent.sales_core.config import Settings
 from sales_agent.sales_core.runtime_diagnostics import build_runtime_diagnostics
@@ -93,6 +94,45 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         self.assertTrue(runtime["catalog_ok"])
         self.assertEqual(runtime["catalog_products_count"], 1)
         self.assertTrue(runtime["vector_store_id_set"])
+        self.assertEqual(runtime["vector_store_id_source"], "env")
+
+    def test_diagnostics_warns_when_vector_store_loaded_only_from_meta_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            catalog_path = root / "catalog.yaml"
+            _write_catalog(catalog_path)
+            knowledge_path = root / "knowledge"
+            knowledge_path.mkdir(parents=True, exist_ok=True)
+            (knowledge_path / "faq_general.md").write_text("FAQ", encoding="utf-8")
+            db_path = root / "data" / "sales_agent.db"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            vector_meta_path = root / "data" / "vector_store.json"
+            vector_meta_path.parent.mkdir(parents=True, exist_ok=True)
+            vector_meta_path.write_text(json.dumps({"vector_store_id": "vs_meta_123"}), encoding="utf-8")
+
+            settings = Settings(
+                telegram_bot_token="tg-token",
+                openai_api_key="sk-test",
+                openai_model="gpt-4.1",
+                tallanto_api_url="",
+                tallanto_api_key="",
+                brand_default="kmipt",
+                database_path=db_path,
+                catalog_path=catalog_path,
+                knowledge_path=knowledge_path,
+                vector_store_meta_path=vector_meta_path,
+                openai_vector_store_id="",
+                admin_user="",
+                admin_pass="",
+            )
+            diagnostics = build_runtime_diagnostics(settings)
+
+        self.assertEqual(diagnostics["status"], "warn")
+        runtime = diagnostics["runtime"]
+        self.assertTrue(runtime["vector_store_id_set"])
+        self.assertEqual(runtime["vector_store_id_source"], "meta_file")
+        issue_codes = {item["code"] for item in diagnostics["issues"]}
+        self.assertIn("vector_store_env_recommended", issue_codes)
 
 
 if __name__ == "__main__":

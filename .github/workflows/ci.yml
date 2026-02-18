@@ -16,10 +16,32 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: webapp/package-lock.json
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
+
+      - name: Install WebApp Dependencies
+        run: |
+          cd webapp
+          npm ci
+
+      - name: WebApp Typecheck
+        run: |
+          cd webapp
+          npm run typecheck
+
+      - name: WebApp Build
+        run: |
+          cd webapp
+          npm run build
 
       - name: Validate Catalog Schema
         run: python scripts/validate_catalog.py
@@ -27,5 +49,5 @@ jobs:
       - name: Check Catalog Freshness
         run: python scripts/check_catalog_freshness.py
 
-      - name: Run Test Suite
-        run: pytest -q
+      - name: Run Test Suite With Coverage Gate
+        run: pytest --cov=sales_agent --cov=scripts --cov-report=term-missing --cov-fail-under=80 -q

@@ -35,6 +35,7 @@ ADMIN_MINIAPP_ENABLED=false
 ADMIN_TELEGRAM_IDS=
 ADMIN_WEBAPP_URL=
 SALES_TONE_PATH=
+WEBAPP_DIST_PATH=
 ```
 
 CRM:
@@ -68,12 +69,29 @@ python3 scripts/validate_catalog.py
 python3 scripts/preflight_audit.py
 ```
 
+Сборка пользовательского Mini App (если используете `/app`):
+
+```bash
+cd webapp
+npm install
+npm run build
+cd ..
+```
+
 Если используете knowledge-base через File Search:
 
 ```bash
 python3 scripts/sync_vector_store.py --dry-run
 python3 scripts/sync_vector_store.py
 ```
+
+После синхронизации обязательно скопируйте `vector_store_id` в env:
+
+```dotenv
+OPENAI_VECTOR_STORE_ID=vs_...
+```
+
+Для Render это критично: локальный файл `data/vector_store.json` не должен быть единственным источником ID.
 
 ## 4) Запуск
 
@@ -85,6 +103,8 @@ docker compose -f docker-compose.prod.yml up -d --build
 
 ```bash
 curl http://127.0.0.1:8000/api/health
+curl http://127.0.0.1:8000/
+curl http://127.0.0.1:8000/app
 curl http://127.0.0.1:8000/api/runtime/diagnostics
 docker compose -f docker-compose.prod.yml ps
 docker compose -f docker-compose.prod.yml logs --tail=100 api
@@ -172,6 +192,7 @@ docker compose -f docker-compose.prod.yml up -d --build
    ```bash
    curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/getWebhookInfo"
    ```
+   Ожидаемый ответ от вашего backend на входящий webhook: `{"ok":true,"queued":true}`.
 4. Если нужно вернуться к polling:
    - `TELEGRAM_MODE=polling`
    - удалить webhook:
