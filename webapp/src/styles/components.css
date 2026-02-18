@@ -2,7 +2,7 @@
   position: relative;
   border-radius: var(--card-radius);
   border: 1px solid var(--glass-border);
-  background: var(--glass-bg);
+  background: linear-gradient(180deg, var(--glass-strong-bg), var(--glass-bg));
   box-shadow: var(--glass-shadow);
   overflow: hidden;
 }
@@ -12,25 +12,34 @@
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(120% 80% at 10% -10%, rgba(255, 255, 255, 0.42), transparent 54%),
-    radial-gradient(100% 70% at 90% 110%, rgba(203, 241, 255, 0.22), transparent 58%);
+    radial-gradient(120% 86% at 8% -8%, rgba(255, 255, 255, 0.62), transparent 54%),
+    radial-gradient(96% 74% at 92% 112%, rgba(190, 236, 255, 0.28), transparent 58%);
+  pointer-events: none;
+}
+
+.glassCard::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: calc(var(--card-radius) - 1px);
+  border: 1px solid rgba(255, 255, 255, 0.35);
   pointer-events: none;
 }
 
 @supports (backdrop-filter: blur(10px)) {
   .glassCard {
-    backdrop-filter: blur(12px) saturate(130%);
+    backdrop-filter: blur(16px) saturate(150%);
   }
 
   .low-end-device .glassCard {
-    backdrop-filter: blur(6px) saturate(112%);
+    backdrop-filter: blur(7px) saturate(120%);
   }
 }
 
 .glassButton {
   appearance: none;
-  border: 1px solid rgba(255, 255, 255, 0.82);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(221, 243, 255, 0.72));
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(226, 245, 255, 0.8));
   color: var(--text-main);
   border-radius: 999px;
   padding: 11px 18px;
@@ -38,13 +47,14 @@
   font-weight: 700;
   cursor: pointer;
   min-height: 44px;
-  box-shadow: 0 8px 18px rgba(4, 64, 98, 0.14);
-  transition: transform 140ms ease, filter 140ms ease;
+  box-shadow: 0 10px 20px rgba(4, 57, 88, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  transition: transform 140ms ease, filter 140ms ease, box-shadow 140ms ease;
 }
 
 .glassButton:hover {
   transform: translateY(-1px);
-  filter: brightness(1.02);
+  filter: brightness(1.04);
+  box-shadow: 0 12px 24px rgba(4, 57, 88, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.78);
 }
 
 .glassButton:focus-visible {
@@ -58,10 +68,10 @@
 }
 
 .glassButtonPrimary {
-  background: linear-gradient(180deg, rgba(14, 96, 145, 0.98), rgba(6, 72, 113, 0.96));
+  background: linear-gradient(180deg, rgba(11, 102, 154, 0.98), rgba(5, 67, 106, 0.97));
   color: #f4fbff;
-  border-color: rgba(177, 231, 255, 0.92);
-  box-shadow: 0 10px 22px rgba(5, 77, 119, 0.26);
+  border-color: rgba(188, 236, 255, 0.96);
+  box-shadow: 0 12px 24px rgba(4, 70, 108, 0.34), inset 0 1px 0 rgba(203, 242, 255, 0.4);
 }
 
 .chip {
@@ -71,26 +81,28 @@
   padding: 6px 12px;
   font-size: 12px;
   border-radius: 999px;
-  color: rgba(7, 40, 61, 0.92);
-  background: rgba(248, 253, 255, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.84);
+  color: rgba(5, 37, 56, 0.96);
+  background: rgba(248, 253, 255, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.9);
 }
 
 .chipButton {
   appearance: none;
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  background: rgba(244, 252, 255, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.94);
+  background: rgba(246, 253, 255, 0.88);
   color: var(--text-main);
   border-radius: 14px;
   padding: 10px 12px;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
-  transition: transform 160ms ease, background-color 160ms ease;
+  transition: transform 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+  box-shadow: 0 8px 16px rgba(7, 73, 111, 0.1);
 }
 
 .chipButton:hover {
   transform: translateY(-1px);
+  box-shadow: 0 10px 18px rgba(7, 73, 111, 0.14);
 }
 
 .chipButton:focus-visible {
@@ -99,9 +111,10 @@
 }
 
 .chipButton.isActive {
-  background: rgba(10, 104, 159, 0.95);
-  border-color: rgba(181, 236, 255, 0.95);
+  background: rgba(10, 102, 156, 0.97);
+  border-color: rgba(190, 238, 255, 0.95);
   color: #f5fdff;
+  box-shadow: 0 10px 20px rgba(7, 72, 110, 0.32);
 }
 
 .sectionTitle {

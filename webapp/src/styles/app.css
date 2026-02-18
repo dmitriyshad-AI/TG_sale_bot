@@ -13,9 +13,9 @@ body {
 
 body {
   background:
-    radial-gradient(72rem 30rem at 8% -5%, rgba(255, 255, 255, 0.35), transparent 65%),
-    radial-gradient(48rem 24rem at 100% 0%, rgba(191, 235, 255, 0.34), transparent 52%),
-    radial-gradient(70rem 34rem at 50% 110%, rgba(18, 122, 182, 0.33), transparent 55%),
+    radial-gradient(72rem 30rem at 8% -5%, rgba(255, 255, 255, 0.52), transparent 65%),
+    radial-gradient(48rem 24rem at 100% 0%, rgba(207, 240, 255, 0.4), transparent 52%),
+    radial-gradient(70rem 34rem at 50% 110%, rgba(15, 113, 170, 0.38), transparent 55%),
     linear-gradient(155deg, var(--bg-0), var(--bg-1), var(--bg-2));
 }
 
@@ -46,7 +46,7 @@ body::before {
 }
 
 .hero {
-  padding: var(--spacing-4);
+  padding: var(--spacing-3) var(--spacing-4);
 }
 
 .eyebrow {
@@ -72,14 +72,14 @@ body::before {
 
 .heroTitle {
   margin: 0;
-  font-size: clamp(28px, 6.4vw, 44px);
-  line-height: 1.03;
+  font-size: clamp(28px, 6.2vw, 42px);
+  line-height: 1.04;
   letter-spacing: -0.03em;
 }
 
 .heroSubtitle {
   margin: var(--spacing-2) 0 0;
-  font-size: 15px;
+  font-size: 14px;
   color: var(--text-muted);
 }
 
@@ -93,6 +93,9 @@ body::before {
   padding: var(--spacing-3);
   display: grid;
   gap: var(--spacing-2);
+  position: sticky;
+  top: max(env(safe-area-inset-top), var(--spacing-1));
+  z-index: 6;
 }
 
 .topNavLeft {
@@ -104,7 +107,7 @@ body::before {
 
 .navBackButton {
   white-space: nowrap;
-  min-width: 108px;
+  min-width: 88px;
 }
 
 .brandMark {
@@ -132,7 +135,7 @@ body::before {
 .topNavTabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--spacing-2);
+  gap: 10px;
   align-items: stretch;
 }
 
@@ -143,7 +146,7 @@ body::before {
 
 .actions {
   display: grid;
-  gap: var(--spacing-3);
+  gap: var(--spacing-2);
 }
 
 .actionCard {
@@ -152,7 +155,7 @@ body::before {
   text-align: left;
   padding: var(--spacing-4);
   display: grid;
-  gap: var(--spacing-2);
+  gap: 10px;
   background: transparent;
   cursor: pointer;
   animation: card-enter 520ms ease both;
@@ -162,7 +165,7 @@ body::before {
 .actionSubtitle {
   margin: 0;
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.35;
   color: var(--text-muted);
 }
 
@@ -174,13 +177,13 @@ body::before {
 
 .pickerStack {
   display: grid;
-  gap: var(--spacing-3);
+  gap: var(--spacing-2);
 }
 
 .pickerSection {
   padding: var(--spacing-3);
   display: grid;
-  gap: var(--spacing-2);
+  gap: 10px;
 }
 
 .chipGrid {
@@ -197,7 +200,7 @@ body::before {
 
 .resultsGrid {
   display: grid;
-  gap: var(--spacing-3);
+  gap: var(--spacing-2);
 }
 
 .resultCard {
@@ -216,7 +219,7 @@ body::before {
   margin: 0;
   font-size: 14px;
   line-height: 1.45;
-  color: rgba(4, 38, 57, 0.94);
+  color: rgba(3, 34, 52, 0.96);
 }
 
 .resultMeta {
@@ -253,7 +256,7 @@ body::before {
 
 .chatStack {
   display: grid;
-  gap: var(--spacing-3);
+  gap: var(--spacing-2);
 }
 
 .chatIntro {
@@ -279,11 +282,11 @@ body::before {
 
 .chatBubbleUser {
   border-color: rgba(176, 227, 252, 0.9);
-  background: rgba(212, 241, 255, 0.58);
+  background: rgba(218, 242, 255, 0.7);
 }
 
 .chatBubbleAssistant {
-  border-color: rgba(255, 255, 255, 0.6);
+  border-color: rgba(255, 255, 255, 0.88);
 }
 
 .chatRole {
@@ -298,7 +301,7 @@ body::before {
 .chatText {
   margin: 0;
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
 .chatMeta {
@@ -337,7 +340,7 @@ body::before {
   width: 100%;
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.9);
-  background: rgba(252, 254, 255, 0.86);
+  background: rgba(252, 254, 255, 0.9);
   color: var(--text-main);
   font: inherit;
   line-height: 1.45;
@@ -396,12 +399,16 @@ body::before {
   align-items: center;
   justify-content: space-between;
   gap: var(--spacing-3);
+  position: sticky;
+  bottom: max(env(safe-area-inset-bottom), var(--spacing-2));
+  z-index: 8;
 }
 
 .dockLabel {
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.4;
-  color: rgba(5, 42, 63, 0.92);
+  color: rgba(4, 40, 61, 0.95);
+  font-weight: 600;
 }
 
 .dockActions {
@@ -456,7 +463,7 @@ body::before {
   }
 
   .heroTitle {
-    font-size: clamp(24px, 7.6vw, 34px);
+    font-size: clamp(24px, 7.4vw, 32px);
     line-height: 1.08;
   }
 
@@ -527,12 +534,16 @@ body::before {
   }
 
   .topNavLeft {
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    align-items: center;
   }
 
   .topNavTabs {
-    grid-template-columns: 1fr;
+    display: none;
+  }
+
+  .actionSubtitle {
+    font-size: 13px;
   }
 }
 

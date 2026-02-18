@@ -1,12 +1,13 @@
 :root {
-  --bg-0: #88d2f4;
-  --bg-1: #60b9ea;
-  --bg-2: #2a8fcf;
-  --text-main: #04253a;
-  --text-muted: rgba(3, 34, 52, 0.88);
-  --glass-bg: rgba(236, 248, 255, 0.64);
-  --glass-border: rgba(255, 255, 255, 0.84);
-  --glass-shadow: 0 20px 48px rgba(12, 64, 97, 0.24);
+  --bg-0: #9bdef9;
+  --bg-1: #68c2f0;
+  --bg-2: #237fbf;
+  --text-main: #031f33;
+  --text-muted: rgba(2, 35, 56, 0.86);
+  --glass-bg: rgba(233, 248, 255, 0.5);
+  --glass-strong-bg: rgba(246, 253, 255, 0.78);
+  --glass-border: rgba(255, 255, 255, 0.92);
+  --glass-shadow: 0 22px 52px rgba(5, 57, 90, 0.34), 0 3px 14px rgba(255, 255, 255, 0.12);
   --focus-ring: rgba(9, 110, 167, 0.56);
   --card-radius: 20px;
   --dock-radius: 18px;

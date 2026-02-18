@@ -1,7 +1,7 @@
 import "./styles/tokens.css";
 import "./styles/components.css";
 import "./styles/app.css";
-import brandLogoUrl from "./assets/brand-kmipt.svg";
+import defaultBrandLogoUrl from "./assets/brand-kmipt.svg";
 import {
   buildAuthHeaders,
   initTelegramContext,
@@ -160,20 +160,20 @@ type AppState = {
 const HOME_ACTIONS: HomeAction[] = [
   {
     key: "pick",
-    title: "Подобрать программу",
-    subtitle: "4 коротких шага и готовый подбор",
+    title: "Быстрый подбор",
+    subtitle: "4 шага и готовые варианты",
     emoji: "🎯"
   },
   {
     key: "ask",
     title: "Спросить Гида",
-    subtitle: "Любой вопрос про поступление и учебу",
+    subtitle: "Любой вопрос про учебу и поступление",
     emoji: "💬"
   },
   {
     key: "consult",
     title: "Связаться с менеджером",
-    subtitle: "Если нужен персональный маршрут",
+    subtitle: "Личный разбор с менеджером",
     emoji: "📞"
   }
 ];
@@ -199,14 +199,14 @@ const FORMAT_OPTIONS: ChoiceOption[] = [
 ];
 
 const CHAT_PROMPTS = [
-  "План поступления в МФТИ для 10 класса",
-  "С чего начать ЕГЭ по физике без перегруза"
+  "План поступления в МФТИ (10 класс)",
+  "Как подтянуть математику в 8 классе"
 ];
 
 const CHAT_PROGRESS_STEPS = [
-  "Уточняю контекст…",
-  "Подбираю лучший ответ…",
-  "Формирую рекомендации…"
+  "Смотрю ваш контекст…",
+  "Собираю ответ…",
+  "Проверяю рекомендации…"
 ];
 
 const VIEW_TITLES: Record<AppView, string> = {
@@ -218,10 +218,11 @@ const VIEW_TITLES: Record<AppView, string> = {
 
 const COACHMARK_STORAGE_KEY = "kmipt_sales_miniapp_coachmarks_v2";
 const COACHMARKS = [
-  "1/3 Выберите класс, чтобы отсечь лишние варианты.",
-  "2/3 Выберите цель и предмет, чтобы подобрать точнее.",
-  "3/3 Если хотите, в любой момент можно перейти к вопросу и общению."
+  "1/3 Выберите класс.",
+  "2/3 Укажите цель и предмет.",
+  "3/3 Получите варианты или задайте вопрос Гиду."
 ];
+const CUSTOM_BRAND_LOGO_URL = "/brand-kmipt.png";
 
 const rootNode = document.getElementById("app");
 if (!rootNode) {
@@ -351,6 +352,17 @@ function managerActionText(): string {
   return `Связаться с ${state.managerLabel.toLowerCase()}`;
 }
 
+function attachBrandLogoFallback(img: HTMLImageElement | null): void {
+  if (!img) {
+    return;
+  }
+  img.src = CUSTOM_BRAND_LOGO_URL;
+  img.onerror = () => {
+    img.onerror = null;
+    img.src = defaultBrandLogoUrl;
+  };
+}
+
 function createActionCard(action: HomeAction): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
@@ -367,12 +379,12 @@ function createActionCard(action: HomeAction): HTMLButtonElement {
   subtitle.className = "actionSubtitle";
   subtitle.textContent =
     action.key === "ask"
-      ? "Пишите свободно, как в обычном чате."
+      ? "Пишите свободно, отвечу по делу."
       : action.subtitle;
 
   const chip = document.createElement("span");
   chip.className = "chip";
-  chip.textContent = "Открыть";
+  chip.textContent = "Перейти";
 
   button.append(title, subtitle, chip);
   return button;
@@ -384,13 +396,14 @@ function renderHeader(statusText: string): HTMLElement {
   const name = state.user?.first_name ? `, ${state.user.first_name}` : "";
   hero.innerHTML = `
     <div class="heroBrandLine">
-      <img src="${brandLogoUrl}" alt="Логотип ${state.brandName}" class="heroLogo">
+      <img src="${defaultBrandLogoUrl}" alt="Логотип ${state.brandName}" class="heroLogo">
       <p class="eyebrow">${state.brandName} • Sales Agent</p>
     </div>
-    <h1 class="heroTitle">Подбор без давления${name}</h1>
+    <h1 class="heroTitle">Помогаю выбрать обучение${name}</h1>
     <p class="heroSubtitle">${statusText}</p>
-    <p class="heroHint">Можно в любой момент перейти в чат и задать вопрос.</p>
+    <p class="heroHint">Кнопка «Спросить Гида» всегда внизу.</p>
   `;
+  attachBrandLogoFallback(hero.querySelector("img.heroLogo"));
   return hero;
 }
 
@@ -398,9 +411,10 @@ function createBrandMark(): HTMLElement {
   const brand = document.createElement("div");
   brand.className = "brandMark";
   brand.innerHTML = `
-    <img src="${brandLogoUrl}" alt="Логотип ${state.brandName}" class="brandLogo">
+    <img src="${defaultBrandLogoUrl}" alt="Логотип ${state.brandName}" class="brandLogo">
     <span class="brandText">${state.brandName}</span>
   `;
+  attachBrandLogoFallback(brand.querySelector("img.brandLogo"));
   return brand;
 }
 
@@ -437,9 +451,9 @@ function createTopNav(): HTMLElement {
   const tabs = document.createElement("div");
   tabs.className = "topNavTabs";
   const routes: Array<{ view: AppView; label: string }> = [
-    { view: "home", label: "Главная" },
+    { view: "home", label: "Домой" },
     { view: "picker", label: "Подбор" },
-    { view: "chat", label: "Чат" },
+    { view: "chat", label: "Гид" },
   ];
   for (const route of routes) {
     const tab = document.createElement("button");
@@ -545,7 +559,7 @@ function createPickerView(): HTMLElement {
   intro.className = "glassCard pickerIntro";
   intro.innerHTML = `
     <h3 class="sectionTitle sectionTitleCompact">Подбор за 4 шага</h3>
-    <p class="actionSubtitle">Заполнено ${doneCount}/4. Далее покажем лучшие варианты.</p>
+    <p class="actionSubtitle">Готовность: ${doneCount}/4. После этого покажем лучшие варианты.</p>
   `;
   container.appendChild(intro);
 
@@ -637,7 +651,7 @@ function createResultsView(): HTMLElement {
     empty.className = "glassCard resultCard";
     empty.innerHTML = `
       <h3 class="sectionTitle sectionTitleCompact">Подбор требует ручной точной настройки</h3>
-      <p class="actionSubtitle">Оставьте контакт или задайте вопрос в чате: подберём персонально без шаблонных ответов.</p>
+      <p class="actionSubtitle">Оставьте контакт или задайте вопрос в чате. Подберем персонально.</p>
     `;
     section.appendChild(empty);
   } else {
@@ -825,7 +839,7 @@ function createChatView(): HTMLElement {
   textarea.className = "chatTextarea";
   textarea.rows = 4;
   textarea.maxLength = 2000;
-  textarea.placeholder = "Напишите вопрос. Например: «Как подготовиться к поступлению в МФТИ без перегруза?»";
+  textarea.placeholder = "Напишите вопрос. Например: «Как подготовиться к поступлению в МФТИ?»";
   textarea.value = state.chatInput;
   textarea.disabled = state.chatLoading;
   textarea.addEventListener("input", () => {
@@ -869,11 +883,11 @@ function createBottomDock(): HTMLElement {
   const label = document.createElement("span");
   label.className = "dockLabel";
   if (state.view === "chat") {
-    label.textContent = `${state.advisorName} онлайн. Можно задать любой вопрос.`;
+    label.textContent = `${state.advisorName} онлайн. Отвечаю в формате диалога.`;
   } else if (state.view === "results") {
-    label.textContent = "Варианты готовы. Для финального выбора подключим менеджера.";
+    label.textContent = "Варианты готовы. Можем подключить менеджера.";
   } else {
-    label.textContent = "Сначала польза и понятный ответ, затем релевантные предложения.";
+    label.textContent = "Задайте вопрос Гиду или начните подбор.";
   }
 
   const actions = document.createElement("div");
