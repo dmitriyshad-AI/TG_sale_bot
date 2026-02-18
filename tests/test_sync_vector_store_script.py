@@ -1,9 +1,11 @@
 import argparse
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 
 from sales_agent.sales_core.config import Settings
 from sales_agent.sales_core.vector_store import read_vector_store_meta
@@ -35,6 +37,59 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
             admin_pass="",
         )
 
+    class _MockHTTPResponse:
+        def __init__(self, body: str) -> None:
+            self._body = body
+
+        def read(self) -> bytes:
+            return self._body.encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    @patch("scripts.sync_vector_store.urlopen")
+    def test_request_json_post_parses_response(self, mock_urlopen) -> None:
+        mock_urlopen.return_value = self._MockHTTPResponse('{"id":"ok"}')
+        payload = sync_vector_store._request_json("https://api.example/test", "k1", {"x": 1})
+        self.assertEqual(payload["id"], "ok")
+        sent_request = mock_urlopen.call_args.args[0]
+        self.assertEqual(sent_request.get_method(), "POST")
+
+    @patch("scripts.sync_vector_store.urlopen")
+    def test_request_json_get_parses_response(self, mock_urlopen) -> None:
+        mock_urlopen.return_value = self._MockHTTPResponse('{"data":[]}')
+        payload = sync_vector_store._request_json_get("https://api.example/test", "k1")
+        self.assertEqual(payload["data"], [])
+        sent_request = mock_urlopen.call_args.args[0]
+        self.assertEqual(sent_request.get_method(), "GET")
+
+    def test_create_vector_store_raises_when_id_missing(self) -> None:
+        with patch.object(sync_vector_store, "_request_json", return_value={"name": "test"}):
+            with self.assertRaises(RuntimeError):
+                sync_vector_store._create_vector_store(api_key="k1", name="sales")
+
+    def test_upload_file_raises_when_response_has_no_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = Path(tmpdir) / "x.md"
+            file_path.write_text("hello", encoding="utf-8")
+            with patch("scripts.sync_vector_store.urlopen", return_value=self._MockHTTPResponse('{"status":"ok"}')):
+                with self.assertRaises(RuntimeError):
+                    sync_vector_store._upload_file(api_key="k1", file_path=file_path)
+
+    @patch("scripts.sync_vector_store.urlopen")
+    def test_delete_file_from_vector_store_uses_delete_method(self, mock_urlopen) -> None:
+        mock_urlopen.return_value = self._MockHTTPResponse("")
+        sync_vector_store._delete_file_from_vector_store(
+            api_key="k1",
+            vector_store_id="vs_1",
+            file_id="file_1",
+        )
+        sent_request = mock_urlopen.call_args.args[0]
+        self.assertEqual(sent_request.get_method(), "DELETE")
+
     def test_main_fails_when_api_key_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -60,6 +115,122 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
             with patch.object(sync_vector_store, "parse_args", return_value=args), patch.object(
                 sync_vector_store, "get_settings", return_value=settings
             ):
+                result = sync_vector_store.main()
+            self.assertEqual(result, 1)
+
+    def test_main_fails_when_knowledge_dir_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            missing_knowledge = root / "knowledge_missing"
+            meta_path = root / "data" / "vector_store.json"
+            args = argparse.Namespace(
+                knowledge_dir=missing_knowledge,
+                meta_path=meta_path,
+                vector_store_id=None,
+                name="sales-agent-knowledge",
+                dry_run=False,
+                prune_missing=False,
+            )
+            settings = self._settings(
+                root=root,
+                knowledge_path=missing_knowledge,
+                meta_path=meta_path,
+                openai_api_key="test-key",
+            )
+            with patch.object(sync_vector_store, "parse_args", return_value=args), patch.object(
+                sync_vector_store, "get_settings", return_value=settings
+            ):
+                result = sync_vector_store.main()
+            self.assertEqual(result, 1)
+
+    def test_main_fails_when_knowledge_has_no_supported_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            knowledge_dir = root / "knowledge"
+            knowledge_dir.mkdir(parents=True, exist_ok=True)
+            (knowledge_dir / "ignore.jpg").write_text("x", encoding="utf-8")
+            meta_path = root / "data" / "vector_store.json"
+            args = argparse.Namespace(
+                knowledge_dir=knowledge_dir,
+                meta_path=meta_path,
+                vector_store_id=None,
+                name="sales-agent-knowledge",
+                dry_run=False,
+                prune_missing=False,
+            )
+            settings = self._settings(
+                root=root,
+                knowledge_path=knowledge_dir,
+                meta_path=meta_path,
+                openai_api_key="test-key",
+            )
+            with patch.object(sync_vector_store, "parse_args", return_value=args), patch.object(
+                sync_vector_store, "get_settings", return_value=settings
+            ):
+                result = sync_vector_store.main()
+            self.assertEqual(result, 1)
+
+    def test_main_returns_error_on_http_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            knowledge_dir = root / "knowledge"
+            knowledge_dir.mkdir(parents=True, exist_ok=True)
+            (knowledge_dir / "faq_general.md").write_text("FAQ", encoding="utf-8")
+            meta_path = root / "data" / "vector_store.json"
+            args = argparse.Namespace(
+                knowledge_dir=knowledge_dir,
+                meta_path=meta_path,
+                vector_store_id=None,
+                name="sales-agent-knowledge",
+                dry_run=False,
+                prune_missing=False,
+            )
+            settings = self._settings(
+                root=root,
+                knowledge_path=knowledge_dir,
+                meta_path=meta_path,
+                openai_api_key="test-key",
+            )
+            with patch.object(sync_vector_store, "parse_args", return_value=args), patch.object(
+                sync_vector_store, "get_settings", return_value=settings
+            ), patch.object(
+                sync_vector_store,
+                "_create_vector_store",
+                side_effect=HTTPError(
+                    url="https://api.openai.com/v1/vector_stores",
+                    code=500,
+                    msg="error",
+                    hdrs=None,
+                    fp=io.BytesIO(b""),
+                ),
+            ):
+                result = sync_vector_store.main()
+            self.assertEqual(result, 1)
+
+    def test_main_returns_error_on_url_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            knowledge_dir = root / "knowledge"
+            knowledge_dir.mkdir(parents=True, exist_ok=True)
+            (knowledge_dir / "faq_general.md").write_text("FAQ", encoding="utf-8")
+            meta_path = root / "data" / "vector_store.json"
+            args = argparse.Namespace(
+                knowledge_dir=knowledge_dir,
+                meta_path=meta_path,
+                vector_store_id=None,
+                name="sales-agent-knowledge",
+                dry_run=False,
+                prune_missing=False,
+            )
+            settings = self._settings(
+                root=root,
+                knowledge_path=knowledge_dir,
+                meta_path=meta_path,
+                openai_api_key="test-key",
+            )
+            with patch.object(sync_vector_store, "parse_args", return_value=args), patch.object(
+                sync_vector_store, "get_settings", return_value=settings
+            ), patch.object(sync_vector_store, "_create_vector_store", side_effect=URLError("timed out")):
                 result = sync_vector_store.main()
             self.assertEqual(result, 1)
 

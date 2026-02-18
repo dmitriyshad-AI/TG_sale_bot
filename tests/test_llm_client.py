@@ -2,11 +2,11 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 try:
     from sales_agent.sales_core.catalog import SearchCriteria, parse_catalog
-    from sales_agent.sales_core.llm_client import LLMClient
+    from sales_agent.sales_core.llm_client import KnowledgeReply, LLMClient
 
     HAS_LLM_DEPS = True
 except ModuleNotFoundError:
@@ -35,6 +35,14 @@ class _MockAsyncResponse:
 
     def json(self):
         return self._payload
+
+
+class _MockAsyncInvalidJsonResponse:
+    status_code = 200
+    text = "{not-json"
+
+    def json(self):
+        raise ValueError("bad json")
 
 
 class _MockAsyncClient:
@@ -315,6 +323,114 @@ class LLMClientTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["answer_text"], "ok")
 
+    def test_extract_json_object_from_embedded_fragment(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        parsed = client._extract_json_object(
+            "Преамбула\n{\"answer_text\":\"ok\",\"call_to_action\":\"cta\"}\nПостамбула"
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["call_to_action"], "cta")
+
+    def test_parse_openai_sales_reply_returns_none_when_required_fields_missing(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        parsed = client._parse_openai_sales_reply(
+            {"output_text": '{"answer_text":"ok","recommended_product_ids":["p01"]}'},
+            allowed_ids=["p01"],
+        )
+        self.assertIsNone(parsed)
+
+    def test_source_label_from_annotation_supports_multiple_formats(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        self.assertEqual(
+            client._source_label_from_annotation({"file_citation": {"filename": "faq.md"}}),
+            "faq.md",
+        )
+        self.assertEqual(
+            client._source_label_from_annotation({"url_citation": {"title": "FAQ page"}}),
+            "FAQ page",
+        )
+        self.assertEqual(
+            client._source_label_from_annotation({"url_citation": {"url": "https://kmipt.ru/page"}}),
+            "https://kmipt.ru/page",
+        )
+
+    def test_extract_source_names_collects_unique_annotations(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        sources = client._extract_source_names(
+            {
+                "output": [
+                    {
+                        "content": [
+                            {
+                                "annotations": [
+                                    {"filename": "a.md"},
+                                    {"file_citation": {"filename": "a.md"}},
+                                    {"title": "Program page"},
+                                    {"url": "https://kmipt.ru/camp"},
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+        self.assertEqual(sources, ["a.md", "Program page", "https://kmipt.ru/camp"])
+
+    def test_send_request_handles_url_error(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        with patch("sales_agent.sales_core.llm_client.urlopen", side_effect=URLError("timed out")):
+            raw, error = client._send_request({"model": "gpt-4.1", "input": "ping"})
+        self.assertIsNone(raw)
+        self.assertIn("connection error", error or "")
+
+    @patch("sales_agent.sales_core.llm_client.urlopen")
+    def test_send_request_handles_invalid_json_response(self, mock_urlopen) -> None:
+        mock_urlopen.return_value = _MockHTTPResponse("{bad-json")
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        raw, error = client._send_request({"model": "gpt-4.1", "input": "ping"})
+        self.assertIsNone(raw)
+        self.assertIn("not valid json", (error or "").lower())
+
+    def test_apply_site_fallback_returns_primary_when_domain_not_set(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        primary = KnowledgeReply(answer_text="OK", sources=[], used_fallback=False)
+        resolved = client._apply_site_fallback(
+            question="Что с оплатой?",
+            primary_reply=primary,
+            user_context={},
+            site_domain="",
+        )
+        self.assertIs(resolved, primary)
+
+    def test_apply_site_fallback_uses_site_result_when_primary_has_gap_marker(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        primary = KnowledgeReply(
+            answer_text="Недостаточно информации в базе знаний, нужно уточнить.",
+            sources=[],
+            used_fallback=False,
+        )
+        site = KnowledgeReply(
+            answer_text="Нашел данные на сайте.",
+            sources=["https://kmipt.ru/page"],
+            used_fallback=False,
+        )
+        with patch.object(client, "_answer_knowledge_via_site_search", return_value=site):
+            resolved = client._apply_site_fallback(
+                question="Что с оплатой?",
+                primary_reply=primary,
+                user_context={"summary_text": "..."},
+                site_domain="kmipt.ru",
+            )
+        self.assertEqual(resolved.answer_text, "Нашел данные на сайте.")
+
+    def test_should_use_site_fallback_true_on_explicit_fallback(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        self.assertTrue(
+            client._should_use_site_fallback(
+                KnowledgeReply(answer_text="Ок", sources=[], used_fallback=True)
+            )
+        )
+
 
 @unittest.skipUnless(HAS_LLM_DEPS, "llm dependencies are not installed")
 class LLMClientAsyncTests(unittest.IsolatedAsyncioTestCase):
@@ -535,6 +651,16 @@ class LLMClientAsyncTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(result.used_fallback)
         self.assertIn("класс", result.answer_text.lower())
+
+    async def test_send_request_async_handles_invalid_json_response(self) -> None:
+        client = LLMClient(api_key="sk-test", model="gpt-4.1")
+        with patch(
+            "sales_agent.sales_core.llm_client.httpx.AsyncClient",
+            return_value=_MockAsyncClient(_MockAsyncInvalidJsonResponse()),
+        ):
+            raw, error = await client._send_request_async({"model": "gpt-4.1", "input": "ping"})
+        self.assertIsNone(raw)
+        self.assertIn("not valid json", (error or "").lower())
 
 
 if __name__ == "__main__":
