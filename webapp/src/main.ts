@@ -904,18 +904,6 @@ function createChatView(): HTMLElement {
   const composer = document.createElement("div");
   composer.className = "glassCard chatComposer";
 
-  const textarea = document.createElement("textarea");
-  textarea.className = "chatTextarea";
-  textarea.rows = 4;
-  textarea.maxLength = 2000;
-  textarea.placeholder = "Напишите вопрос в 1-2 фразах. Например: «Как начать подготовку к ЕГЭ в 10 классе?»";
-  textarea.value = state.chatInput;
-  textarea.disabled = state.chatLoading;
-  textarea.addEventListener("input", () => {
-    state.chatInput = textarea.value;
-    render();
-  });
-
   const controls = document.createElement("div");
   controls.className = "chatControls";
 
@@ -936,6 +924,19 @@ function createChatView(): HTMLElement {
   send.addEventListener("click", () => {
     triggerHaptic(webApp, "medium");
     void askAssistantQuestion();
+  });
+
+  const textarea = document.createElement("textarea");
+  textarea.className = "chatTextarea";
+  textarea.rows = 4;
+  textarea.maxLength = 2000;
+  textarea.placeholder = "Напишите вопрос в 1-2 фразах. Например: «Как начать подготовку к ЕГЭ в 10 классе?»";
+  textarea.value = state.chatInput;
+  textarea.disabled = state.chatLoading;
+  textarea.addEventListener("input", () => {
+    state.chatInput = textarea.value;
+    // Avoid full rerender on each keystroke: it drops focus in Telegram iOS mini app.
+    send.disabled = state.chatLoading || state.chatInput.trim().length === 0;
   });
 
   controls.append(back, send);
