@@ -23,11 +23,12 @@
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_MODE=polling
 TELEGRAM_WEBHOOK_PATH=/telegram/webhook
-TELEGRAM_WEBHOOK_SECRET=   # обязательно при TELEGRAM_MODE=webhook
+TELEGRAM_WEBHOOK_SECRET=   # опционально, но рекомендуется при TELEGRAM_MODE=webhook
 OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-4.1
 OPENAI_WEB_FALLBACK_ENABLED=true
 OPENAI_WEB_FALLBACK_DOMAIN=kmipt.ru
+STARTUP_PREFLIGHT_MODE=fail
 CRM_PROVIDER=none
 BRAND_DEFAULT=kmipt
 ADMIN_USER=admin
@@ -75,6 +76,11 @@ python3 scripts/validate_catalog.py
 python3 scripts/preflight_audit.py
 ```
 
+Смысл `STARTUP_PREFLIGHT_MODE`:
+- `off` — не блокировать старт по preflight.
+- `fail` — блокировать старт только при критических ошибках.
+- `strict` — блокировать старт и при warning.
+
 Сборка пользовательского Mini App (если запускаете без Docker):
 
 ```bash
@@ -114,6 +120,7 @@ curl http://127.0.0.1:8000/api/health
 curl http://127.0.0.1:8000/
 curl http://127.0.0.1:8000/app
 curl http://127.0.0.1:8000/api/runtime/diagnostics
+python3 scripts/release_smoke.py --base-url http://127.0.0.1:8000
 docker compose -f docker-compose.prod.yml ps
 docker compose -f docker-compose.prod.yml logs --tail=100 api
 docker compose -f docker-compose.prod.yml logs --tail=100 bot
@@ -188,7 +195,7 @@ docker compose -f docker-compose.prod.yml up -d --build
    ```dotenv
    TELEGRAM_MODE=webhook
    TELEGRAM_WEBHOOK_PATH=/telegram/webhook
-   TELEGRAM_WEBHOOK_SECRET=<long-random-secret>
+   TELEGRAM_WEBHOOK_SECRET=<long-random-secret>  # опционально, но рекомендуется
    ```
 2. После деплоя выставьте webhook:
    ```bash
@@ -196,6 +203,7 @@ docker compose -f docker-compose.prod.yml up -d --build
      -d "url=https://<your-render-domain>/telegram/webhook" \
      -d "secret_token=<long-random-secret>"
    ```
+   Если не задаете `TELEGRAM_WEBHOOK_SECRET`, можно вызвать `setWebhook` только с параметром `url`.
 3. Проверьте состояние:
    ```bash
    curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/getWebhookInfo"

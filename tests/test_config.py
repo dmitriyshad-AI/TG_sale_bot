@@ -53,6 +53,7 @@ class ConfigTests(unittest.TestCase):
             "MINIAPP_ADVISOR_NAME": "Гид",
             "SALES_MANAGER_LABEL": "Старший менеджер",
             "SALES_MANAGER_CHAT_URL": "https://t.me/kmipt_sales_manager",
+            "STARTUP_PREFLIGHT_MODE": "strict",
         },
         clear=True,
     )
@@ -90,6 +91,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.miniapp_advisor_name, "Гид")
         self.assertEqual(settings.sales_manager_label, "Старший менеджер")
         self.assertEqual(settings.sales_manager_chat_url, "https://t.me/kmipt_sales_manager")
+        self.assertEqual(settings.startup_preflight_mode, "strict")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_get_settings_uses_defaults(self) -> None:
@@ -120,6 +122,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.miniapp_advisor_name, "Гид")
         self.assertEqual(settings.sales_manager_label, "Менеджер")
         self.assertEqual(settings.sales_manager_chat_url, "")
+        self.assertEqual(settings.startup_preflight_mode, "fail")
         self.assertEqual(settings.tallanto_api_token, "")
         self.assertFalse(settings.tallanto_read_only)
         self.assertEqual(settings.tallanto_default_contact_module, "")
@@ -144,10 +147,16 @@ class ConfigTests(unittest.TestCase):
         settings = get_settings()
         self.assertEqual(settings.telegram_mode, "polling")
 
-    @patch.dict(os.environ, {"TELEGRAM_MODE": "webhook"}, clear=True)
-    def test_webhook_mode_requires_secret(self) -> None:
-        with self.assertRaises(ValueError):
-            get_settings()
+    @patch.dict(os.environ, {"STARTUP_PREFLIGHT_MODE": "invalid"}, clear=True)
+    def test_invalid_preflight_mode_falls_back_to_fail(self) -> None:
+        settings = get_settings()
+        self.assertEqual(settings.startup_preflight_mode, "fail")
+
+    @patch.dict(os.environ, {"TELEGRAM_MODE": "webhook", "TELEGRAM_WEBHOOK_SECRET": ""}, clear=True)
+    def test_webhook_mode_allows_empty_secret(self) -> None:
+        settings = get_settings()
+        self.assertEqual(settings.telegram_mode, "webhook")
+        self.assertEqual(settings.telegram_webhook_secret, "")
 
     @patch.dict(os.environ, {"ADMIN_MINIAPP_ENABLED": "yes", "ADMIN_TELEGRAM_IDS": "1, 2, bad,3"}, clear=True)
     def test_admin_miniapp_settings_parse_values(self) -> None:

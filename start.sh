@@ -6,11 +6,11 @@ TELEGRAM_MODE="${TELEGRAM_MODE:-polling}"
 
 if [ "${TELEGRAM_MODE}" = "webhook" ]; then
   echo "[start] Starting API in webhook mode on 0.0.0.0:${PORT}"
-  exec uvicorn sales_agent.sales_api.main:app --host 0.0.0.0 --port "${PORT}"
+  exec python3 scripts/start_api.py --host 0.0.0.0 --port "${PORT}"
 fi
 
 echo "[start] Starting API on 0.0.0.0:${PORT} (polling mode)"
-uvicorn sales_agent.sales_api.main:app --host 0.0.0.0 --port "${PORT}" &
+python3 scripts/start_api.py --host 0.0.0.0 --port "${PORT}" &
 API_PID=$!
 
 cleanup() {

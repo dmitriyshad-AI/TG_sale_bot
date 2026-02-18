@@ -21,7 +21,7 @@ MVP-каркас для sales-бота УНПК МФТИ (kmipt.ru): FastAPI API
    ```
 4. Запустить API:
    ```bash
-   uvicorn sales_agent.sales_api.main:app --reload
+   python3 scripts/start_api.py --host 127.0.0.1 --port 8000 --reload
    # health: http://127.0.0.1:8000/api/health
    ```
 5. Запустить Telegram-бота (в другом терминале):
@@ -120,6 +120,7 @@ OPENAI_MODEL=gpt-4.1
 OPENAI_VECTOR_STORE_ID=
 OPENAI_WEB_FALLBACK_ENABLED=true
 OPENAI_WEB_FALLBACK_DOMAIN=kmipt.ru
+STARTUP_PREFLIGHT_MODE=fail
 TALLANTO_API_URL=
 TALLANTO_API_KEY=
 TALLANTO_API_TOKEN=
@@ -163,7 +164,7 @@ SALES_TONE_PATH=
 - Для локальной разработки проще polling (`python3 -m sales_agent.sales_bot.bot`).
 - Для Render/Web Service можно использовать webhook:
   1. Установить в env: `TELEGRAM_MODE=webhook`.
-  2. Задать `TELEGRAM_WEBHOOK_SECRET` (обязательно).
+  2. Опционально задать `TELEGRAM_WEBHOOK_SECRET` (рекомендуется для проверки заголовка Telegram).
   3. После деплоя выставить webhook:
      ```bash
      curl -s "https://api.telegram.org/bot<RENDER_BOT_TOKEN>/setWebhook" \
@@ -201,6 +202,16 @@ SALES_TONE_PATH=
   python3 scripts/preflight_audit.py
   python3 scripts/preflight_audit.py --json
   ```
+- Smoke-проверка уже запущенного API (локально/Render):
+  ```bash
+  python3 scripts/release_smoke.py --base-url http://127.0.0.1:8000
+  # строгий режим по runtime warning:
+  python3 scripts/release_smoke.py --base-url https://<your-render-domain> --strict-runtime
+  ```
+- Режим стартового preflight:
+  - `STARTUP_PREFLIGHT_MODE=off` — выключить блокировку старта.
+  - `STARTUP_PREFLIGHT_MODE=fail` — блокировать только при критических ошибках (рекомендуется).
+  - `STARTUP_PREFLIGHT_MODE=strict` — блокировать и при предупреждениях.
 - Основной сценарий в Telegram:
   - `/start` запускает воронку квалификации с inline-кнопками (класс → цель → предмет → формат).
   - После подбора 2-3 продуктов бот формирует ответ через LLM (или через fallback без LLM) и предлагает оставить контакт.

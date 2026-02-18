@@ -18,6 +18,53 @@ class DiagnosticIssue:
     message: str
 
 
+def normalize_preflight_mode(value: object) -> str:
+    if not isinstance(value, str):
+        return "off"
+    normalized = value.strip().lower()
+    if normalized in {"off", "fail", "strict"}:
+        return normalized
+    return "off"
+
+
+def _summarize_issues(issues: List[dict], limit: int = 3) -> str:
+    if not issues:
+        return "no issues reported"
+    parts: List[str] = []
+    for item in issues[: max(1, limit)]:
+        code = str(item.get("code") or "unknown")
+        message = str(item.get("message") or "").strip()
+        if message:
+            parts.append(f"{code}: {message}")
+        else:
+            parts.append(code)
+    suffix = "" if len(issues) <= limit else f" (+{len(issues) - limit} more)"
+    return "; ".join(parts) + suffix
+
+
+def enforce_startup_preflight(settings: Settings, mode: str | None = None) -> Dict[str, object]:
+    configured_mode = getattr(settings, "startup_preflight_mode", "off")
+    preflight_mode = normalize_preflight_mode(mode if mode is not None else configured_mode)
+
+    if preflight_mode == "off":
+        return {"status": "off", "runtime": {}, "issues": []}
+
+    diagnostics = build_runtime_diagnostics(settings)
+    status = str(diagnostics.get("status") or "fail").lower()
+
+    issues = diagnostics.get("issues")
+    issue_items = issues if isinstance(issues, list) else []
+    summary = _summarize_issues(issue_items)
+
+    if status == "fail":
+        raise RuntimeError(f"Startup preflight failed ({preflight_mode}): {summary}")
+
+    if status == "warn" and preflight_mode == "strict":
+        raise RuntimeError(f"Startup preflight blocked by warnings (strict): {summary}")
+
+    return diagnostics
+
+
 def _safe_md_count(path: Path) -> int:
     if not path.exists() or not path.is_dir():
         return 0

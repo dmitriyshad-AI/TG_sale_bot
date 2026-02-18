@@ -42,6 +42,7 @@ from sales_agent.sales_core.flow import (
     ensure_state,
 )
 from sales_agent.sales_core.llm_client import LLMClient
+from sales_agent.sales_core.runtime_diagnostics import enforce_startup_preflight
 from sales_agent.sales_core.tone import apply_tone_guardrails, assess_response_quality, enforce_delivery_quality
 from sales_agent.sales_core.vector_store import load_vector_store_id
 
@@ -2372,6 +2373,13 @@ def build_application(token: str) -> Application:
 def main() -> None:
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set. Fill .env before running.")
+    diagnostics = enforce_startup_preflight(settings)
+    preflight_mode = getattr(settings, "startup_preflight_mode", "off")
+    logger.info(
+        "Startup preflight status=%s mode=%s",
+        diagnostics.get("status"),
+        preflight_mode,
+    )
     if settings.telegram_mode == "webhook":
         raise RuntimeError(
             "TELEGRAM_MODE=webhook: polling runner disabled. Start FastAPI service and use webhook endpoint."

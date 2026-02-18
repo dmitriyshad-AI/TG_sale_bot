@@ -43,6 +43,7 @@ class Settings:
     miniapp_advisor_name: str = "Гид"
     sales_manager_label: str = "Менеджер"
     sales_manager_chat_url: str = ""
+    startup_preflight_mode: str = "off"
     running_on_render: bool = False
     persistent_data_root: Path = Path()
 
@@ -102,13 +103,14 @@ def get_settings() -> Settings:
     if not telegram_webhook_path.startswith("/"):
         telegram_webhook_path = f"/{telegram_webhook_path}"
     telegram_webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
-    if telegram_mode == "webhook" and not telegram_webhook_secret:
-        raise ValueError("TELEGRAM_WEBHOOK_SECRET is required when TELEGRAM_MODE=webhook")
     admin_miniapp_enabled = os.getenv("ADMIN_MINIAPP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
     openai_web_fallback_enabled = (
         os.getenv("OPENAI_WEB_FALLBACK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     )
     openai_web_fallback_domain = os.getenv("OPENAI_WEB_FALLBACK_DOMAIN", "kmipt.ru").strip() or "kmipt.ru"
+    startup_preflight_mode = os.getenv("STARTUP_PREFLIGHT_MODE", "fail").strip().lower()
+    if startup_preflight_mode not in {"off", "fail", "strict"}:
+        startup_preflight_mode = "fail"
     tallanto_api_key = os.getenv("TALLANTO_API_KEY", "").strip()
     tallanto_api_token = os.getenv("TALLANTO_API_TOKEN", "").strip() or tallanto_api_key
     tallanto_read_only = os.getenv("TALLANTO_READ_ONLY", "").strip() == "1"
@@ -159,6 +161,7 @@ def get_settings() -> Settings:
         miniapp_advisor_name=os.getenv("MINIAPP_ADVISOR_NAME", "Гид").strip() or "Гид",
         sales_manager_label=os.getenv("SALES_MANAGER_LABEL", "Менеджер").strip() or "Менеджер",
         sales_manager_chat_url=os.getenv("SALES_MANAGER_CHAT_URL", "").strip(),
+        startup_preflight_mode=startup_preflight_mode,
         running_on_render=running_on_render,
         persistent_data_root=persistent_data_root,
     )

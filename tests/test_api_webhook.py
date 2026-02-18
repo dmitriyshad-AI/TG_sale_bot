@@ -167,11 +167,26 @@ class ApiWebhookTests(unittest.TestCase):
                     self.assertIn("invalid telegram payload", response.json()["detail"].lower())
                     mock_tg_app.process_update.assert_not_awaited()
 
-    def test_create_app_rejects_webhook_mode_without_secret(self) -> None:
+    def test_webhook_allows_missing_secret_and_processes_update(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "webhook.db"
-            with self.assertRaises(ValueError):
-                create_app(self._settings(db_path, telegram_mode="webhook", webhook_secret=""))
+            mock_tg_app = _MockTelegramApplication()
+            with patch("sales_agent.sales_api.main.bot_runtime.build_application", return_value=mock_tg_app), patch(
+                "sales_agent.sales_api.main.Update.de_json", return_value=SimpleNamespace(update_id=7)
+            ):
+                app = create_app(self._settings(db_path, telegram_mode="webhook", webhook_secret=""))
+                with TestClient(app) as client:
+                    response = client.post(
+                        "/telegram/webhook",
+                        json={"update_id": 7},
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json(), {"ok": True, "queued": True})
+                    deadline = time.time() + 1.5
+                    while mock_tg_app.process_update.await_count == 0 and time.time() < deadline:
+                        time.sleep(0.05)
+
+            mock_tg_app.process_update.assert_awaited_once()
 
 
 if __name__ == "__main__":

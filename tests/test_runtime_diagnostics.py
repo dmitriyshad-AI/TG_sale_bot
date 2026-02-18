@@ -5,9 +5,11 @@ import json
 
 from sales_agent.sales_core.config import Settings
 from sales_agent.sales_core.runtime_diagnostics import (
+    enforce_startup_preflight,
     _is_path_within,
     _safe_md_count,
     build_runtime_diagnostics,
+    normalize_preflight_mode,
 )
 
 
@@ -34,6 +36,13 @@ products:
 
 
 class RuntimeDiagnosticsTests(unittest.TestCase):
+    def test_normalize_preflight_mode(self) -> None:
+        self.assertEqual(normalize_preflight_mode("off"), "off")
+        self.assertEqual(normalize_preflight_mode("FAIL"), "fail")
+        self.assertEqual(normalize_preflight_mode("strict"), "strict")
+        self.assertEqual(normalize_preflight_mode("  unknown "), "off")
+        self.assertEqual(normalize_preflight_mode(None), "off")
+
     def test_helper_path_within_and_md_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -290,6 +299,60 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         self.assertEqual(diagnostics["status"], "warn")
         issue_codes = {item["code"] for item in diagnostics["issues"]}
         self.assertIn("persistent_data_root_missing", issue_codes)
+
+    def test_enforce_startup_preflight_blocks_fail_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            catalog_path = root / "catalog.yaml"
+            _write_catalog(catalog_path)
+            settings = Settings(
+                telegram_bot_token="",
+                openai_api_key="",
+                openai_model="gpt-4.1",
+                tallanto_api_url="",
+                tallanto_api_key="",
+                brand_default="kmipt",
+                database_path=root / "data" / "sales_agent.db",
+                catalog_path=catalog_path,
+                knowledge_path=root / "knowledge",
+                vector_store_meta_path=root / "data" / "vector_store.json",
+                openai_vector_store_id="",
+                admin_user="",
+                admin_pass="",
+                startup_preflight_mode="fail",
+            )
+            settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.assertRaises(RuntimeError):
+                enforce_startup_preflight(settings)
+
+    def test_enforce_startup_preflight_blocks_warn_in_strict_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            catalog_path = root / "catalog.yaml"
+            _write_catalog(catalog_path)
+            knowledge_path = root / "knowledge"
+            knowledge_path.mkdir(parents=True, exist_ok=True)
+            (knowledge_path / "faq_general.md").write_text("FAQ", encoding="utf-8")
+            db_path = root / "data" / "sales_agent.db"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            settings = Settings(
+                telegram_bot_token="tg-token",
+                openai_api_key="sk-test",
+                openai_model="gpt-4.1",
+                tallanto_api_url="",
+                tallanto_api_key="",
+                brand_default="kmipt",
+                database_path=db_path,
+                catalog_path=catalog_path,
+                knowledge_path=knowledge_path,
+                vector_store_meta_path=root / "data" / "vector_store.json",
+                openai_vector_store_id="",
+                admin_user="",
+                admin_pass="",
+                startup_preflight_mode="strict",
+            )
+            with self.assertRaises(RuntimeError):
+                enforce_startup_preflight(settings)
 
 
 if __name__ == "__main__":

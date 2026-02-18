@@ -1,7 +1,7 @@
 services:
   api:
     build: .
-    command: uvicorn sales_agent.sales_api.main:app --host 0.0.0.0 --port 8000 --reload
+    command: python3 scripts/start_api.py --host 0.0.0.0 --port 8000 --reload
     env_file:
       - .env
     volumes:
