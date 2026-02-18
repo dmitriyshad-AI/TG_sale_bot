@@ -70,6 +70,12 @@ body::before {
   color: var(--text-muted);
 }
 
+.heroHint {
+  margin: var(--spacing-2) 0 0;
+  font-size: 13px;
+  color: rgba(6, 40, 59, 0.84);
+}
+
 .actions {
   display: grid;
   gap: var(--spacing-3);
@@ -129,6 +135,19 @@ body::before {
   gap: var(--spacing-2);
 }
 
+.resultSummaryCard {
+  padding: var(--spacing-3);
+  display: grid;
+  gap: var(--spacing-2);
+}
+
+.resultSupportText {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: rgba(7, 44, 66, 0.88);
+}
+
 .resultMeta {
   margin: 0;
   font-size: 14px;
@@ -153,7 +172,118 @@ body::before {
 
 .resultsActions {
   display: flex;
+  gap: var(--spacing-2);
   justify-content: flex-end;
+}
+
+.chatStack {
+  display: grid;
+  gap: var(--spacing-3);
+}
+
+.chatIntro {
+  padding: var(--spacing-3);
+}
+
+.chatQuickRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--spacing-2);
+}
+
+.chatMessages {
+  display: grid;
+  gap: var(--spacing-2);
+}
+
+.chatBubble {
+  padding: var(--spacing-3);
+  display: grid;
+  gap: 8px;
+}
+
+.chatBubbleUser {
+  border-color: rgba(176, 227, 252, 0.9);
+  background: rgba(212, 241, 255, 0.58);
+}
+
+.chatBubbleAssistant {
+  border-color: rgba(255, 255, 255, 0.6);
+}
+
+.chatRole {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(7, 45, 66, 0.7);
+}
+
+.chatText {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.chatMeta {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(7, 45, 66, 0.74);
+}
+
+.chatSources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chatProgress {
+  padding: var(--spacing-3);
+}
+
+.progressPulse {
+  animation: pulse-fade 1.6s ease-in-out infinite;
+}
+
+.managerOfferCard {
+  padding: var(--spacing-3);
+  display: grid;
+  gap: var(--spacing-2);
+}
+
+.chatComposer {
+  padding: var(--spacing-3);
+  display: grid;
+  gap: var(--spacing-2);
+}
+
+.chatTextarea {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.54);
+  color: var(--text-main);
+  font: inherit;
+  line-height: 1.45;
+  padding: 12px 14px;
+  resize: vertical;
+  min-height: 96px;
+}
+
+.chatTextarea:focus {
+  outline: 2px solid rgba(37, 140, 194, 0.36);
+  outline-offset: 2px;
+}
+
+.chatTextarea:disabled {
+  opacity: 0.7;
+}
+
+.chatControls {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-2);
 }
 
 .errorBox {
@@ -198,6 +328,11 @@ body::before {
   color: rgba(7, 49, 73, 0.82);
 }
 
+.dockActions {
+  display: flex;
+  gap: var(--spacing-2);
+}
+
 @keyframes card-enter {
   from {
     opacity: 0;
@@ -206,6 +341,18 @@ body::before {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes pulse-fade {
+  0% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.55;
   }
 }
 
@@ -228,6 +375,11 @@ body::before {
     align-items: stretch;
   }
 
+  .dockActions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
   .resultsActions {
     justify-content: stretch;
   }
@@ -235,10 +387,26 @@ body::before {
   .resultsActions .glassButton {
     width: 100%;
   }
+
+  .chatControls {
+    flex-direction: column;
+  }
+
+  .chatControls .glassButton {
+    width: 100%;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .actionCard {
     animation: none;
+  }
+
+  .progressPulse {
+    animation: none;
+  }
+
+  .chipButton {
+    transition: none;
   }
 }

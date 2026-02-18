@@ -43,49 +43,101 @@ type CatalogResponse = {
   ok: boolean;
   count: number;
   items: CatalogItem[];
+  match_quality?: "strong" | "limited" | "none";
+  manager_recommended?: boolean;
+  manager_message?: string;
+  manager_call_to_action?: string;
 };
 
-type MiniAppCatalogPayload = {
-  flow: "catalog";
+type AssistantRecommendedItem = {
+  id: string;
+  title: string;
+  url: string;
+  why_match: string;
+};
+
+type AssistantResponse = {
+  ok: boolean;
+  mode: "knowledge" | "consultative" | "general";
+  answer_text: string;
+  sources: string[];
+  used_fallback: boolean;
+  match_quality: "strong" | "limited" | "none";
+  recommended_products: AssistantRecommendedItem[];
+  manager_offer: {
+    recommended: boolean;
+    message: string;
+    call_to_action: string;
+  };
+  processing_note: string;
+};
+
+type MiniAppPayload = {
+  flow: "catalog" | "consultation_request";
   criteria: SearchCriteria;
   top: Array<{ id: string; title: string; url: string }>;
+  question?: string;
+  note?: string;
 };
 
 type AuthResponse =
   | { ok: true; user: TelegramWebAppUser }
   | { ok: false; reason: string; user: null };
 
-type AppView = "home" | "picker" | "results";
+type AppView = "home" | "picker" | "results" | "chat";
+
+type ChatMessage = {
+  role: "user" | "assistant";
+  text: string;
+  sources?: string[];
+  meta?: string;
+};
+
+type ManagerOffer = {
+  recommended: boolean;
+  message: string;
+  callToAction: string;
+};
 
 type AppState = {
   view: AppView;
   criteria: SearchCriteria;
   results: CatalogItem[];
+  matchQuality: "strong" | "limited" | "none";
+  managerRecommended: boolean;
+  managerMessage: string;
+  managerCallToAction: string;
   loading: boolean;
   error: string | null;
   statusLine: string;
   initData: string;
   user: TelegramWebAppUser | null;
   coachmarkStep: number;
+  chatInput: string;
+  chatMessages: ChatMessage[];
+  chatLoading: boolean;
+  chatProgressText: string;
+  chatElapsedSec: number;
+  lastManagerOffer: ManagerOffer | null;
 };
 
 const HOME_ACTIONS: HomeAction[] = [
   {
     key: "pick",
     title: "Подобрать курс",
-    subtitle: "3 варианта под цель и класс за 60 секунд",
+    subtitle: "Найдём лучший старт под класс, цель и формат",
     emoji: "🎯"
   },
   {
     key: "ask",
-    title: "Задать вопрос",
-    subtitle: "Ответ на условия, документы и формат обучения",
+    title: "Задать вопрос в любой момент",
+    subtitle: "По стратегии, поступлению, предметам и обучению",
     emoji: "💬"
   },
   {
     key: "consult",
-    title: "Записаться на консультацию",
-    subtitle: "Свяжем с методистом и соберем персональный план",
+    title: "Связаться с менеджером",
+    subtitle: "Поможем с персональным подбором и следующим шагом",
     emoji: "📞"
   }
 ];
@@ -110,11 +162,23 @@ const FORMAT_OPTIONS: ChoiceOption[] = [
   { label: "Гибрид", value: "hybrid" }
 ];
 
-const COACHMARK_STORAGE_KEY = "kmipt_sales_miniapp_coachmarks_v1";
+const CHAT_PROMPTS = [
+  "Как построить стратегию поступления в МФТИ для 10 класса?",
+  "Что делать, если у ребёнка проседает математика в 8 классе?",
+  "С чего начать подготовку к ЕГЭ по физике без перегруза?"
+];
+
+const CHAT_PROGRESS_STEPS = [
+  "Собираю контекст запроса…",
+  "Проверяю, какие варианты подойдут лучше всего…",
+  "Готовлю полезный и точный ответ без шаблонов…"
+];
+
+const COACHMARK_STORAGE_KEY = "kmipt_sales_miniapp_coachmarks_v2";
 const COACHMARKS = [
-  "1/3 Выберите класс ученика, чтобы сузить список программ.",
-  "2/3 Выберите цель подготовки. Это влияет на стратегию и формат.",
-  "3/3 Нажмите «Показать варианты», затем можно запросить консультацию."
+  "1/3 Выберите класс, чтобы отсечь лишние варианты.",
+  "2/3 Выберите цель и предмет, чтобы подобрать точнее.",
+  "3/3 Если хотите, в любой момент можно перейти к вопросу и общению."
 ];
 
 const rootNode = document.getElementById("app");
@@ -126,6 +190,7 @@ const appRoot: HTMLElement = rootNode;
 const telegram = initTelegramContext();
 const webApp = telegram.webApp;
 let mainButtonHandler: (() => void) | null = null;
+let chatProgressTimer: number | null = null;
 
 function shouldShowCoachmarks(): boolean {
   try {
@@ -164,13 +229,54 @@ const state: AppState = {
     format: null
   },
   results: [],
+  matchQuality: "none",
+  managerRecommended: false,
+  managerMessage: "",
+  managerCallToAction: "",
   loading: false,
   error: null,
   statusLine: "Проверяю подключение к Telegram…",
   initData: telegram.initData,
   user: telegram.user,
-  coachmarkStep: shouldShowCoachmarks() ? 0 : -1
+  coachmarkStep: shouldShowCoachmarks() ? 0 : -1,
+  chatInput: "",
+  chatMessages: [],
+  chatLoading: false,
+  chatProgressText: CHAT_PROGRESS_STEPS[0],
+  chatElapsedSec: 0,
+  lastManagerOffer: null
 };
+
+function clearChatProgressTimer(): void {
+  if (chatProgressTimer !== null) {
+    window.clearInterval(chatProgressTimer);
+    chatProgressTimer = null;
+  }
+}
+
+function startChatProgress(): void {
+  clearChatProgressTimer();
+  state.chatElapsedSec = 0;
+  state.chatProgressText = CHAT_PROGRESS_STEPS[0];
+  chatProgressTimer = window.setInterval(() => {
+    state.chatElapsedSec += 1;
+    const index = Math.min(CHAT_PROGRESS_STEPS.length - 1, Math.floor(state.chatElapsedSec / 3));
+    state.chatProgressText = CHAT_PROGRESS_STEPS[index];
+    render();
+  }, 1000);
+}
+
+function stopChatProgress(): void {
+  clearChatProgressTimer();
+  state.chatElapsedSec = 0;
+  state.chatProgressText = CHAT_PROGRESS_STEPS[0];
+}
+
+function navigateTo(view: AppView): void {
+  state.error = null;
+  state.view = view;
+  render();
+}
 
 function createActionCard(action: HomeAction): HTMLButtonElement {
   const button = document.createElement("button");
@@ -200,8 +306,9 @@ function renderHeader(statusText: string): HTMLElement {
   const name = state.user?.first_name ? `, ${state.user.first_name}` : "";
   hero.innerHTML = `
     <p class="eyebrow">KMIPT • Sales Agent</p>
-    <h1 class="heroTitle">Подбор программ без давления${name}</h1>
+    <h1 class="heroTitle">Подбор и консультации без давления${name}</h1>
     <p class="heroSubtitle">${statusText}</p>
+    <p class="heroHint">В любой момент можно задать вопрос и продолжить диалог по образованию.</p>
   `;
   return hero;
 }
@@ -264,9 +371,19 @@ function createHomeView(): HTMLElement {
     card.addEventListener("click", () => {
       triggerHaptic(webApp, "light");
       state.error = null;
-      state.view = "picker";
-      updateCoachmarkProgress();
-      render();
+      if (action.key === "pick") {
+        navigateTo("picker");
+        return;
+      }
+      if (action.key === "ask") {
+        navigateTo("chat");
+        return;
+      }
+      if (state.results.length > 0) {
+        sendConsultationRequestToChat();
+        return;
+      }
+      navigateTo("picker");
     });
     section.appendChild(card);
   });
@@ -298,15 +415,13 @@ function createPickerView(): HTMLElement {
   const controls = document.createElement("div");
   controls.className = "pickerControls";
 
-  const back = document.createElement("button");
-  back.type = "button";
-  back.className = "glassButton";
-  back.textContent = "Назад";
-  back.addEventListener("click", () => {
+  const askBtn = document.createElement("button");
+  askBtn.type = "button";
+  askBtn.className = "glassButton";
+  askBtn.textContent = "Задать вопрос";
+  askBtn.addEventListener("click", () => {
     triggerHaptic(webApp, "light");
-    state.view = "home";
-    state.error = null;
-    render();
+    navigateTo("chat");
   });
 
   const submit = document.createElement("button");
@@ -319,75 +434,278 @@ function createPickerView(): HTMLElement {
     void loadCatalogResults();
   });
 
-  controls.append(back, submit);
+  controls.append(askBtn, submit);
   container.appendChild(controls);
 
   return container;
+}
+
+function createResultSummaryCard(): HTMLElement {
+  const card = document.createElement("article");
+  card.className = "glassCard resultSummaryCard";
+
+  const title = document.createElement("h3");
+  title.className = "sectionTitle sectionTitleCompact";
+  title.textContent = "Что нашли по вашему запросу";
+
+  const text = document.createElement("p");
+  text.className = "actionSubtitle";
+
+  if (state.matchQuality === "strong" && state.results.length > 0) {
+    text.textContent = `Есть очень подходящий вариант: ${state.results[0].title}. При желании менеджер дополнительно сверит график и нагрузку.`;
+  } else if (state.results.length > 0) {
+    text.textContent =
+      state.managerMessage ||
+      "Есть хорошие предложения под ваш запрос. Чтобы выбрать самый точный вариант, лучше подключить менеджера.";
+  } else {
+    text.textContent =
+      "Автоматический фильтр не нашёл идеальный вариант, но это не тупик: у нас широкая линейка под разные цели, уровни и форматы.";
+  }
+
+  const cta = document.createElement("p");
+  cta.className = "resultSupportText";
+  cta.textContent =
+    state.managerCallToAction ||
+    "Оставьте контакт, и менеджер предложит подходящие варианты под вашу задачу и сроки.";
+
+  card.append(title, text, cta);
+  return card;
 }
 
 function createResultsView(): HTMLElement {
   const section = document.createElement("section");
   section.className = "resultsGrid";
 
+  section.appendChild(createResultSummaryCard());
+
   if (state.results.length === 0) {
     const empty = document.createElement("article");
     empty.className = "glassCard resultCard";
     empty.innerHTML = `
-      <h3 class="sectionTitle sectionTitleCompact">Пока не нашёл точных совпадений</h3>
-      <p class="actionSubtitle">Измените 1-2 параметра, и я покажу ближайшие варианты.</p>
+      <h3 class="sectionTitle sectionTitleCompact">Подбор требует ручной точной настройки</h3>
+      <p class="actionSubtitle">Оставьте контакт или задайте вопрос в чате: подберём персонально без шаблонных ответов.</p>
     `;
     section.appendChild(empty);
-    return section;
-  }
+  } else {
+    for (const item of state.results) {
+      const card = document.createElement("article");
+      card.className = "glassCard resultCard";
 
-  for (const item of state.results) {
-    const card = document.createElement("article");
-    card.className = "glassCard resultCard";
+      const title = document.createElement("h3");
+      title.className = "sectionTitle sectionTitleCompact";
+      title.textContent = item.title;
 
-    const title = document.createElement("h3");
-    title.className = "sectionTitle sectionTitleCompact";
-    title.textContent = item.title;
+      const why = document.createElement("p");
+      why.className = "actionSubtitle";
+      why.textContent = item.why_match;
 
-    const why = document.createElement("p");
-    why.className = "actionSubtitle";
-    why.textContent = item.why_match;
+      const meta = document.createElement("p");
+      meta.className = "resultMeta";
+      meta.textContent = `${item.price_text} • Ближайший старт: ${item.next_start_text}`;
 
-    const meta = document.createElement("p");
-    meta.className = "resultMeta";
-    meta.textContent = `${item.price_text} • Ближайший старт: ${item.next_start_text}`;
+      const uspList = document.createElement("ul");
+      uspList.className = "uspList";
+      for (const bullet of item.usp) {
+        const li = document.createElement("li");
+        li.textContent = bullet;
+        uspList.appendChild(li);
+      }
 
-    const uspList = document.createElement("ul");
-    uspList.className = "uspList";
-    for (const bullet of item.usp) {
-      const li = document.createElement("li");
-      li.textContent = bullet;
-      uspList.appendChild(li);
+      const link = document.createElement("a");
+      link.className = "glassButton resultLink";
+      link.href = item.url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = "Открыть программу";
+
+      card.append(title, why, meta, uspList, link);
+      section.appendChild(card);
     }
-
-    const link = document.createElement("a");
-    link.className = "glassButton resultLink";
-    link.href = item.url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    link.textContent = "Открыть программу";
-
-    card.append(title, why, meta, uspList, link);
-    section.appendChild(card);
   }
 
   const actions = document.createElement("div");
   actions.className = "resultsActions";
 
-  const sendToChat = document.createElement("button");
-  sendToChat.type = "button";
-  sendToChat.className = "glassButton glassButtonPrimary";
-  sendToChat.textContent = "Отправить в чат";
-  sendToChat.addEventListener("click", () => {
-    sendCatalogSelectionToChat();
+  const askButton = document.createElement("button");
+  askButton.type = "button";
+  askButton.className = "glassButton";
+  askButton.textContent = "Уточнить вопросом";
+  askButton.addEventListener("click", () => {
+    triggerHaptic(webApp, "light");
+    navigateTo("chat");
   });
-  actions.appendChild(sendToChat);
+
+  const contactButton = document.createElement("button");
+  contactButton.type = "button";
+  contactButton.className = "glassButton glassButtonPrimary";
+  contactButton.textContent = "Связаться с менеджером";
+  contactButton.addEventListener("click", () => {
+    sendConsultationRequestToChat();
+  });
+
+  actions.append(askButton, contactButton);
   section.appendChild(actions);
   return section;
+}
+
+function createChatMessage(item: ChatMessage): HTMLElement {
+  const bubble = document.createElement("article");
+  bubble.className = `glassCard chatBubble ${item.role === "user" ? "chatBubbleUser" : "chatBubbleAssistant"}`;
+
+  const role = document.createElement("p");
+  role.className = "chatRole";
+  role.textContent = item.role === "user" ? "Вы" : "Консультант";
+
+  const text = document.createElement("p");
+  text.className = "chatText";
+  text.textContent = item.text;
+
+  bubble.append(role, text);
+
+  if (item.meta) {
+    const meta = document.createElement("p");
+    meta.className = "chatMeta";
+    meta.textContent = item.meta;
+    bubble.appendChild(meta);
+  }
+
+  if (item.sources && item.sources.length > 0) {
+    const sourcesWrap = document.createElement("div");
+    sourcesWrap.className = "chatSources";
+    for (const source of item.sources.slice(0, 3)) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = source;
+      sourcesWrap.appendChild(chip);
+    }
+    bubble.appendChild(sourcesWrap);
+  }
+
+  return bubble;
+}
+
+function createChatQuickPrompts(): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "chatQuickRow";
+  for (const prompt of CHAT_PROMPTS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chipButton";
+    button.textContent = prompt;
+    button.addEventListener("click", () => {
+      triggerHaptic(webApp, "light");
+      state.chatInput = prompt;
+      render();
+      void askAssistantQuestion(prompt);
+    });
+    row.appendChild(button);
+  }
+  return row;
+}
+
+function createChatView(): HTMLElement {
+  const container = document.createElement("section");
+  container.className = "chatStack";
+
+  const intro = document.createElement("article");
+  intro.className = "glassCard chatIntro";
+  intro.innerHTML = `
+    <h3 class="sectionTitle sectionTitleCompact">Можно просто пообщаться и получить пользу</h3>
+    <p class="actionSubtitle">Задавайте вопросы про стратегию поступления, подготовку по предметам, выбор программы и формат обучения.</p>
+  `;
+  container.appendChild(intro);
+  container.appendChild(createChatQuickPrompts());
+
+  const messages = document.createElement("div");
+  messages.className = "chatMessages";
+  if (state.chatMessages.length === 0) {
+    const empty = document.createElement("article");
+    empty.className = "glassCard chatBubble chatBubbleAssistant";
+    empty.innerHTML = `
+      <p class="chatRole">Консультант</p>
+      <p class="chatText">Можете начать с любого вопроса. Например: «Ученик 10 класса, как распределить подготовку к ЕГЭ и олимпиадам?»</p>
+    `;
+    messages.appendChild(empty);
+  } else {
+    for (const item of state.chatMessages) {
+      messages.appendChild(createChatMessage(item));
+    }
+  }
+
+  if (state.chatLoading) {
+    const progress = document.createElement("article");
+    progress.className = "glassCard chatProgress";
+    progress.innerHTML = `
+      <p class="chatRole">Консультант</p>
+      <p class="chatText progressPulse">${state.chatProgressText}</p>
+      <p class="chatMeta">Прошло: ${state.chatElapsedSec} сек</p>
+    `;
+    messages.appendChild(progress);
+  }
+
+  container.appendChild(messages);
+
+  if (state.lastManagerOffer?.recommended) {
+    const managerCard = document.createElement("article");
+    managerCard.className = "glassCard managerOfferCard";
+    managerCard.innerHTML = `
+      <h3 class="sectionTitle sectionTitleCompact">Персональный подбор с менеджером</h3>
+      <p class="actionSubtitle">${state.lastManagerOffer.message}</p>
+      <p class="resultSupportText">${state.lastManagerOffer.callToAction}</p>
+    `;
+    const managerButton = document.createElement("button");
+    managerButton.type = "button";
+    managerButton.className = "glassButton glassButtonPrimary";
+    managerButton.textContent = "Оставить контакт менеджеру";
+    managerButton.addEventListener("click", () => {
+      sendConsultationRequestToChat();
+    });
+    managerCard.appendChild(managerButton);
+    container.appendChild(managerCard);
+  }
+
+  const composer = document.createElement("div");
+  composer.className = "glassCard chatComposer";
+
+  const textarea = document.createElement("textarea");
+  textarea.className = "chatTextarea";
+  textarea.rows = 4;
+  textarea.maxLength = 2000;
+  textarea.placeholder = "Напишите вопрос. Например: «Как подготовиться к поступлению в МФТИ без перегруза?»";
+  textarea.value = state.chatInput;
+  textarea.disabled = state.chatLoading;
+  textarea.addEventListener("input", () => {
+    state.chatInput = textarea.value;
+    render();
+  });
+
+  const controls = document.createElement("div");
+  controls.className = "chatControls";
+
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "glassButton";
+  back.textContent = "К подбору";
+  back.addEventListener("click", () => {
+    triggerHaptic(webApp, "light");
+    navigateTo("picker");
+  });
+
+  const send = document.createElement("button");
+  send.type = "button";
+  send.className = "glassButton glassButtonPrimary";
+  send.textContent = state.chatLoading ? "Обрабатываю…" : "Отправить вопрос";
+  send.disabled = state.chatLoading || state.chatInput.trim().length === 0;
+  send.addEventListener("click", () => {
+    triggerHaptic(webApp, "medium");
+    void askAssistantQuestion();
+  });
+
+  controls.append(back, send);
+  composer.append(textarea, controls);
+  container.appendChild(composer);
+
+  return container;
 }
 
 function createBottomDock(): HTMLElement {
@@ -396,29 +714,58 @@ function createBottomDock(): HTMLElement {
 
   const label = document.createElement("span");
   label.className = "dockLabel";
-  label.textContent =
-    state.view === "results"
-      ? "Если удобно, напишите в чат: «Хочу консультацию»."
-      : "Без спама • Сначала польза, потом рекомендации.";
+  if (state.view === "chat") {
+    label.textContent = "Диалог открыт. Можно спрашивать про стратегию, курсы и поступление.";
+  } else if (state.view === "results") {
+    label.textContent = "Видите варианты. Если нужен точный подбор под детали, подключим менеджера.";
+  } else {
+    label.textContent = "Сначала польза и понятная рекомендация, затем только релевантные предложения.";
+  }
 
-  const action = document.createElement("button");
-  action.className = "glassButton";
-  action.type = "button";
-  action.textContent = state.view === "results" ? "Уточнить подбор" : "Продолжить";
-  action.addEventListener("click", () => {
+  const actions = document.createElement("div");
+  actions.className = "dockActions";
+
+  const ask = document.createElement("button");
+  ask.className = "glassButton";
+  ask.type = "button";
+  ask.textContent = "Задать вопрос";
+  ask.addEventListener("click", () => {
     triggerHaptic(webApp, "light");
-    state.error = null;
-    state.view = "picker";
-    updateCoachmarkProgress();
-    render();
+    navigateTo("chat");
   });
 
-  bottom.append(label, action);
+  const primary = document.createElement("button");
+  primary.className = "glassButton glassButtonPrimary";
+  primary.type = "button";
+
+  if (state.view === "results") {
+    primary.textContent = "Связаться с менеджером";
+    primary.addEventListener("click", () => {
+      triggerHaptic(webApp, "medium");
+      sendConsultationRequestToChat();
+    });
+  } else if (state.view === "chat") {
+    primary.textContent = state.chatLoading ? "Обрабатываю…" : "Отправить вопрос";
+    primary.disabled = state.chatLoading || state.chatInput.trim().length === 0;
+    primary.addEventListener("click", () => {
+      triggerHaptic(webApp, "medium");
+      void askAssistantQuestion();
+    });
+  } else {
+    primary.textContent = "Показать подбор";
+    primary.addEventListener("click", () => {
+      triggerHaptic(webApp, "medium");
+      navigateTo("picker");
+    });
+  }
+
+  actions.append(ask, primary);
+  bottom.append(label, actions);
   return bottom;
 }
 
 function createCoachmark(): HTMLElement | null {
-  if (state.coachmarkStep < 0 || state.view === "home") {
+  if (state.coachmarkStep < 0 || state.view === "home" || state.view === "chat") {
     return null;
   }
 
@@ -428,7 +775,7 @@ function createCoachmark(): HTMLElement | null {
   content.className = "coachmarkText";
 
   if (state.coachmarkStep >= 2 && state.view === "results") {
-    content.textContent = "Готово. Нажмите «Записаться на консультацию» внизу или на MainButton Telegram.";
+    content.textContent = "Готово. Можете задать вопрос или сразу оставить контакт для менеджера.";
   } else {
     const index = Math.min(state.coachmarkStep, COACHMARKS.length - 1);
     content.textContent = COACHMARKS[index];
@@ -504,11 +851,12 @@ function clearTelegramMainButtonHandler(target: TelegramWebApp | null): void {
   mainButtonHandler = null;
 }
 
-function buildCatalogSelectionPayload(): string | null {
-  const payload: MiniAppCatalogPayload = {
-    flow: "catalog",
+function buildMiniAppPayload(flow: "catalog" | "consultation_request", note?: string): string | null {
+  const payload: MiniAppPayload = {
+    flow,
     criteria: state.criteria,
-    top: state.results.slice(0, 3).map((item) => ({ id: item.id, title: item.title, url: item.url }))
+    top: state.results.slice(0, 3).map((item) => ({ id: item.id, title: item.title, url: item.url })),
+    note
   };
   const serialized = JSON.stringify(payload);
   if (serialized.length >= 4096) {
@@ -517,14 +865,7 @@ function buildCatalogSelectionPayload(): string | null {
   return serialized;
 }
 
-function sendCatalogSelectionToChat(): void {
-  triggerHaptic(webApp, "medium");
-  const payload = buildCatalogSelectionPayload();
-  if (!payload) {
-    state.error = "Подбор слишком большой для отправки. Уменьшите критерии и попробуйте снова.";
-    render();
-    return;
-  }
+function sendPayloadToChat(payload: string, successText: string): void {
   if (!webApp?.sendData) {
     state.error = "Отправка в чат доступна только внутри Telegram Mini App.";
     render();
@@ -538,8 +879,33 @@ function sendCatalogSelectionToChat(): void {
     render();
     return;
   }
-  state.error = "Подбор отправлен в чат. Продолжим диалог в Telegram.";
+  state.error = successText;
   render();
+}
+
+function sendCatalogSelectionToChat(): void {
+  triggerHaptic(webApp, "medium");
+  const payload = buildMiniAppPayload("catalog", "Пользователь отправил подбор из miniapp.");
+  if (!payload) {
+    state.error = "Подбор слишком большой для отправки. Попробуйте снова после уточнения параметров.";
+    render();
+    return;
+  }
+  sendPayloadToChat(payload, "Подбор отправлен в чат. Продолжим диалог в Telegram.");
+}
+
+function sendConsultationRequestToChat(): void {
+  triggerHaptic(webApp, "medium");
+  const payload = buildMiniAppPayload(
+    "consultation_request",
+    "Пользователь просит менеджера сделать персональный подбор и связаться."
+  );
+  if (!payload) {
+    state.error = "Не удалось подготовить запрос менеджеру. Сформулируйте коротко запрос в чате.";
+    render();
+    return;
+  }
+  sendPayloadToChat(payload, "Запрос менеджеру отправлен. В чате попросим контакт и продолжим.");
 }
 
 function syncTelegramMainButton(): void {
@@ -548,6 +914,7 @@ function syncTelegramMainButton(): void {
   }
   clearTelegramMainButtonHandler(webApp);
   const button = webApp.MainButton;
+
   if (state.view === "picker") {
     button.setText(state.loading ? "Подбираю…" : "Показать результаты");
     if (!isCriteriaComplete() || state.loading) {
@@ -565,21 +932,43 @@ function syncTelegramMainButton(): void {
     button.show();
     return;
   }
+
   if (state.view === "results") {
-    button.setText("Записаться на консультацию");
+    button.setText("Связаться с менеджером");
     button.enable();
-    mainButtonHandler = () => sendCatalogSelectionToChat();
+    mainButtonHandler = () => sendConsultationRequestToChat();
     button.onClick(mainButtonHandler);
     button.show();
     return;
   }
+
+  if (state.view === "chat") {
+    button.setText(state.chatLoading ? "Обрабатываю…" : "Отправить вопрос");
+    if (state.chatLoading || state.chatInput.trim().length === 0) {
+      button.disable();
+    } else {
+      button.enable();
+    }
+    mainButtonHandler = () => {
+      if (!state.chatLoading && state.chatInput.trim()) {
+        triggerHaptic(webApp, "medium");
+        void askAssistantQuestion();
+      }
+    };
+    button.onClick(mainButtonHandler);
+    button.show();
+    return;
+  }
+
   button.hide();
 }
 
 async function loadCatalogResults(): Promise<void> {
   state.loading = true;
   state.error = null;
+  state.statusLine = "Собираю лучшие варианты под ваш запрос…";
   render();
+
   const params = new URLSearchParams({
     brand: state.criteria.brand,
     grade: String(state.criteria.grade),
@@ -587,22 +976,116 @@ async function loadCatalogResults(): Promise<void> {
     subject: String(state.criteria.subject),
     format: String(state.criteria.format)
   });
+
   try {
     const response = await fetch(`/api/catalog/search?${params.toString()}`);
     if (!response.ok) {
       throw new Error(`Catalog request failed: ${response.status}`);
     }
+
     const payload = (await response.json()) as CatalogResponse;
     state.results = Array.isArray(payload.items) ? payload.items : [];
+    state.matchQuality = payload.match_quality || (state.results.length > 0 ? "limited" : "none");
+    state.managerRecommended = Boolean(payload.manager_recommended);
+    state.managerMessage = payload.manager_message || "";
+    state.managerCallToAction = payload.manager_call_to_action || "";
+    state.lastManagerOffer = {
+      recommended: state.managerRecommended,
+      message: state.managerMessage,
+      callToAction: state.managerCallToAction
+    };
     state.view = "results";
+    state.statusLine = "Подбор готов • можно уточнить вопрос или подключить менеджера";
     if (state.coachmarkStep >= 2) {
-      // keep final hint visible one more step on results.
       state.coachmarkStep = 2;
     }
   } catch (_error) {
     state.error = "Не удалось получить подбор. Попробуйте еще раз через несколько секунд.";
   } finally {
     state.loading = false;
+    render();
+  }
+}
+
+function toCatalogItem(item: AssistantRecommendedItem): CatalogItem {
+  return {
+    id: item.id,
+    title: item.title,
+    url: item.url,
+    usp: [],
+    price_text: "Цена уточняется у менеджера",
+    next_start_text: "Уточним под ваш график",
+    why_match: item.why_match || "Подобрано по вашему запросу"
+  };
+}
+
+async function askAssistantQuestion(questionOverride?: string): Promise<void> {
+  const question = (questionOverride || state.chatInput).trim();
+  if (!question || state.chatLoading) {
+    return;
+  }
+
+  state.error = null;
+  state.chatMessages.push({ role: "user", text: question });
+  state.chatInput = "";
+  state.chatLoading = true;
+  startChatProgress();
+  state.view = "chat";
+  render();
+
+  try {
+    const headers: HeadersInit = {
+      "Content-Type": "application/json",
+      ...buildAuthHeaders(state.initData)
+    };
+    const response = await fetch("/api/assistant/ask", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        question,
+        criteria: state.criteria
+      })
+    });
+    if (!response.ok) {
+      throw new Error(`assistant ask failed: ${response.status}`);
+    }
+
+    const payload = (await response.json()) as AssistantResponse;
+    if (!payload.ok) {
+      throw new Error("assistant returned not ok");
+    }
+
+    state.chatMessages.push({
+      role: "assistant",
+      text: payload.answer_text,
+      sources: Array.isArray(payload.sources) ? payload.sources : [],
+      meta: payload.processing_note || undefined
+    });
+
+    if (Array.isArray(payload.recommended_products) && payload.recommended_products.length > 0) {
+      state.results = payload.recommended_products.map(toCatalogItem);
+    }
+
+    if (payload.manager_offer) {
+      state.lastManagerOffer = {
+        recommended: Boolean(payload.manager_offer.recommended),
+        message: payload.manager_offer.message || "",
+        callToAction: payload.manager_offer.call_to_action || ""
+      };
+      state.matchQuality = payload.match_quality || state.matchQuality;
+      state.managerRecommended = Boolean(payload.manager_offer.recommended);
+      state.managerMessage = payload.manager_offer.message || state.managerMessage;
+      state.managerCallToAction = payload.manager_offer.call_to_action || state.managerCallToAction;
+    }
+  } catch (_error) {
+    state.error = "Не удалось получить ответ. Попробуйте еще раз через несколько секунд.";
+    state.chatMessages.push({
+      role: "assistant",
+      text: "Я на связи, просто сейчас не удалось завершить обработку запроса. Попробуйте повторить вопрос."
+    });
+  } finally {
+    stopChatProgress();
+    state.chatLoading = false;
     render();
   }
 }
@@ -624,7 +1107,7 @@ async function loadWhoAmI(): Promise<void> {
       return;
     }
     state.user = payload.user;
-    state.statusLine = "Онлайн • Подбор за 60 сек";
+    state.statusLine = "Онлайн • Подбор за 60 сек и ответы на любые вопросы";
   } catch (_error) {
     state.statusLine = "Подключение к Telegram недоступно • Можно работать в демо-режиме";
   }
@@ -649,8 +1132,10 @@ function render(): void {
     container.appendChild(createHomeView());
   } else if (state.view === "picker") {
     container.appendChild(createPickerView());
-  } else {
+  } else if (state.view === "results") {
     container.appendChild(createResultsView());
+  } else {
+    container.appendChild(createChatView());
   }
 
   container.appendChild(createBottomDock());

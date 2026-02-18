@@ -202,6 +202,123 @@ products:
         self.assertEqual(first["price_text"], "98 000 ₽")
         self.assertEqual(first["next_start_text"], "15.09.2026")
         self.assertEqual(len(first["usp"]), 3)
+        self.assertEqual(payload["match_quality"], "strong")
+        self.assertFalse(payload["manager_recommended"])
+
+    def test_catalog_search_without_match_promotes_manager_contact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            catalog_path = root / "products.yaml"
+            catalog_path.write_text(
+                """
+products:
+  - id: kmipt-ege-math
+    brand: kmipt
+    title: Подготовка к ЕГЭ по математике
+    url: https://example.com/math
+    category: ege
+    grade_min: 10
+    grade_max: 11
+    subjects: [math]
+    format: online
+    sessions:
+      - name: Осень
+        start_date: 2026-09-15
+        end_date: 2027-05-20
+        price_rub: 98000
+    usp:
+      - Мини-группа
+      - Практика по заданиям ФИПИ
+      - Персональная обратная связь
+""".strip(),
+                encoding="utf-8",
+            )
+            cfg = _settings(root / "app.db", root / "missing_dist")
+            cfg.catalog_path = catalog_path
+            app = create_app(cfg)
+            client = TestClient(app)
+            response = client.get(
+                "/api/catalog/search",
+                params={
+                    "brand": "kmipt",
+                    "grade": 6,
+                    "goal": "camp",
+                    "subject": "informatics",
+                    "format": "offline",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["count"], 0)
+        self.assertEqual(payload["match_quality"], "none")
+        self.assertTrue(payload["manager_recommended"])
+        self.assertIn("Оставьте контакт", payload["manager_call_to_action"])
+
+    def test_assistant_ask_returns_general_help_in_fallback_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            app = create_app(_settings(root / "app.db", root / "missing_dist"))
+            client = TestClient(app)
+            response = client.post(
+                "/api/assistant/ask",
+                json={
+                    "question": "Что такое косинус?",
+                    "criteria": {"brand": "kmipt"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertIn(payload["mode"], {"general", "consultative"})
+        self.assertIn("косинус", payload["answer_text"].lower())
+        self.assertIn("manager_offer", payload)
+        self.assertIn("processing_note", payload)
+
+    def test_assistant_ask_returns_consultative_with_recommendation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            catalog_path = root / "products.yaml"
+            catalog_path.write_text(
+                """
+products:
+  - id: kmipt-ege-math
+    brand: kmipt
+    title: Подготовка к ЕГЭ по математике
+    url: https://example.com/math
+    category: ege
+    grade_min: 10
+    grade_max: 11
+    subjects: [math]
+    format: online
+    usp:
+      - Мини-группа
+      - Практика по заданиям ФИПИ
+      - Персональная обратная связь
+""".strip(),
+                encoding="utf-8",
+            )
+            cfg = _settings(root / "app.db", root / "missing_dist")
+            cfg.catalog_path = catalog_path
+            app = create_app(cfg)
+            client = TestClient(app)
+            response = client.post(
+                "/api/assistant/ask",
+                json={
+                    "question": "Ученик 11 класса, как лучше подготовиться к ЕГЭ по математике для поступления?",
+                    "criteria": {"brand": "kmipt", "grade": 11, "goal": "ege", "subject": "math", "format": "online"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["mode"], "consultative")
+        self.assertIn("manager_offer", payload)
+        self.assertGreaterEqual(len(payload["recommended_products"]), 1)
+        self.assertEqual(payload["recommended_products"][0]["id"], "kmipt-ege-math")
 
 
 if __name__ == "__main__":

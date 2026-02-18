@@ -12,13 +12,14 @@ from typing import Any, Dict, Optional
 from urllib.parse import quote_plus
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
+from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from telegram import Update
 
 from sales_agent.sales_bot import bot as bot_runtime
-from sales_agent.sales_core.catalog import CatalogValidationError, SearchCriteria, explain_match, select_top_products
+from sales_agent.sales_core.catalog import CatalogValidationError, Product, SearchCriteria, explain_match, select_top_products
 from sales_agent.sales_core.config import Settings, get_settings, project_root
 from sales_agent.sales_core.copilot import run_copilot_from_file
 from sales_agent.sales_core.crm import build_crm_client
@@ -45,6 +46,8 @@ from sales_agent.sales_core.tallanto_readonly import (
     sanitize_tallanto_lookup_context,
 )
 from sales_agent.sales_core.telegram_webapp import verify_telegram_webapp_init_data
+from sales_agent.sales_core.llm_client import LLMClient
+from sales_agent.sales_core.vector_store import load_vector_store_id
 
 
 security = HTTPBasic()
@@ -53,6 +56,192 @@ WEBHOOK_MAX_ATTEMPTS = 5
 WEBHOOK_STALE_PROCESSING_SECONDS = 180
 WEBHOOK_RETRY_BASE_SECONDS = 2
 CRM_CACHE_TTL_SECONDS = 3 * 3600
+ASSISTANT_TIMEOUT_SECONDS = 36.0
+ASSISTANT_KNOWLEDGE_HINTS = {
+    "договор",
+    "документ",
+    "документы",
+    "оплата",
+    "возврат",
+    "маткапитал",
+    "вычет",
+    "проживание",
+    "питание",
+    "условия",
+    "безопасность",
+}
+ASSISTANT_CONSULTATIVE_HINTS = {
+    "поступить",
+    "стратег",
+    "план",
+    "траект",
+    "подготов",
+    "егэ",
+    "огэ",
+    "олимпиад",
+    "курс",
+    "лагерь",
+    "мфти",
+}
+
+
+class AssistantCriteriaPayload(BaseModel):
+    brand: Optional[str] = None
+    grade: Optional[int] = Field(default=None, ge=1, le=11)
+    goal: Optional[str] = None
+    subject: Optional[str] = None
+    format: Optional[str] = None
+
+
+class AssistantAskPayload(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    criteria: Optional[AssistantCriteriaPayload] = None
+    context_summary: Optional[str] = Field(default=None, max_length=1200)
+
+
+def _normalize_lookup_token(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().lower()
+
+
+def _is_format_compatible(criteria_format: Optional[str], product_format: Optional[str]) -> bool:
+    if not criteria_format:
+        return True
+    if not product_format:
+        return False
+    if criteria_format == product_format:
+        return True
+    # Hybrid is treated as compatible with online/offline requests.
+    if product_format == "hybrid" or criteria_format == "hybrid":
+        return True
+    return False
+
+
+def _is_subject_compatible(criteria_subject: Optional[str], product_subjects: list[str]) -> bool:
+    if not criteria_subject:
+        return True
+    lowered = {item.strip().lower() for item in product_subjects}
+    if criteria_subject in lowered:
+        return True
+    return "general" in lowered
+
+
+def _evaluate_match_quality(criteria: SearchCriteria, products: list[Product]) -> str:
+    if not products:
+        return "none"
+
+    first = products[0]
+    checks = 0
+    matched = 0
+
+    if criteria.grade is not None:
+        checks += 1
+        if first.grade_min <= criteria.grade <= first.grade_max:
+            matched += 1
+    if criteria.goal:
+        checks += 1
+        if first.category == criteria.goal:
+            matched += 1
+    if criteria.subject:
+        checks += 1
+        if _is_subject_compatible(criteria.subject, list(first.subjects)):
+            matched += 1
+    if criteria.format:
+        checks += 1
+        if _is_format_compatible(criteria.format, first.format):
+            matched += 1
+
+    if checks == 0:
+        return "strong" if len(products) >= 2 else "limited"
+    if matched == checks and len(products) >= 1:
+        return "strong"
+    if matched >= max(1, checks - 1):
+        return "limited"
+    return "limited"
+
+
+def _build_manager_offer(match_quality: str, has_results: bool) -> Dict[str, object]:
+    if match_quality == "strong":
+        return {
+            "recommended": False,
+            "message": (
+                "Мы уже видим хороший стартовый вариант под ваш запрос. "
+                "Если хотите, менеджер может дополнительно сравнить расписание и нагрузку."
+            ),
+            "call_to_action": "Оставьте контакт, и менеджер уточнит детали в удобное время.",
+        }
+
+    if has_results:
+        return {
+            "recommended": True,
+            "message": (
+                "Под ваши параметры уже есть хорошие предложения. "
+                "Чтобы выбрать максимально точный вариант под вашу цель, лучше подключить менеджера."
+            ),
+            "call_to_action": (
+                "Оставьте контакт: у нас широкая линейка под разные уровни и задачи, "
+                "менеджер подберет оптимальный путь именно для вас."
+            ),
+        }
+
+    return {
+        "recommended": True,
+        "message": (
+            "Идеального совпадения в автоматическом подборе не нашлось, "
+            "но это нормальная ситуация для нестандартных запросов."
+        ),
+        "call_to_action": (
+            "Оставьте контакт: подберем персонально, у нас есть решения для разных целей, "
+            "классов и форматов обучения."
+        ),
+    }
+
+
+def _assistant_mode(question: str, criteria: SearchCriteria) -> str:
+    normalized = _normalize_lookup_token(question)
+    if any(hint in normalized for hint in ASSISTANT_KNOWLEDGE_HINTS):
+        return "knowledge"
+
+    has_criteria = any(
+        (
+            criteria.grade is not None,
+            bool(criteria.goal),
+            bool(criteria.subject),
+            bool(criteria.format),
+        )
+    )
+    if has_criteria or any(hint in normalized for hint in ASSISTANT_CONSULTATIVE_HINTS):
+        return "consultative"
+    return "general"
+
+
+def _criteria_from_payload(payload: Optional[AssistantCriteriaPayload], brand_default: str) -> SearchCriteria:
+    criteria = payload or AssistantCriteriaPayload()
+    brand = _normalize_lookup_token(criteria.brand) or brand_default
+    goal = _normalize_lookup_token(criteria.goal) or None
+    subject = _normalize_lookup_token(criteria.subject) or None
+    learning_format = _normalize_lookup_token(criteria.format) or None
+    return SearchCriteria(
+        brand=brand,
+        grade=criteria.grade,
+        goal=goal,
+        subject=subject,
+        format=learning_format,
+    )
+
+
+def _missing_criteria_fields(criteria: SearchCriteria) -> list[str]:
+    missing: list[str] = []
+    if criteria.grade is None:
+        missing.append("grade")
+    if not criteria.goal:
+        missing.append("goal")
+    if not criteria.subject:
+        missing.append("subject")
+    if not criteria.format:
+        missing.append("format")
+    return missing
 
 
 def _extract_tg_init_data(request: Request) -> str:
@@ -496,6 +685,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail=f"Catalog file not found: {cfg.catalog_path}",
             ) from exc
 
+        match_quality = _evaluate_match_quality(criteria, products)
+        manager_offer = _build_manager_offer(match_quality, has_results=bool(products))
         items = []
         for product in products:
             items.append(
@@ -521,6 +712,118 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
             "count": len(items),
             "items": items,
+            "match_quality": match_quality,
+            "manager_recommended": bool(manager_offer.get("recommended")),
+            "manager_message": str(manager_offer.get("message") or ""),
+            "manager_call_to_action": str(manager_offer.get("call_to_action") or ""),
+        }
+
+    @app.post("/api/assistant/ask")
+    async def assistant_ask(payload: AssistantAskPayload):
+        question = payload.question.strip()
+        if not question:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Question is empty.")
+
+        criteria = _criteria_from_payload(payload.criteria, brand_default=cfg.brand_default)
+        try:
+            top_products = select_top_products(
+                criteria,
+                path=cfg.catalog_path,
+                top_k=3,
+                brand_default=cfg.brand_default,
+            )
+        except (CatalogValidationError, FileNotFoundError, OSError):
+            top_products = []
+
+        match_quality = _evaluate_match_quality(criteria, top_products)
+        manager_offer = _build_manager_offer(match_quality, has_results=bool(top_products))
+        mode = _assistant_mode(question, criteria)
+
+        llm_client = LLMClient(
+            api_key=cfg.openai_api_key,
+            model=cfg.openai_model,
+            timeout_seconds=ASSISTANT_TIMEOUT_SECONDS,
+        )
+        user_context: Dict[str, Any] = {}
+        if isinstance(payload.context_summary, str) and payload.context_summary.strip():
+            user_context["summary_text"] = payload.context_summary.strip()
+
+        answer_text = ""
+        sources: list[str] = []
+        used_fallback = False
+        recommended_ids: list[str] = []
+
+        if mode == "knowledge":
+            vector_store_id = cfg.openai_vector_store_id or load_vector_store_id(cfg.vector_store_meta_path)
+            knowledge_reply = await llm_client.answer_knowledge_question_async(
+                question=question,
+                vector_store_id=vector_store_id,
+                user_context=user_context,
+                allow_web_fallback=cfg.openai_web_fallback_enabled,
+                site_domain=cfg.openai_web_fallback_domain,
+            )
+            answer_text = knowledge_reply.answer_text
+            sources = list(knowledge_reply.sources)
+            used_fallback = knowledge_reply.used_fallback
+        elif mode == "consultative":
+            consult_reply = await llm_client.build_consultative_reply_async(
+                user_message=question,
+                criteria=criteria,
+                top_products=top_products,
+                missing_fields=_missing_criteria_fields(criteria),
+                repeat_count=0,
+                product_offer_allowed=match_quality != "none",
+                recent_history=[],
+                user_context=user_context,
+            )
+            answer_text = consult_reply.answer_text
+            used_fallback = consult_reply.used_fallback
+            recommended_ids = list(consult_reply.recommended_product_ids)
+        else:
+            general_reply = await llm_client.build_general_help_reply_async(
+                user_message=question,
+                dialogue_state=None,
+                recent_history=[],
+                user_context=user_context,
+            )
+            answer_text = general_reply.answer_text
+            used_fallback = general_reply.used_fallback
+
+        recommended_products: list[Dict[str, str]] = []
+        if top_products:
+            allowed_ids = {item.id for item in top_products}
+            filtered_ids = [item_id for item_id in recommended_ids if item_id in allowed_ids]
+            if mode == "consultative" and not filtered_ids:
+                filtered_ids = [top_products[0].id]
+            for product in top_products:
+                if product.id not in filtered_ids:
+                    continue
+                recommended_products.append(
+                    {
+                        "id": product.id,
+                        "title": product.title,
+                        "url": str(product.url),
+                        "why_match": explain_match(product, criteria),
+                    }
+                )
+
+        return {
+            "ok": True,
+            "mode": mode,
+            "answer_text": answer_text,
+            "sources": sources,
+            "used_fallback": used_fallback,
+            "criteria": {
+                "brand": criteria.brand or cfg.brand_default,
+                "grade": criteria.grade,
+                "goal": criteria.goal,
+                "subject": criteria.subject,
+                "format": criteria.format,
+            },
+            "match_quality": match_quality,
+            "recommended_products": recommended_products,
+            "manager_offer": manager_offer,
+            "processing_note": "Спасибо за ожидание. Запрос проработан подробно, можно продолжать диалог.",
         }
 
     @app.get("/api/crm/meta/modules")
