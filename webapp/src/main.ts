@@ -1,6 +1,7 @@
 import "./styles/tokens.css";
 import "./styles/components.css";
 import "./styles/app.css";
+import brandLogoUrl from "./assets/brand-kmipt.svg";
 import {
   buildAuthHeaders,
   initTelegramContext,
@@ -355,7 +356,10 @@ function renderHeader(statusText: string): HTMLElement {
   hero.className = "hero glassCard";
   const name = state.user?.first_name ? `, ${state.user.first_name}` : "";
   hero.innerHTML = `
-    <p class="eyebrow">${state.brandName} • Sales Agent</p>
+    <div class="heroBrandLine">
+      <img src="${brandLogoUrl}" alt="Логотип ${state.brandName}" class="heroLogo">
+      <p class="eyebrow">${state.brandName} • Sales Agent</p>
+    </div>
     <h1 class="heroTitle">Подбор и консультации без давления${name}</h1>
     <p class="heroSubtitle">${statusText}</p>
     <p class="heroHint">В любой момент можно задать вопрос и продолжить диалог по образованию.</p>
@@ -367,7 +371,7 @@ function createBrandMark(): HTMLElement {
   const brand = document.createElement("div");
   brand.className = "brandMark";
   brand.innerHTML = `
-    <span class="brandOrb" aria-hidden="true">K</span>
+    <img src="${brandLogoUrl}" alt="Логотип ${state.brandName}" class="brandLogo">
     <span class="brandText">${state.brandName}</span>
   `;
   return brand;

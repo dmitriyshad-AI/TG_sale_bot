@@ -110,6 +110,19 @@ body {
   text-transform: uppercase;
 }
 
+.admin-brand-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-brand-logo {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  box-shadow: 0 8px 16px rgba(48, 107, 176, 0.28);
+}
+
 h1 {
   margin: 0;
   font-size: clamp(24px, 4vw, 36px);

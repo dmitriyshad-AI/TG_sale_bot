@@ -57,6 +57,19 @@ body::before {
   color: rgba(7, 49, 73, 0.75);
 }
 
+.heroBrandLine {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.heroLogo {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  box-shadow: 0 8px 18px rgba(12, 76, 118, 0.28);
+}
+
 .heroTitle {
   margin: 0;
   font-size: clamp(28px, 6.4vw, 44px);
@@ -99,17 +112,10 @@ body::before {
   gap: 10px;
 }
 
-.brandOrb {
+.brandLogo {
   width: 34px;
   height: 34px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  font-weight: 700;
-  color: #f7fdff;
-  background: linear-gradient(170deg, rgba(22, 111, 166, 0.96), rgba(4, 85, 132, 0.9));
+  border-radius: 10px;
   box-shadow: 0 10px 22px rgba(4, 74, 118, 0.34);
   animation: orb-float 4s ease-in-out infinite;
 }
@@ -492,7 +498,7 @@ body::before {
     animation: none;
   }
 
-  .brandOrb {
+  .brandLogo {
     animation: none;
   }
 
