@@ -862,15 +862,7 @@ function createChatView(): HTMLElement {
 
   const messages = document.createElement("div");
   messages.className = "chatMessages";
-  if (state.chatMessages.length === 0) {
-    const empty = document.createElement("article");
-    empty.className = "glassCard chatBubble chatBubbleAssistant";
-    empty.innerHTML = `
-      <p class="chatRole">${state.advisorName}</p>
-      <p class="chatText">Напишите вопрос в 1-2 фразах. Например: «Как начать подготовку к ЕГЭ в 10 классе?»</p>
-    `;
-    messages.appendChild(empty);
-  } else {
+  if (state.chatMessages.length > 0) {
     for (const item of state.chatMessages) {
       messages.appendChild(createChatMessage(item));
     }
@@ -915,7 +907,7 @@ function createChatView(): HTMLElement {
   textarea.className = "chatTextarea";
   textarea.rows = 4;
   textarea.maxLength = 2000;
-  textarea.placeholder = "Напишите вопрос. Например: «Как подготовиться к поступлению в МФТИ?»";
+  textarea.placeholder = "Напишите вопрос в 1-2 фразах. Например: «Как начать подготовку к ЕГЭ в 10 классе?»";
   textarea.value = state.chatInput;
   textarea.disabled = state.chatLoading;
   textarea.addEventListener("input", () => {
