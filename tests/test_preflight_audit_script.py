@@ -4,7 +4,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from scripts import preflight_audit
 
 
 def _write_catalog(path: Path) -> None:
@@ -96,6 +101,41 @@ class PreflightAuditScriptTests(unittest.TestCase):
         runtime = payload.get("runtime", {})
         self.assertTrue(runtime.get("catalog_ok"))
         self.assertTrue(runtime.get("vector_store_id_set"))
+
+    def test_main_returns_zero_for_warn_and_prints_summary(self) -> None:
+        diagnostics = {
+            "status": "warn",
+            "runtime": {
+                "telegram_mode": "polling",
+                "openai_model": "gpt-5.1",
+                "catalog_ok": True,
+                "catalog_products_count": 10,
+                "knowledge_files_count": 5,
+                "vector_store_id_set": True,
+            },
+            "issues": [{"severity": "warning", "code": "demo", "message": "demo warning"}],
+        }
+
+        with patch.object(preflight_audit, "get_settings", return_value=SimpleNamespace()), patch.object(
+            preflight_audit, "build_runtime_diagnostics", return_value=diagnostics
+        ), patch("sys.stdout", new_callable=StringIO) as stdout:
+            result = preflight_audit.main([])
+
+        self.assertEqual(result, 0)
+        output = stdout.getvalue()
+        self.assertIn("Preflight status: WARN", output)
+        self.assertIn("[warning] demo", output)
+
+    def test_main_json_mode_returns_fail_code(self) -> None:
+        diagnostics = {"status": "fail", "runtime": {}, "issues": []}
+        with patch.object(preflight_audit, "get_settings", return_value=SimpleNamespace()), patch.object(
+            preflight_audit, "build_runtime_diagnostics", return_value=diagnostics
+        ), patch("sys.stdout", new_callable=StringIO) as stdout:
+            result = preflight_audit.main(["--json"])
+
+        self.assertEqual(result, 1)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["status"], "fail")
 
 
 if __name__ == "__main__":

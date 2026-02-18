@@ -95,6 +95,8 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         self.assertEqual(runtime["catalog_products_count"], 1)
         self.assertTrue(runtime["vector_store_id_set"])
         self.assertEqual(runtime["vector_store_id_source"], "env")
+        self.assertIn("tallanto_read_only", runtime)
+        self.assertIn("tallanto_token_set", runtime)
 
     def test_diagnostics_warns_when_vector_store_loaded_only_from_meta_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -133,6 +135,40 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         self.assertEqual(runtime["vector_store_id_source"], "meta_file")
         issue_codes = {item["code"] for item in diagnostics["issues"]}
         self.assertIn("vector_store_env_recommended", issue_codes)
+
+    def test_diagnostics_warns_when_tallanto_readonly_missing_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            catalog_path = root / "catalog.yaml"
+            _write_catalog(catalog_path)
+            knowledge_path = root / "knowledge"
+            knowledge_path.mkdir(parents=True, exist_ok=True)
+            (knowledge_path / "faq_general.md").write_text("FAQ", encoding="utf-8")
+            db_path = root / "data" / "sales_agent.db"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+
+            settings = Settings(
+                telegram_bot_token="tg-token",
+                openai_api_key="sk-test",
+                openai_model="gpt-4.1",
+                tallanto_api_url="",
+                tallanto_api_key="",
+                brand_default="kmipt",
+                database_path=db_path,
+                catalog_path=catalog_path,
+                knowledge_path=knowledge_path,
+                vector_store_meta_path=root / "data" / "vector_store.json",
+                openai_vector_store_id="vs_123",
+                admin_user="",
+                admin_pass="",
+                tallanto_read_only=True,
+                tallanto_api_token="",
+            )
+            diagnostics = build_runtime_diagnostics(settings)
+
+        self.assertEqual(diagnostics["status"], "warn")
+        issue_codes = {item["code"] for item in diagnostics["issues"]}
+        self.assertIn("tallanto_readonly_incomplete", issue_codes)
 
 
 if __name__ == "__main__":

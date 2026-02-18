@@ -62,6 +62,13 @@ CREATE_TABLE_STATEMENTS = [
     );
     """,
     """
+    CREATE TABLE IF NOT EXISTS crm_cache (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS webhook_updates (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         update_id INTEGER,
@@ -84,6 +91,7 @@ CREATE_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_user_unique ON sessions(user_id);",
     "CREATE INDEX IF NOT EXISTS idx_conversation_contexts_updated_at ON conversation_contexts(updated_at);",
+    "CREATE INDEX IF NOT EXISTS idx_crm_cache_updated_at ON crm_cache(updated_at);",
     "CREATE INDEX IF NOT EXISTS idx_webhook_updates_status_next_attempt ON webhook_updates(status, next_attempt_at, id);",
     "CREATE INDEX IF NOT EXISTS idx_webhook_updates_update_id ON webhook_updates(update_id);",
 ]
@@ -373,6 +381,48 @@ def upsert_conversation_context(
             updated_at = CURRENT_TIMESTAMP
         """,
         (user_id, summary_json),
+    )
+    conn.commit()
+
+
+def get_crm_cache(
+    conn: sqlite3.Connection,
+    key: str,
+    max_age_seconds: int,
+) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT value_json
+        FROM crm_cache
+        WHERE key = ?
+          AND updated_at >= datetime('now', ?)
+        LIMIT 1
+        """,
+        (key, f"-{max(1, int(max_age_seconds))} seconds"),
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        payload = json.loads(row["value_json"] or "{}")
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def upsert_crm_cache(
+    conn: sqlite3.Connection,
+    key: str,
+    value: Dict[str, Any],
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO crm_cache (key, value_json, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO UPDATE SET
+            value_json = excluded.value_json,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (key, json.dumps(value or {}, ensure_ascii=False)),
     )
     conn.commit()
 

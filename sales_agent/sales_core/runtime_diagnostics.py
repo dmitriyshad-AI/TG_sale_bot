@@ -67,6 +67,16 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
             )
         )
 
+    tallanto_token_present = bool((settings.tallanto_api_token or settings.tallanto_api_key).strip())
+    if settings.tallanto_read_only and (not settings.tallanto_api_url or not tallanto_token_present):
+        issues.append(
+            DiagnosticIssue(
+                severity="warning",
+                code="tallanto_readonly_incomplete",
+                message="TALLANTO_READ_ONLY=1 but Tallanto URL/token is not fully configured.",
+            )
+        )
+
     if not database_parent_writable:
         issues.append(
             DiagnosticIssue(
@@ -150,6 +160,9 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
             "vector_store_id_source": vector_store_source,
             "vector_store_meta_path": str(settings.vector_store_meta_path),
             "crm_provider": settings.crm_provider,
+            "tallanto_read_only": settings.tallanto_read_only,
+            "tallanto_token_set": tallanto_token_present,
+            "tallanto_default_contact_module": settings.tallanto_default_contact_module,
             "database_path": str(settings.database_path),
             "database_parent_writable": database_parent_writable,
             "catalog_path": str(settings.catalog_path),

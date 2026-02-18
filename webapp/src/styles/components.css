@@ -21,6 +21,10 @@
   .glassCard {
     backdrop-filter: blur(12px) saturate(130%);
   }
+
+  .low-end-device .glassCard {
+    backdrop-filter: blur(6px) saturate(112%);
+  }
 }
 
 .glassButton {

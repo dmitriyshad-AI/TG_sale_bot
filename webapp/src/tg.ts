@@ -10,6 +10,8 @@ type MainButton = {
   setText(text: string): void;
   show(): void;
   hide(): void;
+  enable(): void;
+  disable(): void;
   onClick(callback: () => void): void;
   offClick(callback: () => void): void;
 };
@@ -25,6 +27,8 @@ export type TelegramWebApp = {
   };
   MainButton?: MainButton;
   HapticFeedback?: HapticFeedback;
+  sendData?(data: string): void;
+  close?(): void;
   ready(): void;
   expand(): void;
 };
@@ -69,4 +73,12 @@ export function buildAuthHeaders(initData: string): HeadersInit {
     return {};
   }
   return { "X-Tg-Init-Data": value };
+}
+
+export function triggerHaptic(webApp: TelegramWebApp | null, style: "light" | "medium" | "heavy" = "light"): void {
+  try {
+    webApp?.HapticFeedback?.impactOccurred(style);
+  } catch (_error) {
+    // Telegram API can be unavailable in browser preview.
+  }
 }

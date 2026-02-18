@@ -32,6 +32,9 @@ class ConfigTests(unittest.TestCase):
             "OPENAI_MODEL": "gpt-4.1-mini",
             "TALLANTO_API_URL": "https://crm.example/api",
             "TALLANTO_API_KEY": "crm-key",
+            "TALLANTO_API_TOKEN": "crm-token",
+            "TALLANTO_READ_ONLY": "1",
+            "TALLANTO_DEFAULT_CONTACT_MODULE": "contacts",
             "OPENAI_WEB_FALLBACK_ENABLED": "false",
             "OPENAI_WEB_FALLBACK_DOMAIN": "example.edu",
             "BRAND_DEFAULT": "foton",
@@ -64,6 +67,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.openai_web_fallback_domain, "example.edu")
         self.assertEqual(settings.tallanto_api_url, "https://crm.example/api")
         self.assertEqual(settings.tallanto_api_key, "crm-key")
+        self.assertEqual(settings.tallanto_api_token, "crm-token")
+        self.assertTrue(settings.tallanto_read_only)
+        self.assertEqual(settings.tallanto_default_contact_module, "contacts")
         self.assertEqual(settings.brand_default, "foton")
         self.assertEqual(settings.database_path, Path("/tmp/custom_sales_agent.db"))
         self.assertEqual(settings.catalog_path, Path("/tmp/custom_products.yaml"))
@@ -102,6 +108,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.crm_provider, "tallanto")
         self.assertEqual(settings.amo_api_url, "")
         self.assertEqual(settings.amo_access_token, "")
+        self.assertEqual(settings.tallanto_api_token, "")
+        self.assertFalse(settings.tallanto_read_only)
+        self.assertEqual(settings.tallanto_default_contact_module, "")
 
     @patch.dict(
         os.environ,
@@ -126,6 +135,16 @@ class ConfigTests(unittest.TestCase):
         settings = get_settings()
         self.assertTrue(settings.admin_miniapp_enabled)
         self.assertEqual(settings.admin_telegram_ids, (1, 2, 3))
+
+    @patch.dict(
+        os.environ,
+        {"TALLANTO_API_KEY": "legacy-key", "TALLANTO_READ_ONLY": "true"},
+        clear=True,
+    )
+    def test_tallanto_token_falls_back_to_api_key_and_readonly_requires_literal_one(self) -> None:
+        settings = get_settings()
+        self.assertEqual(settings.tallanto_api_token, "legacy-key")
+        self.assertFalse(settings.tallanto_read_only)
 
 
 if __name__ == "__main__":

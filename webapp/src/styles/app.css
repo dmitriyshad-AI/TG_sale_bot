@@ -158,6 +158,27 @@ body::before {
   background: rgba(255, 228, 228, 0.5);
 }
 
+.coachmark {
+  padding: var(--spacing-3);
+  display: grid;
+  gap: var(--spacing-2);
+  border-color: rgba(139, 216, 252, 0.9);
+  background: rgba(220, 247, 255, 0.54);
+}
+
+.coachmarkText {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: rgba(6, 37, 54, 0.9);
+}
+
+.coachmarkActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-2);
+}
+
 .bottomDock {
   border-radius: var(--dock-radius);
   padding: var(--spacing-3) var(--spacing-4);
@@ -190,6 +211,10 @@ body::before {
   }
 
   .pickerControls {
+    flex-direction: column;
+  }
+
+  .coachmarkActions {
     flex-direction: column;
   }
 

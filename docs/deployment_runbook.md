@@ -45,6 +45,9 @@ CRM:
    CRM_PROVIDER=tallanto
    TALLANTO_API_URL=...
    TALLANTO_API_KEY=...
+   TALLANTO_API_TOKEN=...   # предпочтительно отдельный токен для read-only
+   TALLANTO_READ_ONLY=1     # обязательно literal "1" для /api/crm/*
+   TALLANTO_DEFAULT_CONTACT_MODULE=contacts
    ```
 2. AMO:
    ```dotenv
@@ -223,3 +226,14 @@ docker compose -f docker-compose.prod.yml up -d --build
   - в Telegram Mini App: передавать `initData` в `X-Tg-Init-Data` или `Authorization: tma <initData>`
 - `GET /api/catalog/search?brand=kmipt&grade=11&goal=ege&subject=math&format=online`
   - возвращает top-3 программ с `why_match`, `price_text`, `next_start_text`, `usp`
+
+## 11) Tallanto Read-Only API
+
+- Включается только при `TALLANTO_READ_ONLY=1`.
+- Endpoints:
+  - `GET /api/crm/meta/modules`
+  - `GET /api/crm/meta/fields?module=contacts`
+  - `GET /api/crm/lookup?module=contacts&field=phone&value=%2B79990000000`
+- `lookup` возвращает только обезличенный контекст:
+  - `found`, `tags`, `interests`, `last_touch_days`
+  - персональные поля (телефоны, адреса, внутренние заметки) не выдаются.

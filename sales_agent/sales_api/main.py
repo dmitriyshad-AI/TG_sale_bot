@@ -8,7 +8,8 @@ import json
 import logging
 import secrets
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
+from urllib.parse import quote_plus
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse
@@ -26,6 +27,7 @@ from sales_agent.sales_core.db import (
     count_webhook_updates_by_status,
     enqueue_webhook_update,
     get_connection,
+    get_crm_cache,
     init_db,
     list_conversation_messages,
     list_recent_conversations,
@@ -33,8 +35,15 @@ from sales_agent.sales_core.db import (
     mark_webhook_update_done,
     mark_webhook_update_retry,
     requeue_stuck_webhook_updates,
+    upsert_crm_cache,
 )
 from sales_agent.sales_core.runtime_diagnostics import build_runtime_diagnostics
+from sales_agent.sales_core.tallanto_readonly import (
+    TallantoReadOnlyClient,
+    normalize_tallanto_fields,
+    normalize_tallanto_modules,
+    sanitize_tallanto_lookup_context,
+)
 from sales_agent.sales_core.telegram_webapp import verify_telegram_webapp_init_data
 
 
@@ -43,6 +52,7 @@ logger = logging.getLogger(__name__)
 WEBHOOK_MAX_ATTEMPTS = 5
 WEBHOOK_STALE_PROCESSING_SECONDS = 180
 WEBHOOK_RETRY_BASE_SECONDS = 2
+CRM_CACHE_TTL_SECONDS = 3 * 3600
 
 
 def _extract_tg_init_data(request: Request) -> str:
@@ -298,6 +308,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return credentials.username
 
+    def _require_tallanto_readonly_client() -> TallantoReadOnlyClient:
+        if not cfg.tallanto_read_only:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Tallanto read-only mode is disabled. Set TALLANTO_READ_ONLY=1.",
+            )
+        token = cfg.tallanto_api_token or cfg.tallanto_api_key
+        if not cfg.tallanto_api_url or not token:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Tallanto read-only config is incomplete. Fill TALLANTO_API_URL and TALLANTO_API_TOKEN.",
+            )
+        return TallantoReadOnlyClient(base_url=cfg.tallanto_api_url, token=token)
+
+    def _crm_cache_key(prefix: str, params: Dict[str, Any]) -> str:
+        serialized = json.dumps(params, ensure_ascii=False, sort_keys=True)
+        return f"crm:{prefix}:{quote_plus(serialized)}"
+
+    def _read_crm_cache(key: str) -> Optional[Dict[str, Any]]:
+        conn = get_connection(cfg.database_path)
+        try:
+            return get_crm_cache(conn, key=key, max_age_seconds=CRM_CACHE_TTL_SECONDS)
+        finally:
+            conn.close()
+
+    def _write_crm_cache(key: str, payload: Dict[str, Any]) -> None:
+        conn = get_connection(cfg.database_path)
+        try:
+            upsert_crm_cache(conn, key=key, value=payload)
+        finally:
+            conn.close()
+
+    def _map_tallanto_error(exc: RuntimeError) -> HTTPException:
+        message = str(exc)
+        lowered = message.lower()
+        if "401" in message or "unauthorized" in lowered:
+            code = status.HTTP_401_UNAUTHORIZED
+        elif "400" in message:
+            code = status.HTTP_400_BAD_REQUEST
+        elif "403" in message:
+            code = status.HTTP_403_FORBIDDEN
+        else:
+            code = status.HTTP_502_BAD_GATEWAY
+        return HTTPException(status_code=code, detail=message)
+
     def render_page(title: str, body_html: str) -> HTMLResponse:
         page = f"""
 <!doctype html>
@@ -465,6 +520,105 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "count": len(items),
             "items": items,
         }
+
+    @app.get("/api/crm/meta/modules")
+    async def crm_meta_modules():
+        client = _require_tallanto_readonly_client()
+        cache_key = _crm_cache_key("modules", {})
+        cached = _read_crm_cache(cache_key)
+        if cached is not None:
+            return {"ok": True, "cached": True, **cached}
+
+        try:
+            payload = client.call("list_possible_modules", {})
+        except RuntimeError as exc:
+            raise _map_tallanto_error(exc) from exc
+
+        response_payload = {
+            "items": normalize_tallanto_modules(payload),
+        }
+        _write_crm_cache(cache_key, response_payload)
+        return {"ok": True, "cached": False, **response_payload}
+
+    @app.get("/api/crm/meta/fields")
+    async def crm_meta_fields(module: str = Query(..., min_length=1, max_length=128)):
+        client = _require_tallanto_readonly_client()
+        params = {"module": module.strip()}
+        cache_key = _crm_cache_key("fields", params)
+        cached = _read_crm_cache(cache_key)
+        if cached is not None:
+            return {"ok": True, "cached": True, **cached}
+
+        try:
+            payload = client.call("list_possible_fields", params)
+        except RuntimeError as exc:
+            raise _map_tallanto_error(exc) from exc
+
+        response_payload = {
+            "module": params["module"],
+            "items": normalize_tallanto_fields(payload),
+        }
+        _write_crm_cache(cache_key, response_payload)
+        return {"ok": True, "cached": False, **response_payload}
+
+    @app.get("/api/crm/lookup")
+    async def crm_lookup(
+        module: str = Query(..., min_length=1, max_length=128),
+        field: str = Query(..., min_length=1, max_length=128),
+        value: str = Query(..., min_length=1, max_length=512),
+    ):
+        client = _require_tallanto_readonly_client()
+        normalized_module = module.strip()
+        normalized_field = field.strip()
+        normalized_value = value.strip()
+        params = {
+            "module": normalized_module,
+            "field": normalized_field,
+            "value": normalized_value,
+        }
+        cache_key = _crm_cache_key("lookup", params)
+        cached = _read_crm_cache(cache_key)
+        if cached is not None:
+            return {"ok": True, "cached": True, **cached}
+
+        try:
+            primary = client.call(
+                "entry_by_fields",
+                {
+                    "module": normalized_module,
+                    "fields_values": {normalized_field: normalized_value},
+                },
+            )
+        except RuntimeError as exc:
+            raise _map_tallanto_error(exc) from exc
+
+        context = sanitize_tallanto_lookup_context(primary)
+        fallback_used = False
+        if not context.get("found"):
+            fallback_used = True
+            try:
+                fallback = client.call(
+                    "get_entry_list",
+                    {
+                        "module": normalized_module,
+                        "fields_values": {normalized_field: normalized_value},
+                    },
+                )
+            except RuntimeError as exc:
+                raise _map_tallanto_error(exc) from exc
+            context = sanitize_tallanto_lookup_context(fallback)
+
+        response_payload = {
+            "module": normalized_module,
+            "lookup_field": normalized_field,
+            "found": bool(context.get("found")),
+            "tags": list(context.get("tags") or []),
+            "interests": list(context.get("interests") or []),
+            "last_touch_days": context.get("last_touch_days"),
+            "fallback_used": fallback_used,
+        }
+        _write_crm_cache(cache_key, response_payload)
+        return {"ok": True, "cached": False, **response_payload}
 
     @app.get("/api/runtime/diagnostics")
     async def runtime_diagnostics():

@@ -28,6 +28,7 @@ class DatabaseTests(unittest.TestCase):
                 "messages",
                 "leads",
                 "conversation_contexts",
+                "crm_cache",
                 "webhook_updates",
             }.issubset(table_names)
         )
@@ -393,6 +394,25 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(moved, 1)
         retry_count = db.count_webhook_updates_by_status(self.conn, "retry")
         self.assertEqual(retry_count, 1)
+
+    def test_crm_cache_roundtrip_and_ttl(self) -> None:
+        db.upsert_crm_cache(
+            self.conn,
+            key="crm:modules",
+            value={"items": ["contacts", "leads"]},
+        )
+
+        cached = db.get_crm_cache(self.conn, key="crm:modules", max_age_seconds=3600)
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached["items"], ["contacts", "leads"])
+
+        self.conn.execute(
+            "UPDATE crm_cache SET updated_at = datetime('now', '-2 hours') WHERE key = ?",
+            ("crm:modules",),
+        )
+        self.conn.commit()
+        expired = db.get_crm_cache(self.conn, key="crm:modules", max_age_seconds=10)
+        self.assertIsNone(expired)
 
 
 if __name__ == "__main__":

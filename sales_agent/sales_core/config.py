@@ -23,6 +23,9 @@ class Settings:
     openai_vector_store_id: str
     admin_user: str
     admin_pass: str
+    tallanto_api_token: str = ""
+    tallanto_read_only: bool = False
+    tallanto_default_contact_module: str = ""
     webapp_dist_path: Path = Path()
     crm_provider: str = "tallanto"
     amo_api_url: str = ""
@@ -69,6 +72,10 @@ def get_settings() -> Settings:
         os.getenv("OPENAI_WEB_FALLBACK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     )
     openai_web_fallback_domain = os.getenv("OPENAI_WEB_FALLBACK_DOMAIN", "kmipt.ru").strip() or "kmipt.ru"
+    tallanto_api_key = os.getenv("TALLANTO_API_KEY", "").strip()
+    tallanto_api_token = os.getenv("TALLANTO_API_TOKEN", "").strip() or tallanto_api_key
+    tallanto_read_only = os.getenv("TALLANTO_READ_ONLY", "").strip() == "1"
+    tallanto_default_contact_module = os.getenv("TALLANTO_DEFAULT_CONTACT_MODULE", "").strip()
     admin_telegram_ids_raw = os.getenv("ADMIN_TELEGRAM_IDS", "").strip()
     admin_telegram_ids: list[int] = []
     if admin_telegram_ids_raw:
@@ -89,7 +96,7 @@ def get_settings() -> Settings:
         openai_api_key=os.getenv("OPENAI_API_KEY", "").strip(),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1").strip() or "gpt-4.1",
         tallanto_api_url=os.getenv("TALLANTO_API_URL", "").strip(),
-        tallanto_api_key=os.getenv("TALLANTO_API_KEY", "").strip(),
+        tallanto_api_key=tallanto_api_key,
         brand_default=os.getenv("BRAND_DEFAULT", "kmipt").strip() or "kmipt",
         database_path=db_path,
         catalog_path=catalog,
@@ -100,6 +107,9 @@ def get_settings() -> Settings:
         openai_web_fallback_domain=openai_web_fallback_domain,
         admin_user=os.getenv("ADMIN_USER", "").strip(),
         admin_pass=os.getenv("ADMIN_PASS", "").strip(),
+        tallanto_api_token=tallanto_api_token,
+        tallanto_read_only=tallanto_read_only,
+        tallanto_default_contact_module=tallanto_default_contact_module,
         webapp_dist_path=webapp_dist_path,
         crm_provider=os.getenv("CRM_PROVIDER", "tallanto").strip().lower() or "tallanto",
         amo_api_url=os.getenv("AMO_API_URL", "").strip(),

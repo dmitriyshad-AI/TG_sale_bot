@@ -120,6 +120,9 @@ OPENAI_WEB_FALLBACK_ENABLED=true
 OPENAI_WEB_FALLBACK_DOMAIN=kmipt.ru
 TALLANTO_API_URL=
 TALLANTO_API_KEY=
+TALLANTO_API_TOKEN=
+TALLANTO_READ_ONLY=0
+TALLANTO_DEFAULT_CONTACT_MODULE=
 TALLANTO_MOCK_MODE=false
 CRM_PROVIDER=tallanto
 AMO_API_URL=
@@ -180,6 +183,12 @@ SALES_TONE_PATH=
   - в Telegram Mini App: передать `initData` в `X-Tg-Init-Data` или `Authorization: tma <initData>`.
 - API подбора каталога для Mini App:
   - `GET /api/catalog/search?brand=kmipt&grade=11&goal=ege&subject=math&format=online`
+- Tallanto read-only API (для miniapp/бэкофиса, без записи в CRM):
+  - Требует `TALLANTO_READ_ONLY=1`.
+  - `GET /api/crm/meta/modules`
+  - `GET /api/crm/meta/fields?module=contacts`
+  - `GET /api/crm/lookup?module=contacts&field=phone&value=%2B79990000000`
+  - Ответ `lookup` всегда обезличен: `found/tags/interests/last_touch_days` (без телефонов и заметок).
 - Проверка пользовательского Mini App:
   - `GET /` — статус API и Mini App (`ready`/`build-required`).
   - `GET /app` — собранный пользовательский Mini App или инструкция по сборке.
