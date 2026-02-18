@@ -198,11 +198,6 @@ const FORMAT_OPTIONS: ChoiceOption[] = [
   { label: "Гибрид", value: "hybrid" }
 ];
 
-const CHAT_PROMPTS = [
-  "План поступления в МФТИ (10 класс)",
-  "Как подтянуть математику в 8 классе"
-];
-
 const CHAT_PROGRESS_STEPS = [
   "Смотрю ваш контекст…",
   "Собираю ответ…",
@@ -536,7 +531,7 @@ function createTopNav(): HTMLElement {
 
   const left = document.createElement("div");
   left.className = "topNavLeft";
-  if (canGoBack()) {
+  if (canGoBack() && state.view !== "chat") {
     const back = document.createElement("button");
     back.type = "button";
     back.className = "glassButton navBackButton";
@@ -853,25 +848,6 @@ function createChatMessage(item: ChatMessage): HTMLElement {
   return bubble;
 }
 
-function createChatQuickPrompts(): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "chatQuickRow";
-  for (const prompt of CHAT_PROMPTS) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "chipButton";
-    button.textContent = prompt;
-    button.addEventListener("click", () => {
-      triggerHaptic(webApp, "light");
-      state.chatInput = prompt;
-      render();
-      void askAssistantQuestion(prompt);
-    });
-    row.appendChild(button);
-  }
-  return row;
-}
-
 function createChatView(): HTMLElement {
   const container = document.createElement("section");
   container.className = "chatStack";
@@ -883,7 +859,6 @@ function createChatView(): HTMLElement {
     <p class="actionSubtitle">Пишите свободно. Отвечу по стратегии, предметам и программам.</p>
   `;
   container.appendChild(intro);
-  container.appendChild(createChatQuickPrompts());
 
   const messages = document.createElement("div");
   messages.className = "chatMessages";
@@ -1186,54 +1161,7 @@ function syncTelegramMainButton(): void {
     return;
   }
   clearTelegramMainButtonHandler(webApp);
-  const button = webApp.MainButton;
-
-  if (state.view === "picker") {
-    button.setText(state.loading ? "Подбираю…" : "Получить подбор");
-    if (!isCriteriaComplete() || state.loading) {
-      button.disable();
-    } else {
-      button.enable();
-    }
-    mainButtonHandler = () => {
-      if (isCriteriaComplete() && !state.loading) {
-        triggerHaptic(webApp, "medium");
-        void loadCatalogResults();
-      }
-    };
-    button.onClick(mainButtonHandler);
-    button.show();
-    return;
-  }
-
-  if (state.view === "results") {
-    button.setText(managerActionText());
-    button.enable();
-    mainButtonHandler = () => openManagerChat();
-    button.onClick(mainButtonHandler);
-    button.show();
-    return;
-  }
-
-  if (state.view === "chat") {
-    button.setText(state.chatLoading ? "Обрабатываю…" : "Отправить вопрос");
-    if (state.chatLoading || state.chatInput.trim().length === 0) {
-      button.disable();
-    } else {
-      button.enable();
-    }
-    mainButtonHandler = () => {
-      if (!state.chatLoading && state.chatInput.trim()) {
-        triggerHaptic(webApp, "medium");
-        void askAssistantQuestion();
-      }
-    };
-    button.onClick(mainButtonHandler);
-    button.show();
-    return;
-  }
-
-  button.hide();
+  webApp.MainButton.hide();
 }
 
 async function loadCatalogResults(): Promise<void> {
@@ -1482,7 +1410,9 @@ function render(): void {
   const container = document.createElement("main");
   container.className = "appShell";
   container.appendChild(renderHeader(state.statusLine));
-  container.appendChild(createTopNav());
+  if (state.view !== "chat") {
+    container.appendChild(createTopNav());
+  }
 
   const error = renderError();
   if (error) {
@@ -1504,7 +1434,9 @@ function render(): void {
     container.appendChild(createChatView());
   }
 
-  container.appendChild(createBottomDock());
+  if (state.view !== "chat") {
+    container.appendChild(createBottomDock());
+  }
   appRoot.replaceChildren(container);
   syncTelegramMainButton();
 }
