@@ -160,20 +160,20 @@ type AppState = {
 const HOME_ACTIONS: HomeAction[] = [
   {
     key: "pick",
-    title: "Подобрать курс",
-    subtitle: "Найдём лучший старт под класс, цель и формат",
+    title: "Подобрать программу",
+    subtitle: "4 коротких шага и готовый подбор",
     emoji: "🎯"
   },
   {
     key: "ask",
-    title: "Задать вопрос в любой момент",
-    subtitle: "По стратегии, поступлению, предметам и обучению",
+    title: "Спросить Гида",
+    subtitle: "Любой вопрос про поступление и учебу",
     emoji: "💬"
   },
   {
     key: "consult",
     title: "Связаться с менеджером",
-    subtitle: "Поможем с персональным подбором и следующим шагом",
+    subtitle: "Если нужен персональный маршрут",
     emoji: "📞"
   }
 ];
@@ -199,22 +199,21 @@ const FORMAT_OPTIONS: ChoiceOption[] = [
 ];
 
 const CHAT_PROMPTS = [
-  "Как построить стратегию поступления в МФТИ для 10 класса?",
-  "Что делать, если у ребёнка проседает математика в 8 классе?",
-  "С чего начать подготовку к ЕГЭ по физике без перегруза?"
+  "План поступления в МФТИ для 10 класса",
+  "С чего начать ЕГЭ по физике без перегруза"
 ];
 
 const CHAT_PROGRESS_STEPS = [
-  "Собираю контекст запроса…",
-  "Проверяю, какие варианты подойдут лучше всего…",
-  "Готовлю полезный и точный ответ без шаблонов…"
+  "Уточняю контекст…",
+  "Подбираю лучший ответ…",
+  "Формирую рекомендации…"
 ];
 
 const VIEW_TITLES: Record<AppView, string> = {
   home: "Главная",
   picker: "Подбор",
   results: "Варианты",
-  chat: "Гид",
+  chat: "Чат с гидом",
 };
 
 const COACHMARK_STORAGE_KEY = "kmipt_sales_miniapp_coachmarks_v2";
@@ -344,6 +343,14 @@ function goBack(): void {
   render();
 }
 
+function guideActionText(): string {
+  return `Спросить ${state.advisorName}`;
+}
+
+function managerActionText(): string {
+  return `Связаться с ${state.managerLabel.toLowerCase()}`;
+}
+
 function createActionCard(action: HomeAction): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
@@ -353,14 +360,14 @@ function createActionCard(action: HomeAction): HTMLButtonElement {
   const title = document.createElement("h3");
   title.className = "sectionTitle";
   const titleText =
-    action.key === "ask" ? `${action.emoji} Спросить ${state.advisorName}` : `${action.emoji} ${action.title}`;
+    action.key === "ask" ? `${action.emoji} ${guideActionText()}` : `${action.emoji} ${action.title}`;
   title.textContent = titleText;
 
   const subtitle = document.createElement("p");
   subtitle.className = "actionSubtitle";
   subtitle.textContent =
     action.key === "ask"
-      ? "Быстрый диалог по поступлению, стратегии и выбору программы."
+      ? "Пишите свободно, как в обычном чате."
       : action.subtitle;
 
   const chip = document.createElement("span");
@@ -380,9 +387,9 @@ function renderHeader(statusText: string): HTMLElement {
       <img src="${brandLogoUrl}" alt="Логотип ${state.brandName}" class="heroLogo">
       <p class="eyebrow">${state.brandName} • Sales Agent</p>
     </div>
-    <h1 class="heroTitle">Подбор и консультации без давления${name}</h1>
+    <h1 class="heroTitle">Подбор без давления${name}</h1>
     <p class="heroSubtitle">${statusText}</p>
-    <p class="heroHint">В любой момент можно задать вопрос и продолжить диалог по образованию.</p>
+    <p class="heroHint">Можно в любой момент перейти в чат и задать вопрос.</p>
   `;
   return hero;
 }
@@ -419,7 +426,7 @@ function createTopNav(): HTMLElement {
   const back = document.createElement("button");
   back.type = "button";
   back.className = "glassButton navBackButton";
-  back.textContent = "← Назад";
+  back.textContent = "Назад";
   back.disabled = !canGoBack();
   back.addEventListener("click", () => {
     triggerHaptic(webApp, "light");
@@ -427,35 +434,12 @@ function createTopNav(): HTMLElement {
   });
   left.append(back, createBrandMark());
 
-  const right = document.createElement("div");
-  right.className = "topNavActions";
-
-  const askGuide = document.createElement("button");
-  askGuide.type = "button";
-  askGuide.className = "glassButton";
-  askGuide.textContent = `Спросить ${state.advisorName}`;
-  askGuide.addEventListener("click", () => {
-    triggerHaptic(webApp, "medium");
-    navigateTo("chat");
-  });
-
-  const manager = document.createElement("button");
-  manager.type = "button";
-  manager.className = "glassButton glassButtonPrimary";
-  manager.textContent = `Написать ${state.managerLabel.toLowerCase()}`;
-  manager.addEventListener("click", () => {
-    triggerHaptic(webApp, "medium");
-    openManagerChat();
-  });
-
-  right.append(askGuide, manager);
-
   const tabs = document.createElement("div");
   tabs.className = "topNavTabs";
   const routes: Array<{ view: AppView; label: string }> = [
     { view: "home", label: "Главная" },
     { view: "picker", label: "Подбор" },
-    { view: "chat", label: state.advisorName },
+    { view: "chat", label: "Чат" },
   ];
   for (const route of routes) {
     const tab = document.createElement("button");
@@ -472,12 +456,7 @@ function createTopNav(): HTMLElement {
     tabs.appendChild(tab);
   }
 
-  const viewBadge = document.createElement("span");
-  viewBadge.className = "chip";
-  viewBadge.textContent = `Раздел: ${VIEW_TITLES[state.view]}`;
-  tabs.appendChild(viewBadge);
-
-  nav.append(left, right, tabs);
+  nav.append(left, tabs);
   return nav;
 }
 
@@ -524,7 +503,7 @@ function createGradeGroup(): HTMLElement {
     label: String(index + 1),
     value: String(index + 1)
   }));
-  return createChipGroup("1. Класс", options, state.criteria.grade ? String(state.criteria.grade) : null, (value) => {
+  return createChipGroup("Шаг 1. Класс ученика", options, state.criteria.grade ? String(state.criteria.grade) : null, (value) => {
     state.criteria.grade = Number(value);
   });
 }
@@ -559,19 +538,30 @@ function createPickerView(): HTMLElement {
   const container = document.createElement("section");
   container.className = "pickerStack";
 
+  const doneCount = [state.criteria.grade, state.criteria.goal, state.criteria.subject, state.criteria.format].filter(
+    (item) => item !== null && item !== ""
+  ).length;
+  const intro = document.createElement("article");
+  intro.className = "glassCard pickerIntro";
+  intro.innerHTML = `
+    <h3 class="sectionTitle sectionTitleCompact">Подбор за 4 шага</h3>
+    <p class="actionSubtitle">Заполнено ${doneCount}/4. Далее покажем лучшие варианты.</p>
+  `;
+  container.appendChild(intro);
+
   container.appendChild(createGradeGroup());
   container.appendChild(
-    createChipGroup("2. Цель", GOAL_OPTIONS, state.criteria.goal, (value) => {
+    createChipGroup("Шаг 2. Цель подготовки", GOAL_OPTIONS, state.criteria.goal, (value) => {
       state.criteria.goal = value;
     })
   );
   container.appendChild(
-    createChipGroup("3. Предмет", SUBJECT_OPTIONS, state.criteria.subject, (value) => {
+    createChipGroup("Шаг 3. Предмет", SUBJECT_OPTIONS, state.criteria.subject, (value) => {
       state.criteria.subject = value;
     })
   );
   container.appendChild(
-    createChipGroup("4. Формат", FORMAT_OPTIONS, state.criteria.format, (value) => {
+    createChipGroup("Шаг 4. Формат занятий", FORMAT_OPTIONS, state.criteria.format, (value) => {
       state.criteria.format = value;
     })
   );
@@ -582,7 +572,7 @@ function createPickerView(): HTMLElement {
   const askBtn = document.createElement("button");
   askBtn.type = "button";
   askBtn.className = "glassButton";
-  askBtn.textContent = "Задать вопрос";
+  askBtn.textContent = guideActionText();
   askBtn.addEventListener("click", () => {
     triggerHaptic(webApp, "light");
     navigateTo("chat");
@@ -591,7 +581,7 @@ function createPickerView(): HTMLElement {
   const submit = document.createElement("button");
   submit.type = "button";
   submit.className = "glassButton glassButtonPrimary";
-  submit.textContent = state.loading ? "Подбираю…" : "Показать варианты";
+  submit.textContent = state.loading ? "Подбираю…" : "Получить подбор";
   submit.disabled = !isCriteriaComplete() || state.loading;
   submit.addEventListener("click", () => {
     triggerHaptic(webApp, "medium");
@@ -610,27 +600,27 @@ function createResultSummaryCard(): HTMLElement {
 
   const title = document.createElement("h3");
   title.className = "sectionTitle sectionTitleCompact";
-  title.textContent = "Что нашли по вашему запросу";
+  title.textContent = "Результат подбора";
 
   const text = document.createElement("p");
   text.className = "actionSubtitle";
 
   if (state.matchQuality === "strong" && state.results.length > 0) {
-    text.textContent = `Есть очень подходящий вариант: ${state.results[0].title}. При желании менеджер дополнительно сверит график и нагрузку.`;
+    text.textContent = `Есть сильное совпадение: ${state.results[0].title}.`;
   } else if (state.results.length > 0) {
     text.textContent =
       state.managerMessage ||
-      "Есть хорошие предложения под ваш запрос. Чтобы выбрать самый точный вариант, лучше подключить менеджера.";
+      "Есть хорошие варианты. Для финального выбора подключим менеджера.";
   } else {
     text.textContent =
-      "Автоматический фильтр не нашёл идеальный вариант, но это не тупик: у нас широкая линейка под разные цели, уровни и форматы.";
+      "Идеального совпадения нет, но у нас есть подходящие решения под ваш запрос.";
   }
 
   const cta = document.createElement("p");
   cta.className = "resultSupportText";
   cta.textContent =
     state.managerCallToAction ||
-    "Оставьте контакт, и менеджер предложит подходящие варианты под вашу задачу и сроки.";
+    "Оставьте контакт, и менеджер подберет вариант под цель и сроки.";
 
   card.append(title, text, cta);
   return card;
@@ -680,7 +670,7 @@ function createResultsView(): HTMLElement {
       link.href = item.url;
       link.target = "_blank";
       link.rel = "noreferrer";
-      link.textContent = "Открыть программу";
+      link.textContent = "Подробнее о программе";
 
       card.append(title, why, meta, uspList, link);
       section.appendChild(card);
@@ -693,7 +683,7 @@ function createResultsView(): HTMLElement {
   const askButton = document.createElement("button");
   askButton.type = "button";
   askButton.className = "glassButton";
-  askButton.textContent = "Уточнить вопросом";
+  askButton.textContent = guideActionText();
   askButton.addEventListener("click", () => {
     triggerHaptic(webApp, "light");
     navigateTo("chat");
@@ -702,7 +692,7 @@ function createResultsView(): HTMLElement {
   const contactButton = document.createElement("button");
   contactButton.type = "button";
   contactButton.className = "glassButton glassButtonPrimary";
-  contactButton.textContent = `Написать ${state.managerLabel.toLowerCase()}`;
+  contactButton.textContent = managerActionText();
   contactButton.addEventListener("click", () => {
     openManagerChat();
   });
@@ -774,8 +764,8 @@ function createChatView(): HTMLElement {
   const intro = document.createElement("article");
   intro.className = "glassCard chatIntro";
   intro.innerHTML = `
-    <h3 class="sectionTitle sectionTitleCompact">Можно просто пообщаться с ${state.advisorName} и получить пользу</h3>
-    <p class="actionSubtitle">Задавайте вопросы про стратегию поступления, подготовку по предметам, выбор программы и формат обучения.</p>
+    <h3 class="sectionTitle sectionTitleCompact">Чат с ${state.advisorName}</h3>
+    <p class="actionSubtitle">Пишите свободно. Отвечу по стратегии, предметам и программам.</p>
   `;
   container.appendChild(intro);
   container.appendChild(createChatQuickPrompts());
@@ -787,7 +777,7 @@ function createChatView(): HTMLElement {
     empty.className = "glassCard chatBubble chatBubbleAssistant";
     empty.innerHTML = `
       <p class="chatRole">${state.advisorName}</p>
-      <p class="chatText">Можете начать с любого вопроса. Например: «Ученик 10 класса, как распределить подготовку к ЕГЭ и олимпиадам?»</p>
+      <p class="chatText">Напишите вопрос в 1-2 фразах. Например: «Как начать подготовку к ЕГЭ в 10 классе?»</p>
     `;
     messages.appendChild(empty);
   } else {
@@ -820,7 +810,7 @@ function createChatView(): HTMLElement {
     const managerButton = document.createElement("button");
     managerButton.type = "button";
     managerButton.className = "glassButton glassButtonPrimary";
-    managerButton.textContent = `Написать ${state.managerLabel.toLowerCase()}`;
+    managerButton.textContent = managerActionText();
     managerButton.addEventListener("click", () => {
       openManagerChat();
     });
@@ -858,7 +848,7 @@ function createChatView(): HTMLElement {
   const send = document.createElement("button");
   send.type = "button";
   send.className = "glassButton glassButtonPrimary";
-  send.textContent = state.chatLoading ? "Обрабатываю…" : `Спросить ${state.advisorName}`;
+  send.textContent = state.chatLoading ? "Обрабатываю…" : "Отправить вопрос";
   send.disabled = state.chatLoading || state.chatInput.trim().length === 0;
   send.addEventListener("click", () => {
     triggerHaptic(webApp, "medium");
@@ -879,11 +869,11 @@ function createBottomDock(): HTMLElement {
   const label = document.createElement("span");
   label.className = "dockLabel";
   if (state.view === "chat") {
-    label.textContent = `${state.advisorName} онлайн. Можно спрашивать про стратегию, курсы и поступление.`;
+    label.textContent = `${state.advisorName} онлайн. Можно задать любой вопрос.`;
   } else if (state.view === "results") {
-    label.textContent = "Видите варианты. Если нужен точный подбор под детали, подключим менеджера.";
+    label.textContent = "Варианты готовы. Для финального выбора подключим менеджера.";
   } else {
-    label.textContent = "Сначала польза и понятная рекомендация, затем только релевантные предложения.";
+    label.textContent = "Сначала польза и понятный ответ, затем релевантные предложения.";
   }
 
   const actions = document.createElement("div");
@@ -892,9 +882,13 @@ function createBottomDock(): HTMLElement {
   const ask = document.createElement("button");
   ask.className = "glassButton";
   ask.type = "button";
-  ask.textContent = `Спросить ${state.advisorName}`;
+  ask.textContent = state.view === "chat" ? "К подбору" : guideActionText();
   ask.addEventListener("click", () => {
     triggerHaptic(webApp, "light");
+    if (state.view === "chat") {
+      navigateTo("picker");
+      return;
+    }
     navigateTo("chat");
   });
 
@@ -903,20 +897,20 @@ function createBottomDock(): HTMLElement {
   primary.type = "button";
 
   if (state.view === "results") {
-    primary.textContent = `Написать ${state.managerLabel.toLowerCase()}`;
+    primary.textContent = managerActionText();
     primary.addEventListener("click", () => {
       triggerHaptic(webApp, "medium");
       openManagerChat();
     });
   } else if (state.view === "chat") {
-    primary.textContent = state.chatLoading ? "Обрабатываю…" : `Спросить ${state.advisorName}`;
+    primary.textContent = state.chatLoading ? "Обрабатываю…" : "Отправить вопрос";
     primary.disabled = state.chatLoading || state.chatInput.trim().length === 0;
     primary.addEventListener("click", () => {
       triggerHaptic(webApp, "medium");
       void askAssistantQuestion();
     });
   } else {
-    primary.textContent = "Показать подбор";
+    primary.textContent = "Открыть подбор";
     primary.addEventListener("click", () => {
       triggerHaptic(webApp, "medium");
       navigateTo("picker");
@@ -1080,7 +1074,7 @@ function syncTelegramMainButton(): void {
   const button = webApp.MainButton;
 
   if (state.view === "picker") {
-    button.setText(state.loading ? "Подбираю…" : "Показать результаты");
+    button.setText(state.loading ? "Подбираю…" : "Получить подбор");
     if (!isCriteriaComplete() || state.loading) {
       button.disable();
     } else {
@@ -1098,7 +1092,7 @@ function syncTelegramMainButton(): void {
   }
 
   if (state.view === "results") {
-    button.setText(`Написать ${state.managerLabel.toLowerCase()}`);
+    button.setText(managerActionText());
     button.enable();
     mainButtonHandler = () => openManagerChat();
     button.onClick(mainButtonHandler);
@@ -1107,7 +1101,7 @@ function syncTelegramMainButton(): void {
   }
 
   if (state.view === "chat") {
-    button.setText(state.chatLoading ? "Обрабатываю…" : `Спросить ${state.advisorName}`);
+    button.setText(state.chatLoading ? "Обрабатываю…" : "Отправить вопрос");
     if (state.chatLoading || state.chatInput.trim().length === 0) {
       button.disable();
     } else {

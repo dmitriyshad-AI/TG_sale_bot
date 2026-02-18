@@ -147,6 +147,27 @@ class BotSyncCoverageTests(unittest.TestCase):
         ):
             self.assertEqual(bot._resolve_user_webapp_url(), "https://example.com/app")
 
+    def test_build_user_miniapp_markup_returns_none_when_url_not_configured(self) -> None:
+        with patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(user_webapp_url="", admin_webapp_url=""),
+        ):
+            self.assertIsNone(bot._build_user_miniapp_markup())
+
+    def test_build_user_miniapp_markup_returns_button_when_url_configured(self) -> None:
+        with patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(user_webapp_url="https://example.com/app", admin_webapp_url=""),
+        ):
+            markup = bot._build_user_miniapp_markup()
+        self.assertIsNotNone(markup)
+        inline = getattr(markup, "inline_keyboard", [])
+        self.assertTrue(inline and inline[0])
+        button = inline[0][0]
+        self.assertEqual(getattr(getattr(button, "web_app", None), "url", None), "https://example.com/app")
+
 
 @unittest.skipUnless(HAS_BOT_DEPS, "bot dependencies are not installed")
 class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
@@ -611,6 +632,39 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved_meta["source"], "site")
         self.assertEqual(saved_meta["brand"], "foton")
         self.assertIn("HINT", mock_reply.call_args.args[1])
+
+    async def test_start_sends_miniapp_button_when_user_webapp_url_configured(self) -> None:
+        update = _make_update_with_message("/start")
+        context = SimpleNamespace(user_data={}, args=[])
+        prompt = FlowStep(message="Укажите класс", next_state="ask_grade", state_data={}, keyboard=[])
+        base_state = {"state": "ask_grade", "criteria": {"brand": "kmipt"}, "contact": None}
+
+        with patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(
+                database_path=Path("/tmp/test.db"),
+                brand_default="kmipt",
+                user_webapp_url="https://example.com/app",
+                admin_webapp_url="",
+            ),
+        ), patch.object(bot, "ensure_state", return_value=base_state), patch.object(
+            bot, "parse_start_payload", return_value={}
+        ), patch.object(bot, "build_prompt", return_value=prompt), patch.object(
+            bot, "build_greeting_hint", return_value=""
+        ), patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
+            bot, "_get_or_create_user_id", return_value=1
+        ), patch.object(bot.db_module, "log_message"), patch.object(
+            bot.db_module, "upsert_session_state"
+        ), patch.object(
+            bot, "_reply", new_callable=AsyncMock
+        ):
+            await bot.start(update, context)
+
+        update.message.reply_text.assert_awaited_once()
+        kwargs = update.message.reply_text.call_args.kwargs
+        self.assertIn("reply_markup", kwargs)
+        self.assertIsNotNone(kwargs["reply_markup"])
 
     async def test_start_noop_without_message(self) -> None:
         update = SimpleNamespace(message=None)

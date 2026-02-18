@@ -1886,6 +1886,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"{hint_block}{prompt.message}"
     )
     delivered_greeting = await _reply(update, greeting, keyboard_layout=prompt.keyboard)
+    miniapp_markup = _build_user_miniapp_markup()
+    miniapp_delivered = ""
+    if miniapp_markup and update.message:
+        miniapp_text = apply_tone_guardrails(
+            "Быстрый путь: откройте Mini App, чтобы получить подбор в удобном формате."
+        )
+        await update.message.reply_text(miniapp_text, reply_markup=miniapp_markup)
+        miniapp_delivered = miniapp_text
 
     conn = db_module.get_connection(settings.database_path)
     try:
@@ -1897,6 +1905,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             delivered_greeting,
             {"handler": "start", "quality": _quality_meta(delivered_greeting), **_user_meta(update)},
         )
+        if miniapp_delivered:
+            db_module.log_message(
+                conn,
+                user_id,
+                "outbound",
+                miniapp_delivered,
+                {"handler": "start-miniapp", "quality": _quality_meta(miniapp_delivered), **_user_meta(update)},
+            )
     finally:
         conn.close()
 
@@ -1969,6 +1985,17 @@ def _resolve_user_webapp_url() -> str:
     return f"{base}/app"
 
 
+def _build_user_miniapp_markup() -> Optional[InlineKeyboardMarkup]:
+    user_webapp_url = _resolve_user_webapp_url()
+    if not user_webapp_url:
+        return None
+    button = InlineKeyboardButton(
+        text="Открыть Mini App",
+        web_app=WebAppInfo(url=user_webapp_url),
+    )
+    return InlineKeyboardMarkup([[button]])
+
+
 async def app(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     if not update.message:
@@ -1988,8 +2015,8 @@ async def app(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     finally:
         conn.close()
 
-    user_webapp_url = _resolve_user_webapp_url()
-    if not user_webapp_url:
+    markup = _build_user_miniapp_markup()
+    if not markup:
         reply = (
             "Клиентский Mini App пока не настроен. "
             "Добавьте USER_WEBAPP_URL=https://<your-domain>/app в окружение."
@@ -2009,11 +2036,6 @@ async def app(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             conn.close()
         return
 
-    button = InlineKeyboardButton(
-        text="Открыть Mini App",
-        web_app=WebAppInfo(url=user_webapp_url),
-    )
-    markup = InlineKeyboardMarkup([[button]])
     message_text = "Откройте Mini App для удобного подбора программ и консультации."
     delivered_text = apply_tone_guardrails(message_text)
     await update.message.reply_text(delivered_text, reply_markup=markup)

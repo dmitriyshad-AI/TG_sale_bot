@@ -2,11 +2,12 @@
   --bg-0: #88d2f4;
   --bg-1: #60b9ea;
   --bg-2: #2a8fcf;
-  --text-main: #072a3f;
-  --text-muted: rgba(5, 39, 58, 0.78);
-  --glass-bg: rgba(228, 246, 255, 0.36);
-  --glass-border: rgba(255, 255, 255, 0.52);
+  --text-main: #04253a;
+  --text-muted: rgba(3, 34, 52, 0.88);
+  --glass-bg: rgba(236, 248, 255, 0.64);
+  --glass-border: rgba(255, 255, 255, 0.84);
   --glass-shadow: 0 20px 48px rgba(12, 64, 97, 0.24);
+  --focus-ring: rgba(9, 110, 167, 0.56);
   --card-radius: 20px;
   --dock-radius: 18px;
   --spacing-1: 8px;

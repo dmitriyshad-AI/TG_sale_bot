@@ -29,25 +29,39 @@
 
 .glassButton {
   appearance: none;
-  border: 1px solid rgba(255, 255, 255, 0.6);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.38), rgba(245, 252, 255, 0.2));
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(221, 243, 255, 0.72));
   color: var(--text-main);
   border-radius: 999px;
-  padding: 10px 18px;
+  padding: 11px 18px;
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
+  min-height: 44px;
+  box-shadow: 0 8px 18px rgba(4, 64, 98, 0.14);
+  transition: transform 140ms ease, filter 140ms ease;
+}
+
+.glassButton:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.02);
+}
+
+.glassButton:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .glassButton:disabled {
-  opacity: 0.55;
+  opacity: 0.58;
   cursor: not-allowed;
 }
 
 .glassButtonPrimary {
-  background: linear-gradient(180deg, rgba(19, 101, 149, 0.9), rgba(8, 78, 122, 0.9));
+  background: linear-gradient(180deg, rgba(14, 96, 145, 0.98), rgba(6, 72, 113, 0.96));
   color: #f4fbff;
-  border-color: rgba(167, 227, 255, 0.8);
+  border-color: rgba(177, 231, 255, 0.92);
+  box-shadow: 0 10px 22px rgba(5, 77, 119, 0.26);
 }
 
 .chip {
@@ -57,15 +71,15 @@
   padding: 6px 12px;
   font-size: 12px;
   border-radius: 999px;
-  color: rgba(6, 38, 57, 0.8);
-  background: rgba(255, 255, 255, 0.45);
-  border: 1px solid rgba(255, 255, 255, 0.56);
+  color: rgba(7, 40, 61, 0.92);
+  background: rgba(248, 253, 255, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.84);
 }
 
 .chipButton {
   appearance: none;
-  border: 1px solid rgba(255, 255, 255, 0.62);
-  background: rgba(255, 255, 255, 0.36);
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  background: rgba(244, 252, 255, 0.82);
   color: var(--text-main);
   border-radius: 14px;
   padding: 10px 12px;
@@ -79,9 +93,14 @@
   transform: translateY(-1px);
 }
 
+.chipButton:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .chipButton.isActive {
-  background: rgba(12, 103, 156, 0.88);
-  border-color: rgba(177, 235, 255, 0.85);
+  background: rgba(10, 104, 159, 0.95);
+  border-color: rgba(181, 236, 255, 0.95);
   color: #f5fdff;
 }
 

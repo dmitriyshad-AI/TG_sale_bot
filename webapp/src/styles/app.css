@@ -25,7 +25,7 @@ body::before {
   inset: -30%;
   z-index: 0;
   pointer-events: none;
-  opacity: 0.23;
+  opacity: 0.14;
   background:
     repeating-radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.38) 0 3px, transparent 4px 12px),
     repeating-radial-gradient(circle at 80% 70%, rgba(175, 231, 255, 0.34) 0 2px, transparent 3px 11px);
@@ -104,6 +104,7 @@ body::before {
 
 .navBackButton {
   white-space: nowrap;
+  min-width: 108px;
 }
 
 .brandMark {
@@ -128,22 +129,16 @@ body::before {
   color: rgba(7, 44, 66, 0.88);
 }
 
-.topNavActions {
-  display: flex;
-  gap: var(--spacing-2);
-  justify-content: flex-end;
-  flex-wrap: wrap;
-}
-
 .topNavTabs {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--spacing-2);
-  flex-wrap: wrap;
-  align-items: center;
+  align-items: stretch;
 }
 
 .topNavTab {
-  border-radius: 999px;
+  border-radius: 12px;
+  width: 100%;
 }
 
 .actions {
@@ -169,6 +164,12 @@ body::before {
   font-size: 14px;
   line-height: 1.5;
   color: var(--text-muted);
+}
+
+.pickerIntro {
+  padding: var(--spacing-3);
+  display: grid;
+  gap: var(--spacing-2);
 }
 
 .pickerStack {
@@ -215,7 +216,7 @@ body::before {
   margin: 0;
   font-size: 14px;
   line-height: 1.45;
-  color: rgba(7, 44, 66, 0.88);
+  color: rgba(4, 38, 57, 0.94);
 }
 
 .resultMeta {
@@ -230,7 +231,7 @@ body::before {
   padding-left: 18px;
   display: grid;
   gap: 6px;
-  color: var(--text-muted);
+  color: rgba(4, 39, 58, 0.9);
   font-size: 14px;
 }
 
@@ -243,7 +244,11 @@ body::before {
 .resultsActions {
   display: flex;
   gap: var(--spacing-2);
-  justify-content: flex-end;
+  justify-content: stretch;
+}
+
+.resultsActions .glassButton {
+  flex: 1 1 0;
 }
 
 .chatStack {
@@ -287,7 +292,7 @@ body::before {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(7, 45, 66, 0.7);
+  color: rgba(5, 41, 61, 0.82);
 }
 
 .chatText {
@@ -299,7 +304,7 @@ body::before {
 .chatMeta {
   margin: 0;
   font-size: 12px;
-  color: rgba(7, 45, 66, 0.74);
+  color: rgba(5, 41, 61, 0.8);
 }
 
 .chatSources {
@@ -331,8 +336,8 @@ body::before {
 .chatTextarea {
   width: 100%;
   border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.62);
-  background: rgba(255, 255, 255, 0.54);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  background: rgba(252, 254, 255, 0.86);
   color: var(--text-main);
   font: inherit;
   line-height: 1.45;
@@ -342,7 +347,7 @@ body::before {
 }
 
 .chatTextarea:focus {
-  outline: 2px solid rgba(37, 140, 194, 0.36);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -390,12 +395,13 @@ body::before {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--spacing-2);
+  gap: var(--spacing-3);
 }
 
 .dockLabel {
   font-size: 13px;
-  color: rgba(7, 49, 73, 0.82);
+  line-height: 1.4;
+  color: rgba(5, 42, 63, 0.92);
 }
 
 .dockActions {
@@ -442,6 +448,48 @@ body::before {
   .appShell {
     padding-left: var(--spacing-3);
     padding-right: var(--spacing-3);
+    gap: var(--spacing-3);
+  }
+
+  .hero {
+    padding: var(--spacing-3);
+  }
+
+  .heroTitle {
+    font-size: clamp(24px, 7.6vw, 34px);
+    line-height: 1.08;
+  }
+
+  .heroHint {
+    display: none;
+  }
+
+  .eyebrow {
+    font-size: 12px;
+  }
+
+  .brandText {
+    display: none;
+  }
+
+  .topNav {
+    padding: var(--spacing-2);
+  }
+
+  .actionCard,
+  .pickerSection,
+  .resultCard,
+  .resultSummaryCard,
+  .chatIntro,
+  .managerOfferCard,
+  .chatComposer,
+  .chatBubble,
+  .chatProgress {
+    padding: var(--spacing-2);
+  }
+
+  .chatQuickRow {
+    grid-template-columns: 1fr;
   }
 
   .pickerControls {
@@ -483,8 +531,7 @@ body::before {
     align-items: stretch;
   }
 
-  .topNavActions {
-    display: grid;
+  .topNavTabs {
     grid-template-columns: 1fr;
   }
 }
