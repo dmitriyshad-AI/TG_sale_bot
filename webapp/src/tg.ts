@@ -28,6 +28,8 @@ export type TelegramWebApp = {
   MainButton?: MainButton;
   HapticFeedback?: HapticFeedback;
   sendData?(data: string): void;
+  openTelegramLink?(url: string): void;
+  openLink?(url: string): void;
   close?(): void;
   ready(): void;
   expand(): void;
@@ -80,5 +82,31 @@ export function triggerHaptic(webApp: TelegramWebApp | null, style: "light" | "m
     webApp?.HapticFeedback?.impactOccurred(style);
   } catch (_error) {
     // Telegram API can be unavailable in browser preview.
+  }
+}
+
+export function openExternalLink(webApp: TelegramWebApp | null, url: string): boolean {
+  const target = url.trim();
+  if (!target) {
+    return false;
+  }
+  try {
+    if (target.startsWith("https://t.me/") || target.startsWith("tg://")) {
+      if (typeof webApp?.openTelegramLink === "function") {
+        webApp.openTelegramLink(target);
+        return true;
+      }
+    } else if (typeof webApp?.openLink === "function") {
+      webApp.openLink(target);
+      return true;
+    }
+  } catch (_error) {
+    // Fallback to window.open below.
+  }
+  try {
+    window.open(target, "_blank", "noopener,noreferrer");
+    return true;
+  } catch (_windowError) {
+    return false;
   }
 }

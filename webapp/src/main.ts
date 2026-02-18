@@ -4,6 +4,7 @@ import "./styles/app.css";
 import {
   buildAuthHeaders,
   initTelegramContext,
+  openExternalLink,
   triggerHaptic,
   type TelegramWebApp,
   type TelegramWebAppUser
@@ -72,6 +73,15 @@ type AssistantResponse = {
   processing_note: string;
 };
 
+type MiniappMetaResponse = {
+  ok: boolean;
+  brand_name?: string;
+  advisor_name?: string;
+  manager_label?: string;
+  manager_chat_url?: string;
+  user_miniapp_url?: string;
+};
+
 type MiniAppPayload = {
   flow: "catalog" | "consultation_request";
   criteria: SearchCriteria;
@@ -119,6 +129,11 @@ type AppState = {
   chatProgressText: string;
   chatElapsedSec: number;
   lastManagerOffer: ManagerOffer | null;
+  brandName: string;
+  advisorName: string;
+  managerLabel: string;
+  managerChatUrl: string;
+  userMiniappUrl: string;
 };
 
 const HOME_ACTIONS: HomeAction[] = [
@@ -173,6 +188,13 @@ const CHAT_PROGRESS_STEPS = [
   "Проверяю, какие варианты подойдут лучше всего…",
   "Готовлю полезный и точный ответ без шаблонов…"
 ];
+
+const VIEW_TITLES: Record<AppView, string> = {
+  home: "Главная",
+  picker: "Подбор",
+  results: "Варианты",
+  chat: "Гид",
+};
 
 const COACHMARK_STORAGE_KEY = "kmipt_sales_miniapp_coachmarks_v2";
 const COACHMARKS = [
@@ -244,7 +266,12 @@ const state: AppState = {
   chatLoading: false,
   chatProgressText: CHAT_PROGRESS_STEPS[0],
   chatElapsedSec: 0,
-  lastManagerOffer: null
+  lastManagerOffer: null,
+  brandName: "УНПК МФТИ",
+  advisorName: "Гид",
+  managerLabel: "Менеджер",
+  managerChatUrl: "",
+  userMiniappUrl: "/app"
 };
 
 function clearChatProgressTimer(): void {
@@ -278,6 +305,24 @@ function navigateTo(view: AppView): void {
   render();
 }
 
+function canGoBack(): boolean {
+  return state.view !== "home";
+}
+
+function goBack(): void {
+  state.error = null;
+  if (state.view === "chat") {
+    state.view = state.results.length > 0 ? "results" : "picker";
+  } else if (state.view === "results") {
+    state.view = "picker";
+  } else if (state.view === "picker") {
+    state.view = "home";
+  } else {
+    state.view = "home";
+  }
+  render();
+}
+
 function createActionCard(action: HomeAction): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
@@ -286,11 +331,16 @@ function createActionCard(action: HomeAction): HTMLButtonElement {
 
   const title = document.createElement("h3");
   title.className = "sectionTitle";
-  title.textContent = `${action.emoji} ${action.title}`;
+  const titleText =
+    action.key === "ask" ? `${action.emoji} Спросить ${state.advisorName}` : `${action.emoji} ${action.title}`;
+  title.textContent = titleText;
 
   const subtitle = document.createElement("p");
   subtitle.className = "actionSubtitle";
-  subtitle.textContent = action.subtitle;
+  subtitle.textContent =
+    action.key === "ask"
+      ? "Быстрый диалог по поступлению, стратегии и выбору программы."
+      : action.subtitle;
 
   const chip = document.createElement("span");
   chip.className = "chip";
@@ -305,12 +355,106 @@ function renderHeader(statusText: string): HTMLElement {
   hero.className = "hero glassCard";
   const name = state.user?.first_name ? `, ${state.user.first_name}` : "";
   hero.innerHTML = `
-    <p class="eyebrow">KMIPT • Sales Agent</p>
+    <p class="eyebrow">${state.brandName} • Sales Agent</p>
     <h1 class="heroTitle">Подбор и консультации без давления${name}</h1>
     <p class="heroSubtitle">${statusText}</p>
     <p class="heroHint">В любой момент можно задать вопрос и продолжить диалог по образованию.</p>
   `;
   return hero;
+}
+
+function createBrandMark(): HTMLElement {
+  const brand = document.createElement("div");
+  brand.className = "brandMark";
+  brand.innerHTML = `
+    <span class="brandOrb" aria-hidden="true">K</span>
+    <span class="brandText">${state.brandName}</span>
+  `;
+  return brand;
+}
+
+function openManagerChat(): void {
+  const target = state.managerChatUrl.trim();
+  if (target) {
+    const opened = openExternalLink(webApp, target);
+    if (!opened) {
+      state.error = "Не удалось открыть чат менеджера. Попробуйте снова.";
+      render();
+    }
+    return;
+  }
+  sendConsultationRequestToChat();
+}
+
+function createTopNav(): HTMLElement {
+  const nav = document.createElement("section");
+  nav.className = "glassCard topNav";
+
+  const left = document.createElement("div");
+  left.className = "topNavLeft";
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "glassButton navBackButton";
+  back.textContent = "← Назад";
+  back.disabled = !canGoBack();
+  back.addEventListener("click", () => {
+    triggerHaptic(webApp, "light");
+    goBack();
+  });
+  left.append(back, createBrandMark());
+
+  const right = document.createElement("div");
+  right.className = "topNavActions";
+
+  const askGuide = document.createElement("button");
+  askGuide.type = "button";
+  askGuide.className = "glassButton";
+  askGuide.textContent = `Спросить ${state.advisorName}`;
+  askGuide.addEventListener("click", () => {
+    triggerHaptic(webApp, "medium");
+    navigateTo("chat");
+  });
+
+  const manager = document.createElement("button");
+  manager.type = "button";
+  manager.className = "glassButton glassButtonPrimary";
+  manager.textContent = `Написать ${state.managerLabel.toLowerCase()}`;
+  manager.addEventListener("click", () => {
+    triggerHaptic(webApp, "medium");
+    openManagerChat();
+  });
+
+  right.append(askGuide, manager);
+
+  const tabs = document.createElement("div");
+  tabs.className = "topNavTabs";
+  const routes: Array<{ view: AppView; label: string }> = [
+    { view: "home", label: "Главная" },
+    { view: "picker", label: "Подбор" },
+    { view: "chat", label: state.advisorName },
+  ];
+  for (const route of routes) {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "chipButton topNavTab";
+    tab.textContent = route.label;
+    if (state.view === route.view || (route.view === "picker" && state.view === "results")) {
+      tab.classList.add("isActive");
+    }
+    tab.addEventListener("click", () => {
+      triggerHaptic(webApp, "light");
+      navigateTo(route.view);
+    });
+    tabs.appendChild(tab);
+  }
+
+  const viewBadge = document.createElement("span");
+  viewBadge.className = "chip";
+  viewBadge.textContent = `Раздел: ${VIEW_TITLES[state.view]}`;
+  tabs.appendChild(viewBadge);
+
+  nav.append(left, right, tabs);
+  return nav;
 }
 
 function createChipGroup(
@@ -379,11 +523,7 @@ function createHomeView(): HTMLElement {
         navigateTo("chat");
         return;
       }
-      if (state.results.length > 0) {
-        sendConsultationRequestToChat();
-        return;
-      }
-      navigateTo("picker");
+      openManagerChat();
     });
     section.appendChild(card);
   });
@@ -538,9 +678,9 @@ function createResultsView(): HTMLElement {
   const contactButton = document.createElement("button");
   contactButton.type = "button";
   contactButton.className = "glassButton glassButtonPrimary";
-  contactButton.textContent = "Связаться с менеджером";
+  contactButton.textContent = `Написать ${state.managerLabel.toLowerCase()}`;
   contactButton.addEventListener("click", () => {
-    sendConsultationRequestToChat();
+    openManagerChat();
   });
 
   actions.append(askButton, contactButton);
@@ -554,7 +694,7 @@ function createChatMessage(item: ChatMessage): HTMLElement {
 
   const role = document.createElement("p");
   role.className = "chatRole";
-  role.textContent = item.role === "user" ? "Вы" : "Консультант";
+  role.textContent = item.role === "user" ? "Вы" : state.advisorName;
 
   const text = document.createElement("p");
   text.className = "chatText";
@@ -610,7 +750,7 @@ function createChatView(): HTMLElement {
   const intro = document.createElement("article");
   intro.className = "glassCard chatIntro";
   intro.innerHTML = `
-    <h3 class="sectionTitle sectionTitleCompact">Можно просто пообщаться и получить пользу</h3>
+    <h3 class="sectionTitle sectionTitleCompact">Можно просто пообщаться с ${state.advisorName} и получить пользу</h3>
     <p class="actionSubtitle">Задавайте вопросы про стратегию поступления, подготовку по предметам, выбор программы и формат обучения.</p>
   `;
   container.appendChild(intro);
@@ -622,7 +762,7 @@ function createChatView(): HTMLElement {
     const empty = document.createElement("article");
     empty.className = "glassCard chatBubble chatBubbleAssistant";
     empty.innerHTML = `
-      <p class="chatRole">Консультант</p>
+      <p class="chatRole">${state.advisorName}</p>
       <p class="chatText">Можете начать с любого вопроса. Например: «Ученик 10 класса, как распределить подготовку к ЕГЭ и олимпиадам?»</p>
     `;
     messages.appendChild(empty);
@@ -636,7 +776,7 @@ function createChatView(): HTMLElement {
     const progress = document.createElement("article");
     progress.className = "glassCard chatProgress";
     progress.innerHTML = `
-      <p class="chatRole">Консультант</p>
+      <p class="chatRole">${state.advisorName}</p>
       <p class="chatText progressPulse">${state.chatProgressText}</p>
       <p class="chatMeta">Прошло: ${state.chatElapsedSec} сек</p>
     `;
@@ -656,9 +796,9 @@ function createChatView(): HTMLElement {
     const managerButton = document.createElement("button");
     managerButton.type = "button";
     managerButton.className = "glassButton glassButtonPrimary";
-    managerButton.textContent = "Оставить контакт менеджеру";
+    managerButton.textContent = `Написать ${state.managerLabel.toLowerCase()}`;
     managerButton.addEventListener("click", () => {
-      sendConsultationRequestToChat();
+      openManagerChat();
     });
     managerCard.appendChild(managerButton);
     container.appendChild(managerCard);
@@ -694,7 +834,7 @@ function createChatView(): HTMLElement {
   const send = document.createElement("button");
   send.type = "button";
   send.className = "glassButton glassButtonPrimary";
-  send.textContent = state.chatLoading ? "Обрабатываю…" : "Отправить вопрос";
+  send.textContent = state.chatLoading ? "Обрабатываю…" : `Спросить ${state.advisorName}`;
   send.disabled = state.chatLoading || state.chatInput.trim().length === 0;
   send.addEventListener("click", () => {
     triggerHaptic(webApp, "medium");
@@ -715,7 +855,7 @@ function createBottomDock(): HTMLElement {
   const label = document.createElement("span");
   label.className = "dockLabel";
   if (state.view === "chat") {
-    label.textContent = "Диалог открыт. Можно спрашивать про стратегию, курсы и поступление.";
+    label.textContent = `${state.advisorName} онлайн. Можно спрашивать про стратегию, курсы и поступление.`;
   } else if (state.view === "results") {
     label.textContent = "Видите варианты. Если нужен точный подбор под детали, подключим менеджера.";
   } else {
@@ -728,7 +868,7 @@ function createBottomDock(): HTMLElement {
   const ask = document.createElement("button");
   ask.className = "glassButton";
   ask.type = "button";
-  ask.textContent = "Задать вопрос";
+  ask.textContent = `Спросить ${state.advisorName}`;
   ask.addEventListener("click", () => {
     triggerHaptic(webApp, "light");
     navigateTo("chat");
@@ -739,13 +879,13 @@ function createBottomDock(): HTMLElement {
   primary.type = "button";
 
   if (state.view === "results") {
-    primary.textContent = "Связаться с менеджером";
+    primary.textContent = `Написать ${state.managerLabel.toLowerCase()}`;
     primary.addEventListener("click", () => {
       triggerHaptic(webApp, "medium");
-      sendConsultationRequestToChat();
+      openManagerChat();
     });
   } else if (state.view === "chat") {
-    primary.textContent = state.chatLoading ? "Обрабатываю…" : "Отправить вопрос";
+    primary.textContent = state.chatLoading ? "Обрабатываю…" : `Спросить ${state.advisorName}`;
     primary.disabled = state.chatLoading || state.chatInput.trim().length === 0;
     primary.addEventListener("click", () => {
       triggerHaptic(webApp, "medium");
@@ -934,16 +1074,16 @@ function syncTelegramMainButton(): void {
   }
 
   if (state.view === "results") {
-    button.setText("Связаться с менеджером");
+    button.setText(`Написать ${state.managerLabel.toLowerCase()}`);
     button.enable();
-    mainButtonHandler = () => sendConsultationRequestToChat();
+    mainButtonHandler = () => openManagerChat();
     button.onClick(mainButtonHandler);
     button.show();
     return;
   }
 
   if (state.view === "chat") {
-    button.setText(state.chatLoading ? "Обрабатываю…" : "Отправить вопрос");
+    button.setText(state.chatLoading ? "Обрабатываю…" : `Спросить ${state.advisorName}`);
     if (state.chatLoading || state.chatInput.trim().length === 0) {
       button.disable();
     } else {
@@ -1090,6 +1230,36 @@ async function askAssistantQuestion(questionOverride?: string): Promise<void> {
   }
 }
 
+async function loadMiniappMeta(): Promise<void> {
+  try {
+    const response = await fetch("/api/miniapp/meta");
+    if (!response.ok) {
+      return;
+    }
+    const payload = (await response.json()) as MiniappMetaResponse;
+    if (!payload.ok) {
+      return;
+    }
+    if (typeof payload.brand_name === "string" && payload.brand_name.trim()) {
+      state.brandName = payload.brand_name.trim();
+    }
+    if (typeof payload.advisor_name === "string" && payload.advisor_name.trim()) {
+      state.advisorName = payload.advisor_name.trim();
+    }
+    if (typeof payload.manager_label === "string" && payload.manager_label.trim()) {
+      state.managerLabel = payload.manager_label.trim();
+    }
+    if (typeof payload.manager_chat_url === "string") {
+      state.managerChatUrl = payload.manager_chat_url.trim();
+    }
+    if (typeof payload.user_miniapp_url === "string" && payload.user_miniapp_url.trim()) {
+      state.userMiniappUrl = payload.user_miniapp_url.trim();
+    }
+  } catch (_error) {
+    // Keep defaults when metadata endpoint is unavailable.
+  }
+}
+
 async function loadWhoAmI(): Promise<void> {
   try {
     const headers = buildAuthHeaders(state.initData);
@@ -1117,6 +1287,7 @@ function render(): void {
   const container = document.createElement("main");
   container.className = "appShell";
   container.appendChild(renderHeader(state.statusLine));
+  container.appendChild(createTopNav());
 
   const error = renderError();
   if (error) {
@@ -1144,4 +1315,4 @@ function render(): void {
 }
 
 render();
-void loadWhoAmI().then(() => render());
+void Promise.all([loadMiniappMeta(), loadWhoAmI()]).then(() => render());

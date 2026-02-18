@@ -92,6 +92,28 @@ class ApiUserWebappTests(unittest.TestCase):
         self.assertEqual(response.json()["ok"], False)
         self.assertEqual(response.json()["reason"], "not_in_telegram")
 
+    def test_miniapp_meta_returns_brand_advisor_and_manager_links(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = _settings(root / "app.db", root / "missing_dist")
+            cfg.miniapp_brand_name = "УНПК МФТИ"
+            cfg.miniapp_advisor_name = "Гид"
+            cfg.sales_manager_label = "Старший менеджер"
+            cfg.sales_manager_chat_url = "https://t.me/kmipt_sales_manager"
+            cfg.user_webapp_url = "https://example.com/app"
+            app = create_app(cfg)
+            client = TestClient(app)
+            response = client.get("/api/miniapp/meta")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["brand_name"], "УНПК МФТИ")
+        self.assertEqual(payload["advisor_name"], "Гид")
+        self.assertEqual(payload["manager_label"], "Старший менеджер")
+        self.assertEqual(payload["manager_chat_url"], "https://t.me/kmipt_sales_manager")
+        self.assertEqual(payload["user_miniapp_url"], "https://example.com/app")
+
     def test_whoami_accepts_header_and_authorization_tma(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

@@ -17,6 +17,11 @@
         <p class="kicker">KMIPT Sales Agent</p>
         <h1>Admin Mini App</h1>
         <p class="subtitle">Лиды, диалоги и история обращений в прозрачном live-интерфейсе.</p>
+        <div class="hero-actions">
+          <button class="glass-btn" id="quickBack">← Назад</button>
+          <button class="glass-btn" id="quickGuide">Спросить Гида</button>
+          <button class="glass-btn glass-btn-primary" id="quickManager">Написать менеджеру</button>
+        </div>
       </div>
       <div class="status-badges">
         <span class="badge" id="authStatus">Авторизация...</span>
@@ -67,6 +72,13 @@
     <footer class="footer">
       <p>Для доступа используется Telegram WebApp initData + allowlist администраторов.</p>
     </footer>
+
+    <nav class="mobile-nav glass" aria-label="Быстрая навигация">
+      <button class="mobile-tab active" data-tab-target="leads">Лиды</button>
+      <button class="mobile-tab" data-tab-target="conversations">Диалоги</button>
+      <button class="mobile-tab" data-tab-target="history">История</button>
+      <button class="mobile-tab" data-action="guide">Гид</button>
+    </nav>
   </main>
 
   <script src="https://telegram.org/js/telegram-web-app.js"></script>

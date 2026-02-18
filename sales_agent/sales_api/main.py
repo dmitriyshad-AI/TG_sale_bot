@@ -941,6 +941,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             conn.close()
         return payload
 
+    @app.get("/api/miniapp/meta")
+    async def miniapp_meta():
+        manager_chat_url = cfg.sales_manager_chat_url.strip()
+        user_miniapp_url = cfg.user_webapp_url.strip() or "/app"
+        if user_miniapp_url and not (
+            user_miniapp_url.startswith("http://")
+            or user_miniapp_url.startswith("https://")
+            or user_miniapp_url.startswith("/")
+        ):
+            user_miniapp_url = f"/{user_miniapp_url}"
+
+        return {
+            "ok": True,
+            "brand_name": cfg.miniapp_brand_name,
+            "advisor_name": cfg.miniapp_advisor_name,
+            "manager_label": cfg.sales_manager_label,
+            "manager_chat_url": manager_chat_url,
+            "user_miniapp_url": user_miniapp_url,
+        }
+
     @app.get("/")
     async def root():
         app_status = "ready" if user_webapp_ready else "build-required"

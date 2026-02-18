@@ -39,6 +39,10 @@ class Settings:
     user_webapp_url: str = ""
     openai_web_fallback_enabled: bool = True
     openai_web_fallback_domain: str = "kmipt.ru"
+    miniapp_brand_name: str = "УНПК МФТИ"
+    miniapp_advisor_name: str = "Гид"
+    sales_manager_label: str = "Менеджер"
+    sales_manager_chat_url: str = ""
     running_on_render: bool = False
     persistent_data_root: Path = Path()
 
@@ -151,6 +155,10 @@ def get_settings() -> Settings:
         admin_telegram_ids=tuple(admin_telegram_ids),
         admin_webapp_url=os.getenv("ADMIN_WEBAPP_URL", "").strip(),
         user_webapp_url=os.getenv("USER_WEBAPP_URL", "").strip(),
+        miniapp_brand_name=os.getenv("MINIAPP_BRAND_NAME", "УНПК МФТИ").strip() or "УНПК МФТИ",
+        miniapp_advisor_name=os.getenv("MINIAPP_ADVISOR_NAME", "Гид").strip() or "Гид",
+        sales_manager_label=os.getenv("SALES_MANAGER_LABEL", "Менеджер").strip() or "Менеджер",
+        sales_manager_chat_url=os.getenv("SALES_MANAGER_CHAT_URL", "").strip(),
         running_on_render=running_on_render,
         persistent_data_root=persistent_data_root,
     )

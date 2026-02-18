@@ -49,6 +49,10 @@ class ConfigTests(unittest.TestCase):
             "CRM_PROVIDER": "amo",
             "AMO_API_URL": "https://amo.example/api",
             "AMO_ACCESS_TOKEN": "amo-token",
+            "MINIAPP_BRAND_NAME": "УНПК МФТИ",
+            "MINIAPP_ADVISOR_NAME": "Гид",
+            "SALES_MANAGER_LABEL": "Старший менеджер",
+            "SALES_MANAGER_CHAT_URL": "https://t.me/kmipt_sales_manager",
         },
         clear=True,
     )
@@ -82,6 +86,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.crm_provider, "amo")
         self.assertEqual(settings.amo_api_url, "https://amo.example/api")
         self.assertEqual(settings.amo_access_token, "amo-token")
+        self.assertEqual(settings.miniapp_brand_name, "УНПК МФТИ")
+        self.assertEqual(settings.miniapp_advisor_name, "Гид")
+        self.assertEqual(settings.sales_manager_label, "Старший менеджер")
+        self.assertEqual(settings.sales_manager_chat_url, "https://t.me/kmipt_sales_manager")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_get_settings_uses_defaults(self) -> None:
@@ -108,6 +116,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.crm_provider, "none")
         self.assertEqual(settings.amo_api_url, "")
         self.assertEqual(settings.amo_access_token, "")
+        self.assertEqual(settings.miniapp_brand_name, "УНПК МФТИ")
+        self.assertEqual(settings.miniapp_advisor_name, "Гид")
+        self.assertEqual(settings.sales_manager_label, "Менеджер")
+        self.assertEqual(settings.sales_manager_chat_url, "")
         self.assertEqual(settings.tallanto_api_token, "")
         self.assertFalse(settings.tallanto_read_only)
         self.assertEqual(settings.tallanto_default_contact_module, "")

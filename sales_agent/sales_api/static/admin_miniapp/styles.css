@@ -122,6 +122,13 @@ h1 {
   max-width: 62ch;
 }
 
+.hero-actions {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .status-badges {
   display: grid;
   gap: 8px;
@@ -209,6 +216,12 @@ h2 {
   box-shadow: 0 8px 20px rgba(61, 156, 255, 0.2);
 }
 
+.glass-btn-primary {
+  border-color: rgba(93, 173, 255, 0.65);
+  background: linear-gradient(120deg, var(--accent), var(--accent-soft));
+  color: #ffffff;
+}
+
 .input-wrap {
   display: inline-grid;
   gap: 4px;
@@ -279,6 +292,30 @@ h2 {
   padding: 6px;
 }
 
+.mobile-nav {
+  position: sticky;
+  bottom: max(10px, env(safe-area-inset-bottom));
+  display: none;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px;
+}
+
+.mobile-tab {
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-soft);
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.mobile-tab.active {
+  color: #ffffff;
+  background: linear-gradient(120deg, var(--accent), var(--accent-soft));
+}
+
 @media (max-width: 740px) {
   .layout {
     width: min(1120px, 96vw);
@@ -295,5 +332,14 @@ h2 {
 
   .tab {
     white-space: nowrap;
+  }
+
+  .hero-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .mobile-nav {
+    display: grid;
   }
 }

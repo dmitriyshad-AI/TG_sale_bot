@@ -2,6 +2,13 @@
   const state = {
     initData: "",
     me: null,
+    tabHistory: ["leads"],
+    meta: {
+      advisorName: "Гид",
+      managerLabel: "Менеджер",
+      managerChatUrl: "",
+      userMiniappUrl: "/app",
+    },
   };
 
   function getTelegramInitData() {
@@ -26,6 +33,17 @@
   function setUserStatus(text) {
     const status = document.getElementById("userStatus");
     status.textContent = text;
+  }
+
+  function setQuickActionLabels() {
+    const guideBtn = document.getElementById("quickGuide");
+    const managerBtn = document.getElementById("quickManager");
+    if (guideBtn) {
+      guideBtn.textContent = `Спросить ${state.meta.advisorName}`;
+    }
+    if (managerBtn) {
+      managerBtn.textContent = `Написать ${String(state.meta.managerLabel || "менеджеру").toLowerCase()}`;
+    }
   }
 
   function renderEmpty(target, message) {
@@ -55,6 +73,33 @@
     return payload;
   }
 
+  function openExternal(url) {
+    const target = String(url || "").trim();
+    if (!target) {
+      return false;
+    }
+    const webApp = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+    try {
+      if (target.startsWith("https://t.me/") || target.startsWith("tg://")) {
+        if (webApp && typeof webApp.openTelegramLink === "function") {
+          webApp.openTelegramLink(target);
+          return true;
+        }
+      } else if (webApp && typeof webApp.openLink === "function") {
+        webApp.openLink(target);
+        return true;
+      }
+    } catch (_error) {
+      // Fall through to window.open fallback below.
+    }
+    try {
+      window.open(target, "_blank", "noopener,noreferrer");
+      return true;
+    } catch (_windowError) {
+      return false;
+    }
+  }
+
   function escapeHtml(value) {
     return String(value || "")
       .replaceAll("&", "&amp;")
@@ -70,6 +115,29 @@
       : [state.me.first_name, state.me.last_name].filter(Boolean).join(" ") || String(payload.user_id || "-");
     setUserStatus(`Пользователь: ${userLabel}`);
     setStatus("Авторизация подтверждена");
+  }
+
+  async function loadMiniappMeta() {
+    try {
+      const payload = await apiGet("/api/miniapp/meta");
+      if (payload && payload.ok) {
+        if (payload.advisor_name) {
+          state.meta.advisorName = String(payload.advisor_name).trim() || "Гид";
+        }
+        if (payload.manager_label) {
+          state.meta.managerLabel = String(payload.manager_label).trim() || "Менеджер";
+        }
+        if (typeof payload.manager_chat_url === "string") {
+          state.meta.managerChatUrl = payload.manager_chat_url.trim();
+        }
+        if (payload.user_miniapp_url) {
+          state.meta.userMiniappUrl = String(payload.user_miniapp_url).trim() || "/app";
+        }
+      }
+    } catch (_error) {
+      // keep defaults
+    }
+    setQuickActionLabels();
   }
 
   async function loadLeads() {
@@ -166,13 +234,53 @@
       .join("");
   }
 
-  function switchTab(tabId) {
+  function switchTab(tabId, pushHistory) {
     document.querySelectorAll(".tab").forEach((tab) => {
       tab.classList.toggle("active", tab.dataset.tab === tabId);
+    });
+    document.querySelectorAll(".mobile-tab[data-tab-target]").forEach((tab) => {
+      tab.classList.toggle("active", tab.dataset.tabTarget === tabId);
     });
     document.querySelectorAll(".panel").forEach((panel) => {
       panel.classList.toggle("active", panel.id === `panel-${tabId}`);
     });
+    if (pushHistory !== false) {
+      const last = state.tabHistory[state.tabHistory.length - 1];
+      if (last !== tabId) {
+        state.tabHistory.push(tabId);
+      }
+    }
+  }
+
+  function goBack() {
+    if (state.tabHistory.length <= 1) {
+      switchTab("leads", false);
+      return;
+    }
+    state.tabHistory.pop();
+    const prev = state.tabHistory[state.tabHistory.length - 1] || "leads";
+    switchTab(prev, false);
+  }
+
+  function openGuide() {
+    const target = String(state.meta.userMiniappUrl || "/app").trim();
+    if (target.startsWith("http://") || target.startsWith("https://") || target.startsWith("tg://")) {
+      if (!openExternal(target)) {
+        setStatus("Не удалось открыть Гида", "error");
+      }
+      return;
+    }
+    window.location.href = target.startsWith("/") ? target : `/${target}`;
+  }
+
+  function openManager() {
+    if (!state.meta.managerChatUrl) {
+      setStatus("Ссылка менеджера не настроена в окружении", "error");
+      return;
+    }
+    if (!openExternal(state.meta.managerChatUrl)) {
+      setStatus("Не удалось открыть чат менеджера", "error");
+    }
   }
 
   async function bootstrap() {
@@ -184,6 +292,7 @@
     }
 
     try {
+      await loadMiniappMeta();
       await loadMe();
       await loadLeads();
       await loadConversations();
@@ -198,7 +307,13 @@
   }
 
   document.querySelectorAll(".tab").forEach((tab) => {
-    tab.addEventListener("click", () => switchTab(tab.dataset.tab));
+    tab.addEventListener("click", () => switchTab(tab.dataset.tab, true));
+  });
+  document.querySelectorAll(".mobile-tab[data-tab-target]").forEach((tab) => {
+    tab.addEventListener("click", () => switchTab(tab.dataset.tabTarget, true));
+  });
+  document.querySelectorAll(".mobile-tab[data-action='guide']").forEach((tab) => {
+    tab.addEventListener("click", () => openGuide());
   });
   document.getElementById("refreshLeads").addEventListener("click", () => {
     loadLeads().catch((error) => renderError(document.getElementById("leadsList"), error.message));
@@ -209,6 +324,9 @@
   document.getElementById("loadHistory").addEventListener("click", () => {
     loadHistory().catch((error) => renderError(document.getElementById("historyList"), error.message));
   });
+  document.getElementById("quickBack").addEventListener("click", () => goBack());
+  document.getElementById("quickGuide").addEventListener("click", () => openGuide());
+  document.getElementById("quickManager").addEventListener("click", () => openManager());
 
   bootstrap();
 })();
