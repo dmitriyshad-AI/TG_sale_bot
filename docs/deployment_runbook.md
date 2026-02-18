@@ -34,6 +34,7 @@ ADMIN_PASS=strong_password
 ADMIN_MINIAPP_ENABLED=false
 ADMIN_TELEGRAM_IDS=
 ADMIN_WEBAPP_URL=
+USER_WEBAPP_URL=
 SALES_TONE_PATH=
 WEBAPP_DIST_PATH=
 ```
@@ -72,7 +73,7 @@ python3 scripts/validate_catalog.py
 python3 scripts/preflight_audit.py
 ```
 
-Сборка пользовательского Mini App (если используете `/app`):
+Сборка пользовательского Mini App (если запускаете без Docker):
 
 ```bash
 cd webapp
@@ -80,6 +81,8 @@ npm install
 npm run build
 cd ..
 ```
+
+Примечание: в Docker-сборке проекта miniapp собирается автоматически в `Dockerfile`.
 
 Если используете knowledge-base через File Search:
 
@@ -226,6 +229,9 @@ docker compose -f docker-compose.prod.yml up -d --build
   - в Telegram Mini App: передавать `initData` в `X-Tg-Init-Data` или `Authorization: tma <initData>`
 - `GET /api/catalog/search?brand=kmipt&grade=11&goal=ege&subject=math&format=online`
   - возвращает top-3 программ с `why_match`, `price_text`, `next_start_text`, `usp`
+- Клиентский запуск из Telegram:
+  - задайте `USER_WEBAPP_URL=https://<your-domain>/app`
+  - пользователь открывает miniapp командой `/app`
 
 ## 11) Tallanto Read-Only API
 

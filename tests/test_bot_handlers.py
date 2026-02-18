@@ -127,7 +127,7 @@ class BotSyncCoverageTests(unittest.TestCase):
             bot.main()
 
         builder.token.assert_called_once_with("tg-token")
-        self.assertEqual(app_mock.add_handler.call_count, 7)
+        self.assertEqual(app_mock.add_handler.call_count, 8)
         app_mock.run_polling.assert_called_once()
 
     def test_main_raises_in_webhook_mode(self) -> None:
@@ -138,6 +138,14 @@ class BotSyncCoverageTests(unittest.TestCase):
         ):
             with self.assertRaises(RuntimeError):
                 bot.main()
+
+    def test_resolve_user_webapp_url_uses_admin_url_fallback(self) -> None:
+        with patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(user_webapp_url="", admin_webapp_url="https://example.com/admin/miniapp"),
+        ):
+            self.assertEqual(bot._resolve_user_webapp_url(), "https://example.com/app")
 
 
 @unittest.skipUnless(HAS_BOT_DEPS, "bot dependencies are not installed")
@@ -330,6 +338,44 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
 
         mock_reply.assert_awaited()
         self.assertIn("выключен", mock_reply.await_args_list[0].args[1].lower())
+
+    async def test_app_returns_no_url_message_when_not_configured(self) -> None:
+        update = _make_update_with_message("/app")
+        with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
+            bot, "_get_or_create_user_id", return_value=1
+        ), patch.object(bot.db_module, "log_message"), patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(
+                database_path=Path("/tmp/test.db"),
+                user_webapp_url="",
+                admin_webapp_url="",
+            ),
+        ), patch.object(bot, "_reply", new_callable=AsyncMock) as mock_reply:
+            await bot.app(update=update, context=SimpleNamespace(args=[], user_data={}))
+
+        mock_reply.assert_awaited()
+        self.assertIn("не настроен", mock_reply.await_args_list[0].args[1].lower())
+
+    async def test_app_returns_webapp_button_when_url_configured(self) -> None:
+        update = _make_update_with_message("/app")
+        with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
+            bot, "_get_or_create_user_id", return_value=1
+        ), patch.object(bot.db_module, "log_message"), patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(
+                database_path=Path("/tmp/test.db"),
+                user_webapp_url="https://example.com/app",
+                admin_webapp_url="",
+            ),
+        ):
+            await bot.app(update=update, context=SimpleNamespace(args=[], user_data={}))
+
+        update.message.reply_text.assert_awaited_once()
+        kwargs = update.message.reply_text.call_args.kwargs
+        self.assertIn("reply_markup", kwargs)
+        self.assertIsNotNone(kwargs["reply_markup"])
 
     async def test_adminapp_returns_forbidden_for_non_admin(self) -> None:
         update = _make_update_with_message("/adminapp")

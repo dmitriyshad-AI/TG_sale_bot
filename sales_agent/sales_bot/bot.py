@@ -1950,6 +1950,86 @@ async def kbtest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def _resolve_user_webapp_url() -> str:
+    explicit_url = str(getattr(settings, "user_webapp_url", "") or "").strip()
+    if explicit_url:
+        return explicit_url
+
+    admin_url = str(getattr(settings, "admin_webapp_url", "") or "").strip()
+    if not admin_url:
+        return ""
+    marker = "/admin/miniapp"
+    index = admin_url.find(marker)
+    if index == -1:
+        return ""
+    base = admin_url[:index].rstrip("/")
+    if not base:
+        return ""
+    return f"{base}/app"
+
+
+async def app(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not update.message:
+        return
+
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        incoming_text = update.message.text or "/app"
+        db_module.log_message(
+            conn,
+            user_id,
+            "inbound",
+            incoming_text,
+            {"type": "command", "handler": "app", **_user_meta(update)},
+        )
+    finally:
+        conn.close()
+
+    user_webapp_url = _resolve_user_webapp_url()
+    if not user_webapp_url:
+        reply = (
+            "Клиентский Mini App пока не настроен. "
+            "Добавьте USER_WEBAPP_URL=https://<your-domain>/app в окружение."
+        )
+        delivered = await _reply(update, reply)
+        conn = db_module.get_connection(settings.database_path)
+        try:
+            user_id = _get_or_create_user_id(update, conn)
+            db_module.log_message(
+                conn,
+                user_id,
+                "outbound",
+                delivered,
+                {"handler": "app", "status": "no_url", "quality": _quality_meta(delivered), **_user_meta(update)},
+            )
+        finally:
+            conn.close()
+        return
+
+    button = InlineKeyboardButton(
+        text="Открыть Mini App",
+        web_app=WebAppInfo(url=user_webapp_url),
+    )
+    markup = InlineKeyboardMarkup([[button]])
+    message_text = "Откройте Mini App для удобного подбора программ и консультации."
+    delivered_text = apply_tone_guardrails(message_text)
+    await update.message.reply_text(delivered_text, reply_markup=markup)
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user_id = _get_or_create_user_id(update, conn)
+        db_module.log_message(
+            conn,
+            user_id,
+            "outbound",
+            delivered_text,
+            {"handler": "app", "status": "ok", "quality": _quality_meta(delivered_text), **_user_meta(update)},
+        )
+    finally:
+        conn.close()
+
+
 async def adminapp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
@@ -2274,6 +2354,7 @@ async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 def _configure_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("app", app))
     application.add_handler(CommandHandler("leadtest", leadtest))
     application.add_handler(CommandHandler("kbtest", kbtest))
     application.add_handler(CommandHandler("adminapp", adminapp))

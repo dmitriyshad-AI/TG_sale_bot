@@ -106,6 +106,22 @@ class SyncKmiptCatalogScriptTests(unittest.TestCase):
         self.assertEqual(product["format"], "offline")
         self.assertIn("Цена на странице: 36900 руб.", product["usp"])
 
+    def test_infer_category_prefers_base_for_school_paths_even_with_olympiad_text(self) -> None:
+        category = sync_kmipt_catalog.infer_category(
+            url="https://kmipt.ru/courses/School_5_8/Fizika_5_8/",
+            title="Физика 7—8 класс",
+            description="Преподаватели — эксперты ЕГЭ и олимпиад.",
+        )
+        self.assertEqual(category, "base")
+
+    def test_infer_category_prefers_base_for_enrollment_pages(self) -> None:
+        category = sync_kmipt_catalog.infer_category(
+            url="https://kmipt.ru/courses/aktualnyi_nabor/Nabor_ochno/",
+            title="Набор на очные курсы для 1—11 классов",
+            description="Подготовка к ЕГЭ, ОГЭ и олимпиадам.",
+        )
+        self.assertEqual(category, "base")
+
     def test_main_sync_writes_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output = Path(tmpdir) / "products.yaml"

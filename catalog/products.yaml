@@ -220,7 +220,7 @@ products:
   brand: kmipt
   title: Физика 7—8 класс
   url: https://kmipt.ru/courses/School_5_8/Fizika_5_8/
-  category: olympiad
+  category: base
   grade_min: 7
   grade_max: 8
   subjects:
@@ -238,7 +238,7 @@ products:
   brand: kmipt
   title: Математика 5—8 класс
   url: https://kmipt.ru/courses/School_5_8/Matematika_5_8/
-  category: olympiad
+  category: base
   grade_min: 5
   grade_max: 8
   subjects:
@@ -256,7 +256,7 @@ products:
   brand: kmipt
   title: Набор на очные курсы для 1—11 классов 2025—2026 учебный год
   url: https://kmipt.ru/courses/aktualnyi_nabor/Nabor_ochno/
-  category: oge
+  category: base
   grade_min: 1
   grade_max: 11
   subjects:
@@ -274,7 +274,7 @@ products:
   brand: kmipt
   title: Набор на онлайн обучение для 5 – 11 классов 2025—2026 учебный год
   url: https://kmipt.ru/courses/aktualnyi_nabor/Nabor_online_5-11kl/
-  category: oge
+  category: base
   grade_min: 5
   grade_max: 11
   subjects:
@@ -458,7 +458,7 @@ products:
   brand: kmipt
   title: Онлайн—курсы для 7 класса
   url: https://kmipt.ru/courses/online_5_8/Courses_7/
-  category: olympiad
+  category: base
   grade_min: 7
   grade_max: 7
   subjects:
@@ -476,7 +476,7 @@ products:
   brand: kmipt
   title: Онлайн—курсы для 5 класса
   url: https://kmipt.ru/courses/online_5_8/courses_5/
-  category: olympiad
+  category: base
   grade_min: 5
   grade_max: 5
   subjects:
@@ -494,7 +494,7 @@ products:
   brand: kmipt
   title: Онлайн—курс для 6 класса
   url: https://kmipt.ru/courses/online_5_8/courses_6/
-  category: olympiad
+  category: base
   grade_min: 6
   grade_max: 6
   subjects:
@@ -530,7 +530,7 @@ products:
   brand: kmipt
   title: Онлайн—курсы для 3—4 класса
   url: https://kmipt.ru/courses/online_5_8/courses_online_3_4/
-  category: olympiad
+  category: base
   grade_min: 3
   grade_max: 4
   subjects:
@@ -566,9 +566,9 @@ products:
   brand: kmipt
   title: Очные курсы по математике, физике, информатике и русскому языку в г. Жуковский
   url: https://kmipt.ru/courses/zhukovskiy/ochnie/
-  category: oge
-  grade_min: 8
-  grade_max: 9
+  category: base
+  grade_min: 5
+  grade_max: 11
   subjects:
   - math
   - physics
@@ -579,7 +579,7 @@ products:
   - 'Название на странице: Очные курсы по математике, физике, информатике и русскому
     языку в г. Жуковский'
   - 'Источник: https://kmipt.ru/courses/zhukovskiy/ochnie/'
-  - 'Уровень по разделу сайта: 8-9 класс, формат очно'
+  - 'Уровень по разделу сайта: 5-11 класс, формат очно'
   - 'Описание страницы: УНПК МФТИ объявляет набор на 2025-2026 год! Подготовка к ЕГЭ,
     ОГЭ и Олимпиадам с преподавателями МГУ и МФТИ! Звони и записывайся!'
   - 'Цена на странице: 6400 руб.'

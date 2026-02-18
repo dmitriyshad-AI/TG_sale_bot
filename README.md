@@ -47,6 +47,8 @@ npm run build
 # далее FastAPI отдаёт webapp/dist по пути /app
 ```
 
+Примечание: при запуске через Docker `webapp` собирается автоматически в `Dockerfile`.
+
 ## Docker / Compose
 
 ```bash
@@ -133,6 +135,7 @@ ADMIN_PASS=
 ADMIN_MINIAPP_ENABLED=false
 ADMIN_TELEGRAM_IDS=
 ADMIN_WEBAPP_URL=
+USER_WEBAPP_URL=
 
 # Optional overrides
 DATABASE_PATH=
@@ -205,6 +208,8 @@ SALES_TONE_PATH=
   - `/leadtest`, затем отправить номер отдельным сообщением.
 - Открытие admin miniapp из Telegram:
   - `/adminapp` (команда доступна только ID из `ADMIN_TELEGRAM_IDS`).
+- Открытие клиентского miniapp из Telegram:
+  - `/app` (доступно всем пользователям, нужен `USER_WEBAPP_URL`).
 - Проверка knowledge-базы в Telegram:
   - `/kbtest Какие условия возврата?`, или
   - `/kbtest`, затем отправить вопрос отдельным сообщением.
@@ -242,6 +247,7 @@ SALES_TONE_PATH=
     - `ADMIN_MINIAPP_ENABLED=true`
     - `ADMIN_TELEGRAM_IDS=123456789,987654321`
     - `ADMIN_WEBAPP_URL=https://<your-domain>/admin/miniapp`
+    - `USER_WEBAPP_URL=https://<your-domain>/app` (клиентский miniapp, команда `/app`)
   - UI:
     - `GET /admin/miniapp`
     - стиль интерфейса: glass/liquid в голубых тонах, адаптивен для mobile/desktop.

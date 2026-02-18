@@ -261,15 +261,42 @@ def _match_grade_range(text: str) -> Tuple[int, int] | None:
 
 
 def infer_category(url: str, title: str, description: str) -> str:
-    source = f"{url}\n{title}\n{description}".lower()
-    if "огэ" in source or "/oge/" in source:
-        return "oge"
-    if "егэ" in source or "/ege/" in source or "/ege_10/" in source:
-        return "ege"
-    if "олимп" in source:
+    path = urlparse(url).path.lower()
+
+    # URL-first routing avoids false positives from marketing copy like
+    # "эксперты олимпиад", which appears on many non-olympiad pages.
+    if "/courses/kanikuly/" in path:
+        return "camp"
+    if "/courses/olimp/" in path or "/courses/nabor_online/olimp_" in path:
         return "olympiad"
+    if "/courses/oge/" in path or path.endswith("/online/online_oge/"):
+        return "oge"
+    if (
+        "/courses/ege/" in path
+        or "/courses/ege_10/" in path
+        or path.endswith("/online/online_11/")
+        or path.endswith("/online/courses_10/")
+    ):
+        return "ege"
+    if (
+        "/courses/school_5_8/" in path
+        or "/courses/online_5_8/" in path
+        or "/courses/1_4_klass/" in path
+        or "/courses/progr/" in path
+        or "/courses/aktualnyi_nabor/" in path
+        or "/courses/zhukovskiy/" in path
+    ):
+        return "base"
+
+    source = f"{title}\n{description}".lower()
     if "лагер" in source or "каникул" in source:
         return "camp"
+    if "огэ" in source:
+        return "oge"
+    if "егэ" in source:
+        return "ege"
+    if "олимпиад" in source and "подготов" in source:
+        return "olympiad"
     if "интенсив" in source:
         return "intensive"
     return "base"

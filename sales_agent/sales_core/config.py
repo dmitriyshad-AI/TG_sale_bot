@@ -36,6 +36,7 @@ class Settings:
     admin_miniapp_enabled: bool = False
     admin_telegram_ids: tuple[int, ...] = ()
     admin_webapp_url: str = ""
+    user_webapp_url: str = ""
     openai_web_fallback_enabled: bool = True
     openai_web_fallback_domain: str = "kmipt.ru"
 
@@ -117,4 +118,5 @@ def get_settings() -> Settings:
         admin_miniapp_enabled=admin_miniapp_enabled,
         admin_telegram_ids=tuple(admin_telegram_ids),
         admin_webapp_url=os.getenv("ADMIN_WEBAPP_URL", "").strip(),
+        user_webapp_url=os.getenv("USER_WEBAPP_URL", "").strip(),
     )
