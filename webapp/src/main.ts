@@ -25,8 +25,8 @@ type ChoiceOption = {
 type SearchCriteria = {
   brand: string;
   grade: number | null;
-  goal: string | null;
-  subject: string | null;
+  goals: string[];
+  subjects: string[];
   format: string | null;
 };
 
@@ -92,7 +92,15 @@ type MiniappMetaResponse = {
 
 type MiniAppPayload = {
   flow: "catalog" | "consultation_request";
-  criteria: SearchCriteria;
+  criteria: {
+    brand: string;
+    grade: number | null;
+    goal: string | null;
+    subject: string | null;
+    goals: string[];
+    subjects: string[];
+    format: string | null;
+  };
   top: Array<{ id: string; title: string; url: string }>;
   question?: string;
   note?: string;
@@ -198,8 +206,7 @@ const SUBJECT_OPTIONS: ChoiceOption[] = [
 
 const FORMAT_OPTIONS: ChoiceOption[] = [
   { label: "Онлайн", value: "online" },
-  { label: "Очно", value: "offline" },
-  { label: "Гибрид", value: "hybrid" }
+  { label: "Очно", value: "offline" }
 ];
 
 const CHAT_PROGRESS_STEPS = [
@@ -269,8 +276,8 @@ const state: AppState = {
   criteria: {
     brand: "kmipt",
     grade: null,
-    goal: null,
-    subject: null,
+    goals: [],
+    subjects: [],
     format: null
   },
   results: [],
@@ -356,7 +363,7 @@ function createActionCard(action: HomeAction): HTMLButtonElement {
       : action.subtitle;
 
   const chip = document.createElement("span");
-  chip.className = "chip";
+  chip.className = "chip actionChip";
   if (action.key === "pick") {
     chip.textContent = "Запустить подбор курса";
   } else if (action.key === "ask") {
@@ -430,28 +437,53 @@ function compactValue(value: string | null | undefined, fallback = "не ука�
   return normalized || fallback;
 }
 
+const GOAL_LABELS: Record<string, string> = {
+  ege: "ЕГЭ",
+  oge: "ОГЭ",
+  olympiad: "олимпиады",
+  camp: "лагерь",
+  base: "успеваемость",
+};
+
+const SUBJECT_LABELS: Record<string, string> = {
+  math: "математика",
+  physics: "физика",
+  informatics: "информатика",
+};
+
+const FORMAT_LABELS: Record<string, string> = {
+  online: "онлайн",
+  offline: "очно",
+};
+
+function formatSelectedLabels(values: string[], mapping: Record<string, string>, fallback = "не указано"): string {
+  if (!values.length) {
+    return fallback;
+  }
+  return values.map((value) => mapping[value] || value).join(", ");
+}
+
+function toSingleCriteriaPayload(criteria: SearchCriteria): {
+  brand: string;
+  grade: number | null;
+  goal: string | null;
+  subject: string | null;
+  format: string | null;
+} {
+  return {
+    brand: criteria.brand,
+    grade: criteria.grade,
+    goal: criteria.goals[0] || null,
+    subject: criteria.subjects[0] || null,
+    format: criteria.format,
+  };
+}
+
 function compactCriteriaSummary(): string {
   const grade = state.criteria.grade ? `${state.criteria.grade} кл.` : "класс не указан";
-  const goalMap: Record<string, string> = {
-    ege: "ЕГЭ",
-    oge: "ОГЭ",
-    olympiad: "олимпиады",
-    camp: "лагерь",
-    base: "успеваемость",
-  };
-  const subjectMap: Record<string, string> = {
-    math: "математика",
-    physics: "физика",
-    informatics: "информатика",
-  };
-  const formatMap: Record<string, string> = {
-    online: "онлайн",
-    offline: "очно",
-    hybrid: "гибрид",
-  };
-  const goal = goalMap[state.criteria.goal || ""] || compactValue(state.criteria.goal);
-  const subject = subjectMap[state.criteria.subject || ""] || compactValue(state.criteria.subject);
-  const mode = formatMap[state.criteria.format || ""] || compactValue(state.criteria.format);
+  const goal = formatSelectedLabels(state.criteria.goals, GOAL_LABELS);
+  const subject = formatSelectedLabels(state.criteria.subjects, SUBJECT_LABELS);
+  const mode = FORMAT_LABELS[state.criteria.format || ""] || compactValue(state.criteria.format);
   return `${grade}; цель: ${goal}; предмет: ${subject}; формат: ${mode}`;
 }
 
@@ -526,7 +558,7 @@ function buildAssistantContextSummary(history: AssistantHistoryItem[]): string {
   return summary.length > 1200 ? `${summary.slice(0, 1197)}...` : summary;
 }
 
-function createChatTopBar(): HTMLElement {
+function createScreenTopBar(title: string, targetView: AppView = "home"): HTMLElement {
   const bar = document.createElement("section");
   bar.className = "glassCard chatTopBar";
 
@@ -536,22 +568,23 @@ function createChatTopBar(): HTMLElement {
   back.textContent = "Назад";
   back.addEventListener("click", () => {
     triggerHaptic(webApp, "light");
-    navigateTo("home");
+    navigateTo(targetView);
   });
 
   const hint = document.createElement("span");
   hint.className = "chatTopHint";
-  hint.textContent = `Чат с ${state.advisorName}`;
+  hint.textContent = title;
 
   bar.append(back, hint);
   return bar;
 }
 
-function createChipGroup(
+function createSingleChipGroup(
   title: string,
   options: ChoiceOption[],
   selectedValue: string | null,
-  onSelect: (value: string) => void
+  onSelect: (value: string | null) => void,
+  subtitle = "Можно выбрать один вариант или пропустить"
 ): HTMLElement {
   const section = document.createElement("section");
   section.className = "glassCard pickerSection";
@@ -559,9 +592,12 @@ function createChipGroup(
   const label = document.createElement("h3");
   label.className = "sectionTitle sectionTitleCompact";
   label.textContent = title;
+  const hint = document.createElement("p");
+  hint.className = "actionSubtitle";
+  hint.textContent = subtitle;
 
   const chips = document.createElement("div");
-  chips.className = "chipGrid";
+  chips.className = "chipGrid chipGridWide";
 
   for (const option of options) {
     const button = document.createElement("button");
@@ -574,25 +610,160 @@ function createChipGroup(
     button.addEventListener("click", () => {
       triggerHaptic(webApp, "light");
       state.error = null;
-      onSelect(option.value);
+      onSelect(selectedValue === option.value ? null : option.value);
       updateCoachmarkProgress();
       render();
     });
     chips.appendChild(button);
   }
 
-  section.append(label, chips);
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "chipButton chipButtonGhost";
+  clear.textContent = "Не важно";
+  if (selectedValue === null) {
+    clear.classList.add("isActive");
+  }
+  clear.addEventListener("click", () => {
+    triggerHaptic(webApp, "light");
+    state.error = null;
+    onSelect(null);
+    render();
+  });
+  chips.appendChild(clear);
+
+  section.append(label, hint, chips);
   return section;
 }
 
-function createGradeGroup(): HTMLElement {
-  const options: ChoiceOption[] = Array.from({ length: 11 }, (_unused, index) => ({
-    label: String(index + 1),
-    value: String(index + 1)
-  }));
-  return createChipGroup("Шаг 1. Класс ученика", options, state.criteria.grade ? String(state.criteria.grade) : null, (value) => {
-    state.criteria.grade = Number(value);
+function createMultiChipGroup(
+  title: string,
+  options: ChoiceOption[],
+  selectedValues: string[],
+  onToggle: (value: string) => void,
+  subtitle = "Можно выбрать несколько вариантов или пропустить"
+): HTMLElement {
+  const section = document.createElement("section");
+  section.className = "glassCard pickerSection";
+
+  const label = document.createElement("h3");
+  label.className = "sectionTitle sectionTitleCompact";
+  label.textContent = title;
+
+  const hint = document.createElement("p");
+  hint.className = "actionSubtitle";
+  hint.textContent = subtitle;
+
+  const chips = document.createElement("div");
+  chips.className = "chipGrid chipGridWide";
+
+  for (const option of options) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chipButton";
+    if (selectedValues.includes(option.value)) {
+      button.classList.add("isActive");
+    }
+    button.textContent = option.label;
+    button.addEventListener("click", () => {
+      triggerHaptic(webApp, "light");
+      state.error = null;
+      onToggle(option.value);
+      updateCoachmarkProgress();
+      render();
+    });
+    chips.appendChild(button);
+  }
+
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "chipButton chipButtonGhost";
+  clear.textContent = "Не важно";
+  if (selectedValues.length === 0) {
+    clear.classList.add("isActive");
+  }
+  clear.addEventListener("click", () => {
+    triggerHaptic(webApp, "light");
+    state.error = null;
+    selectedValues.length = 0;
+    updateCoachmarkProgress();
+    render();
   });
+  chips.appendChild(clear);
+
+  section.append(label, hint, chips);
+  return section;
+}
+
+function createGradeSliderGroup(): HTMLElement {
+  const section = document.createElement("section");
+  section.className = "glassCard pickerSection pickerSectionCompact";
+
+  const label = document.createElement("h3");
+  label.className = "sectionTitle sectionTitleCompact";
+  label.textContent = "Класс ученика";
+
+  const hint = document.createElement("p");
+  hint.className = "actionSubtitle";
+  hint.textContent = "Сдвиньте ползунок или оставьте «Не важно»";
+
+  const row = document.createElement("div");
+  row.className = "gradeSliderRow";
+
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "chipButton chipButtonGhost";
+  clear.textContent = "Не важно";
+  if (state.criteria.grade === null) {
+    clear.classList.add("isActive");
+  }
+  clear.addEventListener("click", () => {
+    triggerHaptic(webApp, "light");
+    state.criteria.grade = null;
+    render();
+  });
+
+  const valueBadge = document.createElement("span");
+  valueBadge.className = "chip gradeValueChip";
+  valueBadge.textContent = state.criteria.grade ? `${state.criteria.grade} класс` : "Класс не выбран";
+
+  row.append(clear, valueBadge);
+
+  const sliderWrap = document.createElement("div");
+  sliderWrap.className = "gradeSliderWrap";
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.min = "1";
+  slider.max = "11";
+  slider.step = "1";
+  slider.value = String(state.criteria.grade || 8);
+  slider.className = "gradeSlider";
+  slider.addEventListener("input", () => {
+    state.criteria.grade = Number(slider.value);
+    updateCoachmarkProgress();
+    render();
+  });
+
+  const marks = document.createElement("div");
+  marks.className = "gradeMarks";
+  for (let grade = 1; grade <= 11; grade += 1) {
+    const mark = document.createElement("span");
+    mark.textContent = String(grade);
+    marks.appendChild(mark);
+  }
+
+  sliderWrap.append(slider, marks);
+  section.append(label, hint, row, sliderWrap);
+  return section;
+}
+
+function toggleSelection(list: string[], value: string): void {
+  const index = list.indexOf(value);
+  if (index >= 0) {
+    list.splice(index, 1);
+    return;
+  }
+  list.push(value);
 }
 
 function createHomeView(): HTMLElement {
@@ -624,31 +795,35 @@ function createHomeView(): HTMLElement {
 function createPickerView(): HTMLElement {
   const container = document.createElement("section");
   container.className = "pickerStack";
+  container.appendChild(createScreenTopBar("Подбор курса", "home"));
 
-  const doneCount = [state.criteria.grade, state.criteria.goal, state.criteria.subject, state.criteria.format].filter(
-    (item) => item !== null && item !== ""
-  ).length;
+  const doneCount = [
+    state.criteria.grade !== null,
+    state.criteria.goals.length > 0,
+    state.criteria.subjects.length > 0,
+    Boolean(state.criteria.format),
+  ].filter(Boolean).length;
   const intro = document.createElement("article");
   intro.className = "glassCard pickerIntro";
   intro.innerHTML = `
     <h3 class="sectionTitle sectionTitleCompact">Подбор за 4 шага</h3>
-    <p class="actionSubtitle">Готовность: ${doneCount}/4. После этого покажем лучшие варианты.</p>
+    <p class="actionSubtitle">Готовность: ${doneCount}/4. Можно оставить любые шаги пустыми.</p>
   `;
   container.appendChild(intro);
 
-  container.appendChild(createGradeGroup());
+  container.appendChild(createGradeSliderGroup());
   container.appendChild(
-    createChipGroup("Шаг 2. Цель подготовки", GOAL_OPTIONS, state.criteria.goal, (value) => {
-      state.criteria.goal = value;
+    createMultiChipGroup("Цель подготовки", GOAL_OPTIONS, state.criteria.goals, (value) => {
+      toggleSelection(state.criteria.goals, value);
     })
   );
   container.appendChild(
-    createChipGroup("Шаг 3. Предмет", SUBJECT_OPTIONS, state.criteria.subject, (value) => {
-      state.criteria.subject = value;
+    createMultiChipGroup("Приоритетный предмет", SUBJECT_OPTIONS, state.criteria.subjects, (value) => {
+      toggleSelection(state.criteria.subjects, value);
     })
   );
   container.appendChild(
-    createChipGroup("Шаг 4. Формат занятий", FORMAT_OPTIONS, state.criteria.format, (value) => {
+    createSingleChipGroup("Формат занятий", FORMAT_OPTIONS, state.criteria.format, (value) => {
       state.criteria.format = value;
     })
   );
@@ -656,26 +831,26 @@ function createPickerView(): HTMLElement {
   const controls = document.createElement("div");
   controls.className = "pickerControls";
 
-  const askBtn = document.createElement("button");
-  askBtn.type = "button";
-  askBtn.className = "glassButton";
-  askBtn.textContent = guideActionText();
-  askBtn.addEventListener("click", () => {
+  const managerBtn = document.createElement("button");
+  managerBtn.type = "button";
+  managerBtn.className = "glassButton";
+  managerBtn.textContent = "Перейти в чат с менеджером";
+  managerBtn.addEventListener("click", () => {
     triggerHaptic(webApp, "light");
-    navigateTo("chat");
+    openManagerChat();
   });
 
   const submit = document.createElement("button");
   submit.type = "button";
   submit.className = "glassButton glassButtonPrimary";
   submit.textContent = state.loading ? "Подбираю…" : "Получить подбор";
-  submit.disabled = !isCriteriaComplete() || state.loading;
+  submit.disabled = state.loading;
   submit.addEventListener("click", () => {
     triggerHaptic(webApp, "medium");
     void loadCatalogResults();
   });
 
-  controls.append(askBtn, submit);
+  controls.append(managerBtn, submit);
   container.appendChild(controls);
 
   return container;
@@ -716,6 +891,7 @@ function createResultSummaryCard(): HTMLElement {
 function createResultsView(): HTMLElement {
   const section = document.createElement("section");
   section.className = "resultsGrid";
+  section.appendChild(createScreenTopBar("Результаты подбора", "picker"));
 
   section.appendChild(createResultSummaryCard());
 
@@ -767,13 +943,13 @@ function createResultsView(): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "resultsActions";
 
-  const askButton = document.createElement("button");
-  askButton.type = "button";
-  askButton.className = "glassButton";
-  askButton.textContent = guideActionText();
-  askButton.addEventListener("click", () => {
+  const resetButton = document.createElement("button");
+  resetButton.type = "button";
+  resetButton.className = "glassButton";
+  resetButton.textContent = "Изменить параметры";
+  resetButton.addEventListener("click", () => {
     triggerHaptic(webApp, "light");
-    navigateTo("chat");
+    navigateTo("picker");
   });
 
   const contactButton = document.createElement("button");
@@ -784,7 +960,7 @@ function createResultsView(): HTMLElement {
     openManagerChat();
   });
 
-  actions.append(askButton, contactButton);
+  actions.append(resetButton, contactButton);
   section.appendChild(actions);
   return section;
 }
@@ -996,7 +1172,7 @@ function createChatMessage(item: ChatMessage): HTMLElement {
 function createChatView(): HTMLElement {
   const container = document.createElement("section");
   container.className = "chatStack";
-  container.appendChild(createChatTopBar());
+  container.appendChild(createScreenTopBar(`Чат с ${state.advisorName}`, "home"));
 
   const intro = document.createElement("article");
   intro.className = "glassCard chatIntro";
@@ -1152,10 +1328,6 @@ function renderError(): HTMLElement | null {
   return box;
 }
 
-function isCriteriaComplete(): boolean {
-  return Boolean(state.criteria.grade && state.criteria.goal && state.criteria.subject && state.criteria.format);
-}
-
 function updateCoachmarkProgress(): void {
   if (state.coachmarkStep < 0) {
     return;
@@ -1163,7 +1335,7 @@ function updateCoachmarkProgress(): void {
   if (state.coachmarkStep === 0 && state.criteria.grade) {
     state.coachmarkStep = 1;
   }
-  if (state.coachmarkStep === 1 && state.criteria.goal) {
+  if (state.coachmarkStep === 1 && (state.criteria.goals.length > 0 || state.criteria.subjects.length > 0)) {
     state.coachmarkStep = 2;
   }
 }
@@ -1181,9 +1353,14 @@ function clearTelegramMainButtonHandler(target: TelegramWebApp | null): void {
 }
 
 function buildMiniAppPayload(flow: "catalog" | "consultation_request", note?: string): string | null {
+  const criteria = toSingleCriteriaPayload(state.criteria);
   const payload: MiniAppPayload = {
     flow,
-    criteria: state.criteria,
+    criteria: {
+      ...criteria,
+      goals: [...state.criteria.goals],
+      subjects: [...state.criteria.subjects],
+    },
     top: state.results.slice(0, 3).map((item) => ({ id: item.id, title: item.title, url: item.url })),
     note
   };
@@ -1251,33 +1428,80 @@ async function loadCatalogResults(): Promise<void> {
   state.statusLine = "Собираю лучшие варианты под ваш запрос…";
   render();
 
-  const params = new URLSearchParams({
-    brand: state.criteria.brand,
-    grade: String(state.criteria.grade),
-    goal: String(state.criteria.goal),
-    subject: String(state.criteria.subject),
-    format: String(state.criteria.format)
-  });
+  const goals = state.criteria.goals.length > 0 ? [...state.criteria.goals] : [null];
+  const subjects = state.criteria.subjects.length > 0 ? [...state.criteria.subjects] : [null];
+  const requests: Array<{ goal: string | null; subject: string | null }> = [];
+  for (const goal of goals) {
+    for (const subject of subjects) {
+      requests.push({ goal, subject });
+    }
+  }
+  const uniqueRequests = requests.filter(
+    (item, index, list) =>
+      list.findIndex((entry) => entry.goal === item.goal && entry.subject === item.subject) === index
+  );
 
   try {
-    const response = await fetch(`/api/catalog/search?${params.toString()}`);
-    if (!response.ok) {
-      throw new Error(`Catalog request failed: ${response.status}`);
-    }
+    const responses = await Promise.all(
+      uniqueRequests.map(async (request) => {
+        const params = new URLSearchParams();
+        params.set("brand", state.criteria.brand);
+        if (state.criteria.grade) {
+          params.set("grade", String(state.criteria.grade));
+        }
+        if (request.goal) {
+          params.set("goal", request.goal);
+        }
+        if (request.subject) {
+          params.set("subject", request.subject);
+        }
+        if (state.criteria.format) {
+          params.set("format", state.criteria.format);
+        }
 
-    const payload = (await response.json()) as CatalogResponse;
-    state.results = Array.isArray(payload.items) ? payload.items : [];
-    state.matchQuality = payload.match_quality || (state.results.length > 0 ? "limited" : "none");
-    state.managerRecommended = Boolean(payload.manager_recommended);
-    state.managerMessage = payload.manager_message || "";
-    state.managerCallToAction = payload.manager_call_to_action || "";
+        const response = await fetch(`/api/catalog/search?${params.toString()}`);
+        if (!response.ok) {
+          throw new Error(`Catalog request failed: ${response.status}`);
+        }
+        return (await response.json()) as CatalogResponse;
+      })
+    );
+
+    const merged = new Map<string, { item: CatalogItem; score: number }>();
+    for (const payload of responses) {
+      const qualityScore = payload.match_quality === "strong" ? 6 : payload.match_quality === "limited" ? 3 : 1;
+      (payload.items || []).forEach((item, index) => {
+        const rankScore = 6 - index;
+        const existing = merged.get(item.id);
+        const score = qualityScore + rankScore;
+        if (!existing || score > existing.score) {
+          merged.set(item.id, { item, score });
+        }
+      });
+    }
+    const topItems = Array.from(merged.values())
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 3)
+      .map((entry) => entry.item);
+
+    const bestPayload =
+      [...responses].sort((left, right) => {
+        const rank = (value: CatalogResponse): number =>
+          value.match_quality === "strong" ? 3 : value.match_quality === "limited" ? 2 : 1;
+        return rank(right) - rank(left);
+      })[0] || null;
+    state.results = topItems;
+    state.matchQuality = bestPayload?.match_quality || (state.results.length > 0 ? "limited" : "none");
+    state.managerRecommended = Boolean(bestPayload?.manager_recommended);
+    state.managerMessage = bestPayload?.manager_message || "";
+    state.managerCallToAction = bestPayload?.manager_call_to_action || "";
     state.lastManagerOffer = {
       recommended: state.managerRecommended,
       message: state.managerMessage,
       callToAction: state.managerCallToAction
     };
     state.view = "results";
-    state.statusLine = "Подбор готов • можно уточнить вопрос или подключить менеджера";
+    state.statusLine = "Подбор готов • при желании скорректируйте параметры";
     if (state.coachmarkStep >= 2) {
       state.coachmarkStep = 2;
     }
@@ -1377,7 +1601,7 @@ async function askAssistantQuestion(questionOverride?: string): Promise<void> {
       headers,
       body: JSON.stringify({
         question,
-        criteria: state.criteria,
+        criteria: toSingleCriteriaPayload(state.criteria),
         context_summary: contextSummary,
         recent_history: recentHistory
       })

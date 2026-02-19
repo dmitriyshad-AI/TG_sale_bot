@@ -95,6 +95,11 @@
   padding: 10px 12px;
   font-size: 14px;
   font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
+  white-space: normal;
+  word-break: break-word;
+  min-height: 46px;
   cursor: pointer;
   transition: transform 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
   box-shadow: 0 8px 16px rgba(7, 73, 111, 0.1);
