@@ -111,6 +111,11 @@ type ChatMessage = {
   meta?: string;
 };
 
+type AssistantHistoryItem = {
+  role: "user" | "assistant";
+  text: string;
+};
+
 class AssistantApiError extends Error {
   readonly userMessage: string;
   readonly requestId: string | null;
@@ -219,6 +224,8 @@ const COACHMARKS = [
 const BRAND_LOGO_URL = "/brand-kmipt.png?v=20260219";
 const DEFAULT_MANAGER_TELEGRAM_USERNAME = "unpk_mipt";
 const MAX_MANAGER_CONTEXT_LENGTH = 420;
+const MAX_ASSISTANT_HISTORY_ITEMS = 12;
+const MAX_ASSISTANT_HISTORY_TEXT_LENGTH = 320;
 
 const rootNode = document.getElementById("app");
 if (!rootNode) {
@@ -510,6 +517,39 @@ function buildManagerContextSummary(): string {
   ];
 
   return trimForManager(lines.join("\n"));
+}
+
+function normalizeHistoryTextForApi(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= MAX_ASSISTANT_HISTORY_TEXT_LENGTH) {
+    return normalized;
+  }
+  return `${normalized.slice(0, MAX_ASSISTANT_HISTORY_TEXT_LENGTH - 3).trimEnd()}...`;
+}
+
+function buildRecentHistoryPayload(limit = MAX_ASSISTANT_HISTORY_ITEMS): AssistantHistoryItem[] {
+  return state.chatMessages
+    .slice(-limit)
+    .map((item) => ({
+      role: item.role,
+      text: normalizeHistoryTextForApi(item.text)
+    }))
+    .filter((item) => item.text.length > 0);
+}
+
+function buildAssistantContextSummary(history: AssistantHistoryItem[]): string {
+  const userName = state.user?.first_name?.trim() || "клиент";
+  const compactHistory = history
+    .slice(-4)
+    .map((item) => `${item.role === "user" ? "клиент" : "гид"}: ${item.text}`)
+    .join(" | ");
+  const lines = [
+    `Пользователь: ${userName}`,
+    `Критерии: ${compactCriteriaSummary()}`,
+    compactHistory ? `Последние реплики: ${compactHistory}` : "Последние реплики: пока без истории",
+  ];
+  const summary = lines.join("\n");
+  return summary.length > 1200 ? `${summary.slice(0, 1197)}...` : summary;
 }
 
 function createTopNav(): HTMLElement {
@@ -1069,14 +1109,15 @@ function createChatView(): HTMLElement {
 
   const composer = document.createElement("div");
   composer.className = "glassCard chatComposer";
-
-  const controls = document.createElement("div");
-  controls.className = "chatControls";
+  const inputRow = document.createElement("div");
+  inputRow.className = "chatInputRow";
 
   const send = document.createElement("button");
   send.type = "button";
-  send.className = "glassButton glassButtonPrimary";
-  send.textContent = state.chatLoading ? "Обрабатываю…" : "Отправить вопрос";
+  send.className = "glassButton glassButtonPrimary chatSendButton";
+  send.textContent = state.chatLoading ? "..." : ">";
+  send.title = state.chatLoading ? "Обрабатываю вопрос" : "Отправить";
+  send.setAttribute("aria-label", state.chatLoading ? "Обрабатываю вопрос" : "Отправить вопрос");
   send.disabled = state.chatLoading || state.chatInput.trim().length === 0;
   send.addEventListener("click", () => {
     triggerHaptic(webApp, "medium");
@@ -1085,19 +1126,29 @@ function createChatView(): HTMLElement {
 
   const textarea = document.createElement("textarea");
   textarea.className = "chatTextarea";
-  textarea.rows = 4;
+  textarea.rows = 3;
   textarea.maxLength = 2000;
   textarea.placeholder = "Напишите вопрос в 1-2 фразах. Например: «Как начать подготовку к ЕГЭ в 10 классе?»";
   textarea.value = state.chatInput;
   textarea.disabled = state.chatLoading;
+  textarea.enterKeyHint = "send";
   textarea.addEventListener("input", () => {
     state.chatInput = textarea.value;
     // Avoid full rerender on each keystroke: it drops focus in Telegram iOS mini app.
     send.disabled = state.chatLoading || state.chatInput.trim().length === 0;
   });
+  textarea.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (!send.disabled) {
+        triggerHaptic(webApp, "medium");
+        void askAssistantQuestion();
+      }
+    }
+  });
 
-  controls.append(send);
-  composer.append(textarea, controls);
+  inputRow.append(textarea, send);
+  composer.append(inputRow);
   container.appendChild(composer);
 
   return container;
@@ -1144,11 +1195,10 @@ function createBottomDock(): HTMLElement {
       openManagerChat();
     });
   } else if (state.view === "chat") {
-    primary.textContent = state.chatLoading ? "Обрабатываю…" : "Отправить вопрос";
-    primary.disabled = state.chatLoading || state.chatInput.trim().length === 0;
+    primary.textContent = managerActionText();
     primary.addEventListener("click", () => {
       triggerHaptic(webApp, "medium");
-      void askAssistantQuestion();
+      openManagerChat();
     });
   } else {
     primary.textContent = "Открыть подбор";
@@ -1429,6 +1479,8 @@ async function askAssistantQuestion(questionOverride?: string): Promise<void> {
 
   state.error = null;
   state.chatMessages.push({ role: "user", text: question });
+  const recentHistory = buildRecentHistoryPayload();
+  const contextSummary = buildAssistantContextSummary(recentHistory);
   state.chatInput = "";
   state.chatLoading = true;
   startChatProgress();
@@ -1445,7 +1497,9 @@ async function askAssistantQuestion(questionOverride?: string): Promise<void> {
       headers,
       body: JSON.stringify({
         question,
-        criteria: state.criteria
+        criteria: state.criteria,
+        context_summary: contextSummary,
+        recent_history: recentHistory
       })
     });
     if (!response.ok) {

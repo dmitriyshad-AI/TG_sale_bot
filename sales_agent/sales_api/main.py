@@ -8,7 +8,7 @@ import json
 import logging
 import secrets
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 from uuid import uuid4
 from urllib.parse import quote_plus
 
@@ -59,6 +59,8 @@ WEBHOOK_RETRY_BASE_SECONDS = 2
 CRM_CACHE_TTL_SECONDS = 3 * 3600
 ASSISTANT_TIMEOUT_SECONDS = 36.0
 REQUEST_ID_HEADER = "X-Request-ID"
+ASSISTANT_RECENT_HISTORY_LIMIT = 12
+ASSISTANT_RECENT_HISTORY_TEXT_LIMIT = 350
 ASSISTANT_KNOWLEDGE_HINTS = {
     "договор",
     "документ",
@@ -95,16 +97,37 @@ class AssistantCriteriaPayload(BaseModel):
     format: Optional[str] = None
 
 
+class AssistantHistoryItem(BaseModel):
+    role: Literal["user", "assistant"]
+    text: str = Field(min_length=1, max_length=2000)
+
+
 class AssistantAskPayload(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     criteria: Optional[AssistantCriteriaPayload] = None
     context_summary: Optional[str] = Field(default=None, max_length=1200)
+    recent_history: Optional[list[AssistantHistoryItem]] = Field(default=None, max_length=30)
 
 
 def _normalize_lookup_token(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip().lower()
+
+
+def _sanitize_recent_history(items: Optional[list[AssistantHistoryItem]]) -> list[Dict[str, str]]:
+    if not items:
+        return []
+
+    sanitized: list[Dict[str, str]] = []
+    for item in items[-ASSISTANT_RECENT_HISTORY_LIMIT:]:
+        text = " ".join(item.text.split())
+        if not text:
+            continue
+        if len(text) > ASSISTANT_RECENT_HISTORY_TEXT_LIMIT:
+            text = f"{text[:ASSISTANT_RECENT_HISTORY_TEXT_LIMIT - 3].rstrip()}..."
+        sanitized.append({"role": item.role, "text": text})
+    return sanitized
 
 
 def _is_format_compatible(criteria_format: Optional[str], product_format: Optional[str]) -> bool:
@@ -787,8 +810,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 timeout_seconds=ASSISTANT_TIMEOUT_SECONDS,
             )
             user_context: Dict[str, Any] = {}
+            recent_history = _sanitize_recent_history(payload.recent_history)
             if isinstance(payload.context_summary, str) and payload.context_summary.strip():
                 user_context["summary_text"] = payload.context_summary.strip()
+            elif recent_history:
+                history_excerpt = " | ".join(
+                    f"{item['role']}: {item['text']}" for item in recent_history[-4:]
+                )
+                if history_excerpt:
+                    user_context["summary_text"] = history_excerpt[:1200]
 
             answer_text = ""
             sources: list[str] = []
@@ -815,7 +845,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     missing_fields=_missing_criteria_fields(criteria),
                     repeat_count=0,
                     product_offer_allowed=match_quality != "none",
-                    recent_history=[],
+                    recent_history=recent_history,
                     user_context=user_context,
                 )
                 answer_text = consult_reply.answer_text
@@ -825,7 +855,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 general_reply = await llm_client.build_general_help_reply_async(
                     user_message=question,
                     dialogue_state=None,
-                    recent_history=[],
+                    recent_history=recent_history,
                     user_context=user_context,
                 )
                 answer_text = general_reply.answer_text

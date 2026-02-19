@@ -5,6 +5,8 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 from urllib.parse import urlencode
 
 try:
@@ -300,6 +302,90 @@ products:
         self.assertIn("processing_note", payload)
         self.assertTrue(response.headers.get("X-Request-ID"))
         self.assertEqual(payload.get("request_id"), response.headers.get("X-Request-ID"))
+
+    def test_assistant_ask_passes_recent_history_to_general_llm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            app = create_app(_settings(root / "app.db", root / "missing_dist"))
+            client = TestClient(app)
+            with patch("sales_agent.sales_api.main.LLMClient") as llm_cls:
+                llm = llm_cls.return_value
+                llm.answer_knowledge_question_async = AsyncMock(
+                    return_value=SimpleNamespace(answer_text="ok", sources=[], used_fallback=False)
+                )
+                llm.build_consultative_reply_async = AsyncMock(
+                    return_value=SimpleNamespace(
+                        answer_text="ok",
+                        used_fallback=False,
+                        recommended_product_ids=[],
+                    )
+                )
+                llm.build_general_help_reply_async = AsyncMock(
+                    return_value=SimpleNamespace(answer_text="Косинус — это ...", used_fallback=False)
+                )
+                response = client.post(
+                    "/api/assistant/ask",
+                    json={
+                        "question": "Что такое косинус?",
+                        "criteria": {"brand": "kmipt"},
+                        "recent_history": [
+                            {"role": "user", "text": "  Ученик   10 класса  "},
+                            {"role": "assistant", "text": "  Ранее обсуждали   план поступления  "},
+                        ],
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        kwargs = llm.build_general_help_reply_async.await_args.kwargs
+        self.assertEqual(
+            kwargs["recent_history"],
+            [
+                {"role": "user", "text": "Ученик 10 класса"},
+                {"role": "assistant", "text": "Ранее обсуждали план поступления"},
+            ],
+        )
+        self.assertIn("summary_text", kwargs["user_context"])
+        self.assertTrue(kwargs["user_context"]["summary_text"])
+
+    def test_assistant_ask_limits_and_truncates_recent_history(self) -> None:
+        long_text = ("очень длинный фрагмент " * 40).strip()
+        history = [
+            {"role": "user" if index % 2 == 0 else "assistant", "text": f"{index}: {long_text}"}
+            for index in range(20)
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            app = create_app(_settings(root / "app.db", root / "missing_dist"))
+            client = TestClient(app)
+            with patch("sales_agent.sales_api.main.LLMClient") as llm_cls:
+                llm = llm_cls.return_value
+                llm.answer_knowledge_question_async = AsyncMock(
+                    return_value=SimpleNamespace(answer_text="ok", sources=[], used_fallback=False)
+                )
+                llm.build_consultative_reply_async = AsyncMock(
+                    return_value=SimpleNamespace(
+                        answer_text="ok",
+                        used_fallback=False,
+                        recommended_product_ids=[],
+                    )
+                )
+                llm.build_general_help_reply_async = AsyncMock(
+                    return_value=SimpleNamespace(answer_text="Ответ", used_fallback=False)
+                )
+                response = client.post(
+                    "/api/assistant/ask",
+                    json={
+                        "question": "Что такое косинус?",
+                        "criteria": {"brand": "kmipt"},
+                        "recent_history": history,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        kwargs = llm.build_general_help_reply_async.await_args.kwargs
+        self.assertEqual(len(kwargs["recent_history"]), 12)
+        self.assertTrue(kwargs["recent_history"][0]["text"].startswith("8:"))
+        self.assertTrue(all(len(item["text"]) <= 350 for item in kwargs["recent_history"]))
 
     def test_assistant_ask_returns_consultative_with_recommendation(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -417,6 +417,13 @@ body::before {
   gap: var(--spacing-2);
 }
 
+.chatInputRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: end;
+}
+
 .chatTextarea {
   width: 100%;
   border-radius: 14px;
@@ -426,8 +433,8 @@ body::before {
   font: inherit;
   line-height: 1.45;
   padding: 12px 14px;
-  resize: vertical;
-  min-height: 96px;
+  resize: none;
+  min-height: 88px;
 }
 
 .chatTextarea:focus {
@@ -447,6 +454,24 @@ body::before {
 
 .chatControls .glassButton {
   width: 100%;
+}
+
+.chatSendButton {
+  width: 48px;
+  min-width: 48px;
+  height: 48px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chatSendButton:disabled {
+  opacity: 0.55;
 }
 
 .errorBox {
@@ -626,6 +651,17 @@ body::before {
 
   .chatControls .glassButton {
     width: 100%;
+  }
+
+  .chatInputRow {
+    gap: 8px;
+  }
+
+  .chatSendButton {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    font-size: 18px;
   }
 
   .chatBubble {
