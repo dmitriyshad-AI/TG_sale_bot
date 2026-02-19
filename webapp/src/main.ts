@@ -738,11 +738,28 @@ function createGradeSliderGroup(): HTMLElement {
   slider.step = "1";
   slider.value = String(state.criteria.grade || 8);
   slider.className = "gradeSlider";
+  const syncGradeControls = (): void => {
+    const grade = state.criteria.grade;
+    valueBadge.textContent = grade ? `${grade} класс` : "Класс не выбран";
+    clear.classList.toggle("isActive", grade === null);
+    if (grade !== null) {
+      const gradeText = String(grade);
+      if (slider.value !== gradeText) {
+        slider.value = gradeText;
+      }
+    }
+  };
+  const commitGradeSelection = (): void => {
+    render();
+  };
   slider.addEventListener("input", () => {
     state.criteria.grade = Number(slider.value);
     updateCoachmarkProgress();
-    render();
+    syncGradeControls();
   });
+  slider.addEventListener("change", commitGradeSelection);
+  slider.addEventListener("pointerup", commitGradeSelection);
+  slider.addEventListener("touchend", commitGradeSelection, { passive: true });
 
   const marks = document.createElement("div");
   marks.className = "gradeMarks";
