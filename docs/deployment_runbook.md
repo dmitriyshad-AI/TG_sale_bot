@@ -196,6 +196,45 @@ docker compose -f docker-compose.prod.yml up -d --build
    - `Starting API on 0.0.0.0...`
    - `Starting Telegram bot polling...`
 
+### Persistent Disk на Render: полный чек-лист
+
+1. Откройте ваш Render `Web Service` -> вкладка `Disks`.
+2. Нажмите `Add Disk`.
+3. Выберите параметры:
+   - Name: `data` (любое понятное имя);
+   - Mount path: `/var/data` (рекомендуемый путь для этого проекта);
+   - Size: минимум `1 GB` для MVP.
+4. Сохраните диск и дождитесь, пока Render применит изменения.
+5. В `Environment` проверьте переменные:
+   - `PERSISTENT_DATA_PATH=/var/data` (рекомендуется явно задать даже при стандартном mount path).
+   - Если mount path другой, укажите ваш путь:
+     - `PERSISTENT_DATA_PATH=<your-mount-path>`, или
+     - `RENDER_DISK_MOUNT_PATH=<your-mount-path>`.
+6. Убедитесь, что не переопределены конфликтующие пути:
+   - `DATABASE_PATH` должен быть внутри mount path (или пустой);
+   - `VECTOR_STORE_META_PATH` должен быть внутри mount path (или пустой).
+7. Нажмите `Manual Deploy` -> `Deploy latest commit`.
+8. После деплоя проверьте runtime-диагностику:
+   ```bash
+   curl -s "https://<your-render-domain>/api/runtime/diagnostics"
+   ```
+   Должно быть:
+   - `runtime.running_on_render = true`
+   - `runtime.persistent_data_root != "/tmp"`
+   - `runtime.database_on_persistent_storage = true`
+   - `runtime.vector_meta_on_persistent_storage = true`
+9. Прогоните автоматическую post-deploy проверку:
+   ```bash
+   python3 scripts/release_smoke.py \
+     --base-url https://<your-render-domain> \
+     --strict-runtime \
+     --require-render-persistent
+   ```
+10. Проверка на устойчивость данных:
+   - отправьте пару сообщений боту;
+   - выполните `Manual Deploy` (или restart);
+   - убедитесь в админке/БД, что история и сессии сохранились.
+
 ### Важно по эксплуатации
 
 - Не запускайте один и тот же токен одновременно локально и в Render.

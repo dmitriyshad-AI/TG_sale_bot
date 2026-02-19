@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from urllib.error import URLError
@@ -28,6 +29,26 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Fail on runtime diagnostics status=warn.",
     )
+    parser.add_argument(
+        "--require-render-persistent",
+        action="store_true",
+        help="Fail if runtime is not on Render persistent storage (/tmp fallback is treated as failure).",
+    )
+    parser.add_argument(
+        "--require-webhook-mode",
+        action="store_true",
+        help="Fail if runtime telegram mode is not webhook.",
+    )
+    parser.add_argument(
+        "--check-telegram-webhook",
+        action="store_true",
+        help="Call Telegram getWebhookInfo and validate webhook state for configured bot token.",
+    )
+    parser.add_argument(
+        "--telegram-token-env",
+        default="TELEGRAM_BOT_TOKEN",
+        help="Env var name that stores Telegram bot token (used with --check-telegram-webhook).",
+    )
     return parser
 
 
@@ -44,6 +65,17 @@ def _fetch_status(base_url: str, path: str, timeout: float) -> int:
     req = Request(url)
     with urlopen(req, timeout=timeout) as response:
         return int(response.status)
+
+
+def _fetch_telegram_webhook_info(bot_token: str, timeout: float) -> dict:
+    url = f"https://api.telegram.org/bot{bot_token}/getWebhookInfo"
+    req = Request(url, headers={"Accept": "application/json"})
+    with urlopen(req, timeout=timeout) as response:
+        raw = response.read().decode("utf-8")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("Unexpected Telegram response format.")
+    return payload
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -97,6 +129,89 @@ def main(argv: list[str] | None = None) -> int:
     if isinstance(runtime, dict) and runtime.get("telegram_mode") == "webhook":
         secret_set = bool(runtime.get("telegram_webhook_secret_set"))
         checks.append(("webhook_secret", True, f"secret_set={secret_set} (recommended=true)"))
+
+    if args.require_webhook_mode:
+        telegram_mode = ""
+        if isinstance(runtime, dict):
+            telegram_mode = str(runtime.get("telegram_mode") or "").strip().lower()
+        checks.append(
+            (
+                "require_webhook_mode",
+                telegram_mode == "webhook",
+                f"telegram_mode={telegram_mode or 'unknown'}",
+            )
+        )
+
+    if args.require_render_persistent:
+        running_on_render = bool(runtime.get("running_on_render")) if isinstance(runtime, dict) else False
+        persistent_root = str(runtime.get("persistent_data_root") or "").strip() if isinstance(runtime, dict) else ""
+        db_on_persistent = bool(runtime.get("database_on_persistent_storage")) if isinstance(runtime, dict) else False
+        vector_on_persistent = bool(runtime.get("vector_meta_on_persistent_storage")) if isinstance(runtime, dict) else False
+        persistent_ok = (
+            running_on_render
+            and persistent_root not in {"", "/tmp"}
+            and db_on_persistent
+            and vector_on_persistent
+        )
+        checks.append(
+            (
+                "render_persistent_storage",
+                persistent_ok,
+                (
+                    f"running_on_render={running_on_render} "
+                    f"persistent_data_root={persistent_root or 'missing'} "
+                    f"database_on_persistent_storage={db_on_persistent} "
+                    f"vector_meta_on_persistent_storage={vector_on_persistent}"
+                ),
+            )
+        )
+
+    if args.check_telegram_webhook:
+        token = os.getenv(args.telegram_token_env, "").strip()
+        if not token:
+            checks.append(
+                (
+                    "telegram_webhook_info",
+                    False,
+                    f"{args.telegram_token_env} is empty",
+                )
+            )
+        else:
+            try:
+                webhook_info_payload = _fetch_telegram_webhook_info(token, args.timeout)
+                ok = bool(webhook_info_payload.get("ok"))
+                result = webhook_info_payload.get("result") if isinstance(webhook_info_payload, dict) else {}
+                result = result if isinstance(result, dict) else {}
+                url = str(result.get("url") or "").strip()
+                pending_count = int(result.get("pending_update_count") or 0)
+                last_error_message = str(result.get("last_error_message") or "").strip()
+                checks.append(
+                    (
+                        "telegram_webhook_info",
+                        ok and bool(url),
+                        f"url_set={bool(url)} pending_update_count={pending_count}",
+                    )
+                )
+                checks.append(
+                    (
+                        "telegram_webhook_last_error",
+                        not bool(last_error_message),
+                        f"last_error_message={last_error_message or 'none'}",
+                    )
+                )
+                if args.require_webhook_mode and isinstance(runtime, dict):
+                    runtime_path = str(runtime.get("telegram_webhook_path") or "").strip()
+                    if runtime_path:
+                        expected_url = f"{args.base_url.rstrip('/')}{runtime_path}"
+                        checks.append(
+                            (
+                                "telegram_webhook_expected_url",
+                                url == expected_url,
+                                f"configured={url or 'missing'} expected={expected_url}",
+                            )
+                        )
+            except Exception as exc:
+                checks.append(("telegram_webhook_info", False, f"error: {exc}"))
 
     failed = [item for item in checks if not item[1]]
     for name, ok, details in checks:

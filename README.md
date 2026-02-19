@@ -64,6 +64,8 @@ docker compose -f docker-compose.prod.yml up -d --build
 ```
 
 Пошаговая инструкция внедрения: `docs/deployment_runbook.md`.
+Чек-лист ручного UAT: `docs/uat_checklist.md`.
+Чек-лист мониторинга и алертов: `docs/ops_monitoring.md`.
 
 ## Render (Free plan, polling)
 
@@ -223,6 +225,13 @@ SALES_TONE_PATH=
   python3 scripts/release_smoke.py --base-url http://127.0.0.1:8000
   # строгий режим по runtime warning:
   python3 scripts/release_smoke.py --base-url https://<your-render-domain> --strict-runtime
+  # production-проверка Render + webhook + persistent disk:
+  python3 scripts/release_smoke.py \
+    --base-url https://<your-render-domain> \
+    --strict-runtime \
+    --require-webhook-mode \
+    --require-render-persistent \
+    --check-telegram-webhook
   ```
 - Режим стартового preflight:
   - `STARTUP_PREFLIGHT_MODE=off` — выключить блокировку старта.
