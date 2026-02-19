@@ -122,6 +122,10 @@ OPENAI_MODEL=gpt-4.1
 OPENAI_VECTOR_STORE_ID=
 OPENAI_WEB_FALLBACK_ENABLED=true
 OPENAI_WEB_FALLBACK_DOMAIN=kmipt.ru
+ASSISTANT_API_TOKEN=
+ASSISTANT_RATE_LIMIT_WINDOW_SECONDS=60
+ASSISTANT_RATE_LIMIT_USER_REQUESTS=24
+ASSISTANT_RATE_LIMIT_IP_REQUESTS=72
 STARTUP_PREFLIGHT_MODE=fail
 TALLANTO_API_URL=
 TALLANTO_API_KEY=
@@ -129,6 +133,9 @@ TALLANTO_API_TOKEN=
 TALLANTO_READ_ONLY=0
 TALLANTO_DEFAULT_CONTACT_MODULE=
 TALLANTO_MOCK_MODE=false
+CRM_API_EXPOSED=false
+CRM_RATE_LIMIT_WINDOW_SECONDS=300
+CRM_RATE_LIMIT_IP_REQUESTS=180
 CRM_PROVIDER=none
 AMO_API_URL=
 AMO_ACCESS_TOKEN=
@@ -190,8 +197,14 @@ SALES_TONE_PATH=
   - в Telegram Mini App: передать `initData` в `X-Tg-Init-Data` или `Authorization: tma <initData>`.
 - API подбора каталога для Mini App:
   - `GET /api/catalog/search?brand=kmipt&grade=11&goal=ege&subject=math&format=online`
+- API ассистента (`POST /api/assistant/ask`) защищен:
+  - доступ из Telegram Mini App через `X-Tg-Init-Data`,
+  - или сервисный токен `X-Assistant-Token` / `Authorization: Bearer ...` (`ASSISTANT_API_TOKEN`).
+  - включены мягкие rate-limit (по Telegram user и IP) с ответом `429` и `Retry-After`.
 - Tallanto read-only API (для miniapp/бэкофиса, без записи в CRM):
   - Требует `TALLANTO_READ_ONLY=1`.
+  - Дополнительно отключен по умолчанию: `CRM_API_EXPOSED=false`.
+  - Для включения нужен `CRM_API_EXPOSED=true` и Basic Auth (`ADMIN_USER`/`ADMIN_PASS`).
   - `GET /api/crm/meta/modules`
   - `GET /api/crm/meta/fields?module=contacts`
   - `GET /api/crm/lookup?module=contacts&field=phone&value=%2B79990000000`

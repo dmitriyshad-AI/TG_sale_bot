@@ -54,6 +54,13 @@ class ConfigTests(unittest.TestCase):
             "SALES_MANAGER_LABEL": "Старший менеджер",
             "SALES_MANAGER_CHAT_URL": "https://t.me/kmipt_sales_manager",
             "STARTUP_PREFLIGHT_MODE": "strict",
+            "ASSISTANT_API_TOKEN": "assist-token",
+            "ASSISTANT_RATE_LIMIT_WINDOW_SECONDS": "90",
+            "ASSISTANT_RATE_LIMIT_USER_REQUESTS": "33",
+            "ASSISTANT_RATE_LIMIT_IP_REQUESTS": "88",
+            "CRM_API_EXPOSED": "true",
+            "CRM_RATE_LIMIT_WINDOW_SECONDS": "420",
+            "CRM_RATE_LIMIT_IP_REQUESTS": "222",
         },
         clear=True,
     )
@@ -92,6 +99,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.sales_manager_label, "Старший менеджер")
         self.assertEqual(settings.sales_manager_chat_url, "https://t.me/kmipt_sales_manager")
         self.assertEqual(settings.startup_preflight_mode, "strict")
+        self.assertEqual(settings.assistant_api_token, "assist-token")
+        self.assertEqual(settings.assistant_rate_limit_window_seconds, 90)
+        self.assertEqual(settings.assistant_rate_limit_user_requests, 33)
+        self.assertEqual(settings.assistant_rate_limit_ip_requests, 88)
+        self.assertTrue(settings.crm_api_exposed)
+        self.assertEqual(settings.crm_rate_limit_window_seconds, 420)
+        self.assertEqual(settings.crm_rate_limit_ip_requests, 222)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_get_settings_uses_defaults(self) -> None:
@@ -123,11 +137,37 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.sales_manager_label, "Менеджер")
         self.assertEqual(settings.sales_manager_chat_url, "")
         self.assertEqual(settings.startup_preflight_mode, "fail")
+        self.assertEqual(settings.assistant_api_token, "")
+        self.assertEqual(settings.assistant_rate_limit_window_seconds, 60)
+        self.assertEqual(settings.assistant_rate_limit_user_requests, 24)
+        self.assertEqual(settings.assistant_rate_limit_ip_requests, 72)
+        self.assertFalse(settings.crm_api_exposed)
+        self.assertEqual(settings.crm_rate_limit_window_seconds, 300)
+        self.assertEqual(settings.crm_rate_limit_ip_requests, 180)
         self.assertEqual(settings.tallanto_api_token, "")
         self.assertFalse(settings.tallanto_read_only)
         self.assertEqual(settings.tallanto_default_contact_module, "")
         self.assertFalse(settings.running_on_render)
         self.assertEqual(settings.persistent_data_root, Path())
+
+    @patch.dict(
+        os.environ,
+        {
+            "ASSISTANT_RATE_LIMIT_WINDOW_SECONDS": "bad",
+            "ASSISTANT_RATE_LIMIT_USER_REQUESTS": "-1",
+            "ASSISTANT_RATE_LIMIT_IP_REQUESTS": "10000",
+            "CRM_RATE_LIMIT_WINDOW_SECONDS": "5",
+            "CRM_RATE_LIMIT_IP_REQUESTS": "0",
+        },
+        clear=True,
+    )
+    def test_rate_limit_env_values_are_sanitized(self) -> None:
+        settings = get_settings()
+        self.assertEqual(settings.assistant_rate_limit_window_seconds, 60)
+        self.assertEqual(settings.assistant_rate_limit_user_requests, 1)
+        self.assertEqual(settings.assistant_rate_limit_ip_requests, 5000)
+        self.assertEqual(settings.crm_rate_limit_window_seconds, 30)
+        self.assertEqual(settings.crm_rate_limit_ip_requests, 1)
 
     @patch.dict(
         os.environ,

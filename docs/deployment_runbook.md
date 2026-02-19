@@ -28,8 +28,15 @@ OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-4.1
 OPENAI_WEB_FALLBACK_ENABLED=true
 OPENAI_WEB_FALLBACK_DOMAIN=kmipt.ru
+ASSISTANT_API_TOKEN=
+ASSISTANT_RATE_LIMIT_WINDOW_SECONDS=60
+ASSISTANT_RATE_LIMIT_USER_REQUESTS=24
+ASSISTANT_RATE_LIMIT_IP_REQUESTS=72
 STARTUP_PREFLIGHT_MODE=fail
 CRM_PROVIDER=none
+CRM_API_EXPOSED=false
+CRM_RATE_LIMIT_WINDOW_SECONDS=300
+CRM_RATE_LIMIT_IP_REQUESTS=180
 BRAND_DEFAULT=kmipt
 ADMIN_USER=admin
 ADMIN_PASS=strong_password
@@ -252,6 +259,7 @@ docker compose -f docker-compose.prod.yml up -d --build
   - `GET /api/crm/meta/modules`
   - `GET /api/crm/meta/fields?module=contacts`
   - `GET /api/crm/lookup?module=contacts&field=phone&value=%2B79990000000`
+- Требуется Basic Auth (`ADMIN_USER` / `ADMIN_PASS`) и `CRM_API_EXPOSED=true`.
 - `lookup` возвращает только обезличенный контекст:
   - `found`, `tags`, `interests`, `last_touch_days`
   - персональные поля (телефоны, адреса, внутренние заметки) не выдаются.

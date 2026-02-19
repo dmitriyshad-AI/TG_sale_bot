@@ -46,6 +46,13 @@ class Settings:
     startup_preflight_mode: str = "off"
     running_on_render: bool = False
     persistent_data_root: Path = Path()
+    assistant_api_token: str = ""
+    assistant_rate_limit_window_seconds: int = 60
+    assistant_rate_limit_user_requests: int = 24
+    assistant_rate_limit_ip_requests: int = 72
+    crm_api_exposed: bool = False
+    crm_rate_limit_window_seconds: int = 300
+    crm_rate_limit_ip_requests: int = 180
 
 
 def project_root() -> Path:
@@ -59,6 +66,17 @@ def _path_is_writable_directory(path: Path) -> bool:
 
 def get_settings() -> Settings:
     root = project_root()
+
+    def _parse_int_env(name: str, default: int, *, min_value: int, max_value: int) -> int:
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return default
+        try:
+            parsed = int(raw)
+        except ValueError:
+            return default
+        return max(min_value, min(max_value, parsed))
+
     running_on_render = any(
         os.getenv(name, "").strip()
         for name in ("RENDER", "RENDER_SERVICE_ID", "RENDER_INSTANCE_ID")
@@ -111,6 +129,7 @@ def get_settings() -> Settings:
         telegram_webhook_path = f"/{telegram_webhook_path}"
     telegram_webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
     admin_miniapp_enabled = os.getenv("ADMIN_MINIAPP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+    crm_api_exposed = os.getenv("CRM_API_EXPOSED", "").strip().lower() in {"1", "true", "yes", "on"}
     openai_web_fallback_enabled = (
         os.getenv("OPENAI_WEB_FALLBACK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     )
@@ -118,6 +137,36 @@ def get_settings() -> Settings:
     startup_preflight_mode = os.getenv("STARTUP_PREFLIGHT_MODE", "fail").strip().lower()
     if startup_preflight_mode not in {"off", "fail", "strict"}:
         startup_preflight_mode = "fail"
+    assistant_rate_limit_window_seconds = _parse_int_env(
+        "ASSISTANT_RATE_LIMIT_WINDOW_SECONDS",
+        60,
+        min_value=10,
+        max_value=3600,
+    )
+    assistant_rate_limit_user_requests = _parse_int_env(
+        "ASSISTANT_RATE_LIMIT_USER_REQUESTS",
+        24,
+        min_value=1,
+        max_value=1000,
+    )
+    assistant_rate_limit_ip_requests = _parse_int_env(
+        "ASSISTANT_RATE_LIMIT_IP_REQUESTS",
+        72,
+        min_value=1,
+        max_value=5000,
+    )
+    crm_rate_limit_window_seconds = _parse_int_env(
+        "CRM_RATE_LIMIT_WINDOW_SECONDS",
+        300,
+        min_value=30,
+        max_value=3600,
+    )
+    crm_rate_limit_ip_requests = _parse_int_env(
+        "CRM_RATE_LIMIT_IP_REQUESTS",
+        180,
+        min_value=1,
+        max_value=5000,
+    )
     tallanto_api_key = os.getenv("TALLANTO_API_KEY", "").strip()
     tallanto_api_token = os.getenv("TALLANTO_API_TOKEN", "").strip() or tallanto_api_key
     tallanto_read_only = os.getenv("TALLANTO_READ_ONLY", "").strip() == "1"
@@ -171,4 +220,11 @@ def get_settings() -> Settings:
         startup_preflight_mode=startup_preflight_mode,
         running_on_render=running_on_render,
         persistent_data_root=persistent_data_root,
+        assistant_api_token=os.getenv("ASSISTANT_API_TOKEN", "").strip(),
+        assistant_rate_limit_window_seconds=assistant_rate_limit_window_seconds,
+        assistant_rate_limit_user_requests=assistant_rate_limit_user_requests,
+        assistant_rate_limit_ip_requests=assistant_rate_limit_ip_requests,
+        crm_api_exposed=crm_api_exposed,
+        crm_rate_limit_window_seconds=crm_rate_limit_window_seconds,
+        crm_rate_limit_ip_requests=crm_rate_limit_ip_requests,
     )

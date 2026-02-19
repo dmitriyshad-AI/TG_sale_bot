@@ -40,6 +40,7 @@ from sales_agent.sales_core.db import (
     upsert_crm_cache,
 )
 from sales_agent.sales_core.runtime_diagnostics import build_runtime_diagnostics
+from sales_agent.sales_core.rate_limit import InMemoryRateLimiter
 from sales_agent.sales_core.tallanto_readonly import (
     TallantoReadOnlyClient,
     normalize_tallanto_fields,
@@ -59,6 +60,8 @@ WEBHOOK_RETRY_BASE_SECONDS = 2
 CRM_CACHE_TTL_SECONDS = 3 * 3600
 ASSISTANT_TIMEOUT_SECONDS = 36.0
 REQUEST_ID_HEADER = "X-Request-ID"
+ASSISTANT_API_TOKEN_HEADER = "X-Assistant-Token"
+FORWARDED_FOR_HEADER = "X-Forwarded-For"
 ASSISTANT_RECENT_HISTORY_LIMIT = 12
 ASSISTANT_RECENT_HISTORY_TEXT_LIMIT = 350
 ASSISTANT_KNOWLEDGE_HINTS = {
@@ -307,6 +310,24 @@ def _request_id_from_request(request: Request) -> str:
     return "unknown"
 
 
+def _extract_bearer_token(request: Request) -> str:
+    auth = request.headers.get("Authorization", "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return ""
+
+
+def _request_client_ip(request: Request) -> str:
+    forwarded = request.headers.get(FORWARDED_FOR_HEADER, "").strip()
+    if forwarded:
+        first = forwarded.split(",", 1)[0].strip()
+        if first:
+            return first
+    if request.client and request.client.host:
+        return str(request.client.host)
+    return "unknown"
+
+
 def _format_price_text(product: object) -> str:
     sessions = getattr(product, "sessions", None)
     if not isinstance(sessions, list) or not sessions:
@@ -342,6 +363,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     init_db(cfg.database_path)
     webhook_path = cfg.telegram_webhook_path if cfg.telegram_webhook_path.startswith("/") else f"/{cfg.telegram_webhook_path}"
     telegram_application = None
+    assistant_rate_limiter = InMemoryRateLimiter(
+        window_seconds=cfg.assistant_rate_limit_window_seconds,
+    )
+    crm_rate_limiter = InMemoryRateLimiter(
+        window_seconds=cfg.crm_rate_limit_window_seconds,
+    )
     user_webapp_dist = Path(cfg.webapp_dist_path)
     user_webapp_index = user_webapp_dist / "index.html"
     user_webapp_ready = user_webapp_index.exists()
@@ -553,6 +580,89 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 headers={"WWW-Authenticate": "Basic"},
             )
         return credentials.username
+
+    def _enforce_rate_limit(
+        *,
+        request: Request,
+        limiter: InMemoryRateLimiter,
+        key: str,
+        limit: int,
+        scope: str,
+    ) -> None:
+        decision = limiter.check(key, limit=max(1, int(limit)))
+        if decision.allowed:
+            return
+
+        request_id = _request_id_from_request(request)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": "rate_limited",
+                "scope": scope,
+                "message": "Rate limit exceeded.",
+                "user_message": "Слишком много запросов подряд. Подождите немного и повторите.",
+                "retry_after_seconds": decision.retry_after_seconds,
+                "request_id": request_id,
+            },
+            headers={"Retry-After": str(decision.retry_after_seconds)},
+        )
+
+    def _require_assistant_access(request: Request) -> Dict[str, Any]:
+        init_data = _extract_tg_init_data(request)
+        if init_data:
+            if not cfg.telegram_bot_token:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Assistant auth via Telegram is unavailable: TELEGRAM_BOT_TOKEN is not configured.",
+                )
+            auth = verify_telegram_webapp_init_data(
+                init_data=init_data,
+                bot_token=cfg.telegram_bot_token,
+            )
+            if not auth.ok:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Invalid Telegram miniapp auth: {auth.reason}",
+                )
+            return {
+                "kind": "telegram",
+                "user_id": auth.user_id,
+            }
+
+        provided_token = request.headers.get(ASSISTANT_API_TOKEN_HEADER, "").strip() or _extract_bearer_token(request)
+        expected_token = cfg.assistant_api_token.strip()
+        if expected_token and secrets.compare_digest(provided_token, expected_token):
+            return {"kind": "service_token", "user_id": None}
+
+        if expected_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Assistant auth is required. Provide Telegram initData or "
+                    f"{ASSISTANT_API_TOKEN_HEADER}."
+                ),
+            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Assistant endpoint is available from Telegram Mini App only.",
+        )
+
+    def _require_crm_api_access(
+        request: Request,
+        credentials: HTTPBasicCredentials = Depends(security),
+    ) -> str:
+        if not cfg.crm_api_exposed:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CRM API is disabled.")
+        admin_username = require_admin(credentials)
+        client_ip = _request_client_ip(request)
+        _enforce_rate_limit(
+            request=request,
+            limiter=crm_rate_limiter,
+            key=f"crm:ip:{client_ip}",
+            limit=cfg.crm_rate_limit_ip_requests,
+            scope="crm_ip",
+        )
+        return admin_username
 
     def _require_tallanto_readonly_client() -> TallantoReadOnlyClient:
         if not cfg.tallanto_read_only:
@@ -776,6 +886,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/assistant/ask")
     async def assistant_ask(payload: AssistantAskPayload, request: Request):
         request_id = _request_id_from_request(request)
+        assistant_access = _require_assistant_access(request)
+        client_ip = _request_client_ip(request)
+
+        user_id = assistant_access.get("user_id")
+        if isinstance(user_id, int):
+            _enforce_rate_limit(
+                request=request,
+                limiter=assistant_rate_limiter,
+                key=f"assistant:user:{user_id}",
+                limit=cfg.assistant_rate_limit_user_requests,
+                scope="assistant_user",
+            )
+
+        _enforce_rate_limit(
+            request=request,
+            limiter=assistant_rate_limiter,
+            key=f"assistant:ip:{client_ip}",
+            limit=cfg.assistant_rate_limit_ip_requests,
+            scope="assistant_ip",
+        )
+
         question = payload.question.strip()
         if not question:
             raise HTTPException(
@@ -913,7 +1044,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
     @app.get("/api/crm/meta/modules")
-    async def crm_meta_modules():
+    async def crm_meta_modules(_: str = Depends(_require_crm_api_access)):
         client = _require_tallanto_readonly_client()
         cache_key = _crm_cache_key("modules", {})
         cached = _read_crm_cache(cache_key)
@@ -932,7 +1063,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True, "cached": False, **response_payload}
 
     @app.get("/api/crm/meta/fields")
-    async def crm_meta_fields(module: str = Query(..., min_length=1, max_length=128)):
+    async def crm_meta_fields(
+        module: str = Query(..., min_length=1, max_length=128),
+        _: str = Depends(_require_crm_api_access),
+    ):
         client = _require_tallanto_readonly_client()
         params = {"module": module.strip()}
         cache_key = _crm_cache_key("fields", params)
@@ -957,6 +1091,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         module: str = Query(..., min_length=1, max_length=128),
         field: str = Query(..., min_length=1, max_length=128),
         value: str = Query(..., min_length=1, max_length=512),
+        _: str = Depends(_require_crm_api_access),
     ):
         client = _require_tallanto_readonly_client()
         normalized_module = module.strip()

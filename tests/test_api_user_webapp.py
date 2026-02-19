@@ -49,6 +49,25 @@ def _build_init_data(payload: dict, bot_token: str) -> str:
     return urlencode(data)
 
 
+def _assistant_headers(bot_token: str = "123:ABC", user_id: int = 42) -> dict[str, str]:
+    init_data = _build_init_data(
+        {
+            "auth_date": str(int(time.time())),
+            "query_id": f"AAE{user_id}AAE",
+            "user": json.dumps(
+                {
+                    "id": user_id,
+                    "first_name": "Dmitriy",
+                    "username": f"user_{user_id}",
+                },
+                ensure_ascii=False,
+            ),
+        },
+        bot_token,
+    )
+    return {"X-Tg-Init-Data": init_data}
+
+
 @unittest.skipUnless(HAS_FASTAPI, "fastapi dependencies are not installed")
 class ApiUserWebappTests(unittest.TestCase):
     def test_user_webapp_placeholder_when_dist_missing(self) -> None:
@@ -291,6 +310,7 @@ products:
                     "question": "Что такое косинус?",
                     "criteria": {"brand": "kmipt"},
                 },
+                headers=_assistant_headers(),
             )
 
         self.assertEqual(response.status_code, 200)
@@ -333,6 +353,7 @@ products:
                             {"role": "assistant", "text": "  Ранее обсуждали   план поступления  "},
                         ],
                     },
+                    headers=_assistant_headers(),
                 )
 
         self.assertEqual(response.status_code, 200)
@@ -379,6 +400,7 @@ products:
                         "criteria": {"brand": "kmipt"},
                         "recent_history": history,
                     },
+                    headers=_assistant_headers(),
                 )
 
         self.assertEqual(response.status_code, 200)
@@ -420,6 +442,7 @@ products:
                     "question": "Ученик 11 класса, как лучше подготовиться к ЕГЭ по математике для поступления?",
                     "criteria": {"brand": "kmipt", "grade": 11, "goal": "ege", "subject": "math", "format": "online"},
                 },
+                headers=_assistant_headers(),
             )
 
         self.assertEqual(response.status_code, 200)
@@ -443,6 +466,7 @@ products:
                     "question": "   ",
                     "criteria": {"brand": "kmipt"},
                 },
+                headers=_assistant_headers(),
             )
 
         self.assertEqual(response.status_code, 400)
@@ -452,6 +476,75 @@ products:
         self.assertEqual(detail.get("code"), "empty_question")
         self.assertIn("Напишите вопрос", detail.get("user_message", ""))
         self.assertEqual(detail.get("request_id"), response.headers.get("X-Request-ID"))
+
+    def test_assistant_ask_requires_auth(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            app = create_app(_settings(root / "app.db", root / "missing_dist"))
+            client = TestClient(app)
+            response = client.post(
+                "/api/assistant/ask",
+                json={
+                    "question": "Что такое синус?",
+                    "criteria": {"brand": "kmipt"},
+                },
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("telegram mini app", response.json()["detail"].lower())
+
+    def test_assistant_ask_allows_service_token_auth(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = _settings(root / "app.db", root / "missing_dist")
+            cfg.assistant_api_token = "assistant-secret"
+            app = create_app(cfg)
+            client = TestClient(app)
+            response = client.post(
+                "/api/assistant/ask",
+                json={
+                    "question": "Что такое синус?",
+                    "criteria": {"brand": "kmipt"},
+                },
+                headers={"X-Assistant-Token": "assistant-secret"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+
+    def test_assistant_ask_returns_429_when_rate_limit_exceeded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = _settings(root / "app.db", root / "missing_dist")
+            cfg.assistant_rate_limit_window_seconds = 60
+            cfg.assistant_rate_limit_user_requests = 2
+            cfg.assistant_rate_limit_ip_requests = 100
+            app = create_app(cfg)
+            client = TestClient(app)
+            headers = _assistant_headers(user_id=777)
+            first = client.post(
+                "/api/assistant/ask",
+                json={"question": "Что такое синус?", "criteria": {"brand": "kmipt"}},
+                headers=headers,
+            )
+            second = client.post(
+                "/api/assistant/ask",
+                json={"question": "Что такое косинус?", "criteria": {"brand": "kmipt"}},
+                headers=headers,
+            )
+            third = client.post(
+                "/api/assistant/ask",
+                json={"question": "Что такое тангенс?", "criteria": {"brand": "kmipt"}},
+                headers=headers,
+            )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(third.status_code, 429)
+        detail = third.json()["detail"]
+        self.assertEqual(detail["code"], "rate_limited")
+        self.assertEqual(detail["scope"], "assistant_user")
+        self.assertTrue(third.headers.get("Retry-After"))
 
 
 if __name__ == "__main__":
