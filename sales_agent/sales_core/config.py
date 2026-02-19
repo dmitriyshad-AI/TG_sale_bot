@@ -83,6 +83,7 @@ def get_settings() -> Settings:
     )
     persistent_data_env = (
         os.getenv("PERSISTENT_DATA_PATH", "").strip()
+        or os.getenv("RENDER_DISK_MOUNT_PATH", "").strip()
         or os.getenv("RENDER_PERSISTENT_DATA_PATH", "").strip()
     )
     if persistent_data_env:

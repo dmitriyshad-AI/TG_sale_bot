@@ -240,6 +240,18 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.database_path, Path("/tmp/persistent-sales-data/sales_agent.db"))
         self.assertEqual(settings.vector_store_meta_path, Path("/tmp/persistent-sales-data/vector_store.json"))
 
+    @patch.dict(
+        os.environ,
+        {"RENDER": "true", "RENDER_DISK_MOUNT_PATH": "/tmp/render-disk"},
+        clear=True,
+    )
+    def test_render_disk_mount_path_is_used_when_provided(self) -> None:
+        settings = get_settings()
+        self.assertTrue(settings.running_on_render)
+        self.assertEqual(settings.persistent_data_root, Path("/tmp/render-disk"))
+        self.assertEqual(settings.database_path, Path("/tmp/render-disk/sales_agent.db"))
+        self.assertEqual(settings.vector_store_meta_path, Path("/tmp/render-disk/vector_store.json"))
+
 
 if __name__ == "__main__":
     unittest.main()

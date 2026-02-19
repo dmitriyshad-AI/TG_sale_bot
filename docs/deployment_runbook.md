@@ -47,6 +47,7 @@ USER_WEBAPP_URL=
 SALES_TONE_PATH=
 WEBAPP_DIST_PATH=
 PERSISTENT_DATA_PATH=
+RENDER_DISK_MOUNT_PATH=
 ```
 
 CRM:
@@ -188,6 +189,8 @@ docker compose -f docker-compose.prod.yml up -d --build
    ```
    Если persistent disk на Render не подключен, сервис теперь автоматически использует `/tmp`
    для SQLite и метаданных vector store (работает, но данные будут сбрасываться после redeploy/restart).
+   Если disk смонтирован не в `/var/data`, задайте `PERSISTENT_DATA_PATH=<mount-path>`
+   (или используйте `RENDER_DISK_MOUNT_PATH`, если он уже задан в окружении Render).
 5. Health Check Path: `/api/health`.
 6. Запустите deploy и проверьте логи сервиса:
    - `Starting API on 0.0.0.0...`

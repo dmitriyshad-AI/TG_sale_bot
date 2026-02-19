@@ -149,6 +149,7 @@ USER_WEBAPP_URL=
 
 # Optional overrides
 PERSISTENT_DATA_PATH=
+RENDER_DISK_MOUNT_PATH=
 DATABASE_PATH=
 CATALOG_PATH=
 KNOWLEDGE_PATH=
@@ -252,7 +253,9 @@ SALES_TONE_PATH=
 - Для локальной проверки без CRM включить mock-режим:
   - `TALLANTO_MOCK_MODE=true`
 - Для Render с SQLite храните БД и metadata на persistent disk:
-  - `PERSISTENT_DATA_PATH=/var/data` (или ваш mount path)
+  - по умолчанию используется `/var/data`, если путь доступен для записи;
+  - если mount path другой, задайте `PERSISTENT_DATA_PATH=<mount-path>`;
+  - также поддерживается auto-detect через `RENDER_DISK_MOUNT_PATH`.
 - Выбор CRM-провайдера:
   - `CRM_PROVIDER=tallanto` — текущая рабочая интеграция.
   - `CRM_PROVIDER=amo` — минимальная рабочая AMO-интеграция (`/api/v4/leads` + заметка с контактом).
