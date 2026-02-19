@@ -57,20 +57,6 @@ body::before {
   color: rgba(7, 49, 73, 0.75);
 }
 
-.heroBrandLine {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.heroLogo {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  object-fit: cover;
-  box-shadow: 0 6px 14px rgba(6, 66, 103, 0.24);
-}
-
 .heroTitle {
   margin: 0;
   font-size: clamp(28px, 6.2vw, 42px);
@@ -90,59 +76,9 @@ body::before {
   color: rgba(6, 40, 59, 0.84);
 }
 
-.topNav {
-  padding: var(--spacing-3);
-  display: grid;
-  gap: var(--spacing-2);
-  position: sticky;
-  top: max(env(safe-area-inset-top), var(--spacing-1));
-  z-index: 6;
-}
-
-.topNavLeft {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-2);
-  justify-content: space-between;
-}
-
 .navBackButton {
   white-space: nowrap;
   min-width: 88px;
-}
-
-.brandMark {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.brandLogo {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  object-fit: cover;
-  box-shadow: 0 8px 16px rgba(6, 66, 103, 0.24);
-}
-
-.brandText {
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: rgba(7, 44, 66, 0.88);
-}
-
-.topNavTabs {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  align-items: stretch;
-}
-
-.topNavTab {
-  border-radius: 12px;
-  width: 100%;
 }
 
 .actions {
@@ -260,14 +196,25 @@ body::before {
   gap: var(--spacing-2);
 }
 
-.chatIntro {
-  padding: var(--spacing-3);
+.chatTopBar {
+  padding: var(--spacing-2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-2);
+  position: sticky;
+  top: max(env(safe-area-inset-top), var(--spacing-1));
+  z-index: 7;
 }
 
-.chatIntroActions {
-  margin-top: var(--spacing-2);
-  display: flex;
-  justify-content: flex-start;
+.chatTopHint {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(7, 44, 66, 0.82);
+}
+
+.chatIntro {
+  padding: var(--spacing-3);
 }
 
 .chatQuickRow {
@@ -446,16 +393,6 @@ body::before {
   opacity: 0.7;
 }
 
-.chatControls {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--spacing-2);
-}
-
-.chatControls .glassButton {
-  width: 100%;
-}
-
 .chatSendButton {
   width: 48px;
   min-width: 48px;
@@ -499,30 +436,6 @@ body::before {
 .coachmarkActions {
   display: flex;
   justify-content: flex-end;
-  gap: var(--spacing-2);
-}
-
-.bottomDock {
-  border-radius: var(--dock-radius);
-  padding: var(--spacing-3) var(--spacing-4);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacing-3);
-  position: sticky;
-  bottom: max(env(safe-area-inset-bottom), var(--spacing-2));
-  z-index: 8;
-}
-
-.dockLabel {
-  font-size: 12px;
-  line-height: 1.4;
-  color: rgba(4, 40, 61, 0.95);
-  font-weight: 600;
-}
-
-.dockActions {
-  display: flex;
   gap: var(--spacing-2);
 }
 
@@ -585,24 +498,6 @@ body::before {
     font-size: 12px;
   }
 
-  .brandText {
-    display: none;
-  }
-
-  .heroLogo {
-    width: 36px;
-    height: 36px;
-  }
-
-  .brandLogo {
-    width: 36px;
-    height: 36px;
-  }
-
-  .topNav {
-    padding: var(--spacing-2);
-  }
-
   .actionCard,
   .pickerSection,
   .resultCard,
@@ -627,29 +522,11 @@ body::before {
     flex-direction: column;
   }
 
-  .bottomDock {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .dockActions {
-    display: grid;
-    grid-template-columns: 1fr;
-  }
-
   .resultsActions {
     justify-content: stretch;
   }
 
   .resultsActions .glassButton {
-    width: 100%;
-  }
-
-  .chatControls {
-    flex-direction: column;
-  }
-
-  .chatControls .glassButton {
     width: 100%;
   }
 
@@ -674,15 +551,6 @@ body::before {
 
   .chatBubbleAssistant {
     margin-right: 2%;
-  }
-
-  .topNavLeft {
-    flex-direction: row;
-    align-items: center;
-  }
-
-  .topNavTabs {
-    display: none;
   }
 
   .actionSubtitle {

@@ -221,7 +221,6 @@ const COACHMARKS = [
   "2/3 Укажите цель и предмет.",
   "3/3 Получите варианты или задайте вопрос Гиду."
 ];
-const BRAND_LOGO_URL = "/brand-kmipt.png?v=20260219";
 const DEFAULT_MANAGER_TELEGRAM_USERNAME = "unpk_mipt";
 const MAX_MANAGER_CONTEXT_LENGTH = 420;
 const MAX_ASSISTANT_HISTORY_ITEMS = 12;
@@ -329,24 +328,6 @@ function navigateTo(view: AppView): void {
   render();
 }
 
-function canGoBack(): boolean {
-  return state.view !== "home";
-}
-
-function goBack(): void {
-  state.error = null;
-  if (state.view === "chat") {
-    state.view = state.results.length > 0 ? "results" : "picker";
-  } else if (state.view === "results") {
-    state.view = "picker";
-  } else if (state.view === "picker") {
-    state.view = "home";
-  } else {
-    state.view = "home";
-  }
-  render();
-}
-
 function guideActionText(): string {
   return `Спросить ${state.advisorName}`;
 }
@@ -376,7 +357,13 @@ function createActionCard(action: HomeAction): HTMLButtonElement {
 
   const chip = document.createElement("span");
   chip.className = "chip";
-  chip.textContent = "Перейти";
+  if (action.key === "pick") {
+    chip.textContent = "Запустить подбор курса";
+  } else if (action.key === "ask") {
+    chip.textContent = "Начать общение с Гидом";
+  } else {
+    chip.textContent = "Перейти в диалог с менеджером";
+  }
 
   button.append(title, subtitle, chip);
   return button;
@@ -387,25 +374,12 @@ function renderHeader(statusText: string): HTMLElement {
   hero.className = "hero glassCard";
   const name = state.user?.first_name ? `, ${state.user.first_name}` : "";
   hero.innerHTML = `
-    <div class="heroBrandLine">
-      <img src="${BRAND_LOGO_URL}" alt="Логотип ${state.brandName}" class="heroLogo">
-      <p class="eyebrow">${state.brandName} • Sales Agent</p>
-    </div>
+    <p class="eyebrow">${state.brandName} • Sales Agent</p>
     <h1 class="heroTitle">Помогаю выбрать обучение${name}</h1>
     <p class="heroSubtitle">${statusText}</p>
-    <p class="heroHint">Кнопка «Спросить Гида» всегда внизу.</p>
+    <p class="heroHint">Выберите формат: быстрый подбор, вопрос Гиду или связь с менеджером.</p>
   `;
   return hero;
-}
-
-function createBrandMark(): HTMLElement {
-  const brand = document.createElement("div");
-  brand.className = "brandMark";
-  brand.innerHTML = `
-    <img src="${BRAND_LOGO_URL}" alt="Логотип ${state.brandName}" class="brandLogo">
-    <span class="brandText">${state.brandName}</span>
-  `;
-  return brand;
 }
 
 function openManagerChat(): void {
@@ -552,49 +526,25 @@ function buildAssistantContextSummary(history: AssistantHistoryItem[]): string {
   return summary.length > 1200 ? `${summary.slice(0, 1197)}...` : summary;
 }
 
-function createTopNav(): HTMLElement {
-  const nav = document.createElement("section");
-  nav.className = "glassCard topNav";
+function createChatTopBar(): HTMLElement {
+  const bar = document.createElement("section");
+  bar.className = "glassCard chatTopBar";
 
-  const left = document.createElement("div");
-  left.className = "topNavLeft";
-  if (canGoBack() && state.view !== "chat") {
-    const back = document.createElement("button");
-    back.type = "button";
-    back.className = "glassButton navBackButton";
-    back.textContent = "Назад";
-    back.addEventListener("click", () => {
-      triggerHaptic(webApp, "light");
-      goBack();
-    });
-    left.appendChild(back);
-  }
-  left.append(createBrandMark());
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "glassButton navBackButton";
+  back.textContent = "Назад";
+  back.addEventListener("click", () => {
+    triggerHaptic(webApp, "light");
+    navigateTo("home");
+  });
 
-  const tabs = document.createElement("div");
-  tabs.className = "topNavTabs";
-  const routes: Array<{ view: AppView; label: string }> = [
-    { view: "home", label: "Домой" },
-    { view: "picker", label: "Подбор" },
-    { view: "chat", label: "Гид" },
-  ];
-  for (const route of routes) {
-    const tab = document.createElement("button");
-    tab.type = "button";
-    tab.className = "chipButton topNavTab";
-    tab.textContent = route.label;
-    if (state.view === route.view || (route.view === "picker" && state.view === "results")) {
-      tab.classList.add("isActive");
-    }
-    tab.addEventListener("click", () => {
-      triggerHaptic(webApp, "light");
-      navigateTo(route.view);
-    });
-    tabs.appendChild(tab);
-  }
+  const hint = document.createElement("span");
+  hint.className = "chatTopHint";
+  hint.textContent = `Чат с ${state.advisorName}`;
 
-  nav.append(left, tabs);
-  return nav;
+  bar.append(back, hint);
+  return bar;
 }
 
 function createChipGroup(
@@ -1046,6 +996,7 @@ function createChatMessage(item: ChatMessage): HTMLElement {
 function createChatView(): HTMLElement {
   const container = document.createElement("section");
   container.className = "chatStack";
+  container.appendChild(createChatTopBar());
 
   const intro = document.createElement("article");
   intro.className = "glassCard chatIntro";
@@ -1053,18 +1004,6 @@ function createChatView(): HTMLElement {
     <h3 class="sectionTitle sectionTitleCompact">Чат с ${state.advisorName}</h3>
     <p class="actionSubtitle">Пишите свободно. Отвечу по стратегии, предметам и программам.</p>
   `;
-  const introActions = document.createElement("div");
-  introActions.className = "chatIntroActions";
-  const backTop = document.createElement("button");
-  backTop.type = "button";
-  backTop.className = "glassButton";
-  backTop.textContent = "Назад к подбору";
-  backTop.addEventListener("click", () => {
-    triggerHaptic(webApp, "light");
-    navigateTo("picker");
-  });
-  introActions.appendChild(backTop);
-  intro.appendChild(introActions);
   container.appendChild(intro);
 
   const messages = document.createElement("div");
@@ -1152,65 +1091,6 @@ function createChatView(): HTMLElement {
   container.appendChild(composer);
 
   return container;
-}
-
-function createBottomDock(): HTMLElement {
-  const bottom = document.createElement("footer");
-  bottom.className = "bottomDock glassCard";
-
-  const label = document.createElement("span");
-  label.className = "dockLabel";
-  if (state.view === "chat") {
-    label.textContent = `${state.advisorName} онлайн. Отвечаю в формате диалога.`;
-  } else if (state.view === "results") {
-    label.textContent = "Варианты готовы. Можем подключить менеджера.";
-  } else {
-    label.textContent = "Задайте вопрос Гиду или начните подбор.";
-  }
-
-  const actions = document.createElement("div");
-  actions.className = "dockActions";
-
-  const ask = document.createElement("button");
-  ask.className = "glassButton";
-  ask.type = "button";
-  ask.textContent = state.view === "chat" ? "К подбору" : guideActionText();
-  ask.addEventListener("click", () => {
-    triggerHaptic(webApp, "light");
-    if (state.view === "chat") {
-      navigateTo("picker");
-      return;
-    }
-    navigateTo("chat");
-  });
-
-  const primary = document.createElement("button");
-  primary.className = "glassButton glassButtonPrimary";
-  primary.type = "button";
-
-  if (state.view === "results") {
-    primary.textContent = managerActionText();
-    primary.addEventListener("click", () => {
-      triggerHaptic(webApp, "medium");
-      openManagerChat();
-    });
-  } else if (state.view === "chat") {
-    primary.textContent = managerActionText();
-    primary.addEventListener("click", () => {
-      triggerHaptic(webApp, "medium");
-      openManagerChat();
-    });
-  } else {
-    primary.textContent = "Открыть подбор";
-    primary.addEventListener("click", () => {
-      triggerHaptic(webApp, "medium");
-      navigateTo("picker");
-    });
-  }
-
-  actions.append(ask, primary);
-  bottom.append(label, actions);
-  return bottom;
 }
 
 function createCoachmark(): HTMLElement | null {
@@ -1615,9 +1495,6 @@ function render(): void {
   const container = document.createElement("main");
   container.className = "appShell";
   container.appendChild(renderHeader(state.statusLine));
-  if (state.view !== "chat") {
-    container.appendChild(createTopNav());
-  }
 
   const error = renderError();
   if (error) {
@@ -1637,10 +1514,6 @@ function render(): void {
     container.appendChild(createResultsView());
   } else {
     container.appendChild(createChatView());
-  }
-
-  if (state.view !== "chat") {
-    container.appendChild(createBottomDock());
   }
   appRoot.replaceChildren(container);
   syncTelegramMainButton();
