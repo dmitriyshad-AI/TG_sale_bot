@@ -64,10 +64,11 @@ body::before {
 }
 
 .heroLogo {
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  box-shadow: 0 8px 18px rgba(12, 76, 118, 0.28);
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 6px 14px rgba(6, 66, 103, 0.24);
 }
 
 .heroTitle {
@@ -117,11 +118,11 @@ body::before {
 }
 
 .brandLogo {
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  box-shadow: 0 10px 22px rgba(4, 74, 118, 0.34);
-  animation: orb-float 4s ease-in-out infinite;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 8px 16px rgba(6, 66, 103, 0.24);
 }
 
 .brandText {
@@ -563,6 +564,16 @@ body::before {
     display: none;
   }
 
+  .heroLogo {
+    width: 36px;
+    height: 36px;
+  }
+
+  .brandLogo {
+    width: 36px;
+    height: 36px;
+  }
+
   .topNav {
     padding: var(--spacing-2);
   }
@@ -649,10 +660,6 @@ body::before {
   }
 
   .progressPulse {
-    animation: none;
-  }
-
-  .brandLogo {
     animation: none;
   }
 

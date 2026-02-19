@@ -1,7 +1,6 @@
 import "./styles/tokens.css";
 import "./styles/components.css";
 import "./styles/app.css";
-import defaultBrandLogoUrl from "./assets/brand-kmipt.svg";
 import {
   buildAuthHeaders,
   initTelegramContext,
@@ -217,7 +216,7 @@ const COACHMARKS = [
   "2/3 Укажите цель и предмет.",
   "3/3 Получите варианты или задайте вопрос Гиду."
 ];
-const CUSTOM_BRAND_LOGO_URL = "/brand-kmipt.png";
+const BRAND_LOGO_URL = "/brand-kmipt.png?v=20260219";
 const DEFAULT_MANAGER_TELEGRAM_USERNAME = "unpk_mipt";
 const MAX_MANAGER_CONTEXT_LENGTH = 420;
 
@@ -349,17 +348,6 @@ function managerActionText(): string {
   return `Связаться с ${state.managerLabel.toLowerCase()}`;
 }
 
-function attachBrandLogoFallback(img: HTMLImageElement | null): void {
-  if (!img) {
-    return;
-  }
-  img.src = CUSTOM_BRAND_LOGO_URL;
-  img.onerror = () => {
-    img.onerror = null;
-    img.src = defaultBrandLogoUrl;
-  };
-}
-
 function createActionCard(action: HomeAction): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
@@ -393,14 +381,13 @@ function renderHeader(statusText: string): HTMLElement {
   const name = state.user?.first_name ? `, ${state.user.first_name}` : "";
   hero.innerHTML = `
     <div class="heroBrandLine">
-      <img src="${defaultBrandLogoUrl}" alt="Логотип ${state.brandName}" class="heroLogo">
+      <img src="${BRAND_LOGO_URL}" alt="Логотип ${state.brandName}" class="heroLogo">
       <p class="eyebrow">${state.brandName} • Sales Agent</p>
     </div>
     <h1 class="heroTitle">Помогаю выбрать обучение${name}</h1>
     <p class="heroSubtitle">${statusText}</p>
     <p class="heroHint">Кнопка «Спросить Гида» всегда внизу.</p>
   `;
-  attachBrandLogoFallback(hero.querySelector("img.heroLogo"));
   return hero;
 }
 
@@ -408,10 +395,9 @@ function createBrandMark(): HTMLElement {
   const brand = document.createElement("div");
   brand.className = "brandMark";
   brand.innerHTML = `
-    <img src="${defaultBrandLogoUrl}" alt="Логотип ${state.brandName}" class="brandLogo">
+    <img src="${BRAND_LOGO_URL}" alt="Логотип ${state.brandName}" class="brandLogo">
     <span class="brandText">${state.brandName}</span>
   `;
-  attachBrandLogoFallback(brand.querySelector("img.brandLogo"));
   return brand;
 }
 
