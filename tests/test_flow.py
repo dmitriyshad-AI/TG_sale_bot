@@ -109,6 +109,87 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(step.next_state, STATE_ASK_GRADE)
         self.assertIn("класс", step.message.lower())
 
+    def test_goal_step_accepts_free_text(self) -> None:
+        state = {
+            "state": STATE_ASK_GOAL,
+            "criteria": {
+                "brand": "kmipt",
+                "grade": 10,
+                "goal": None,
+                "subject": None,
+                "format": None,
+            },
+            "contact": None,
+        }
+        step = advance_flow(state, brand_default="kmipt", message_text="ЕГЭ")
+        self.assertEqual(step.next_state, STATE_ASK_SUBJECT)
+        self.assertEqual(step.state_data["criteria"]["goal"], "ege")
+
+    def test_subject_step_accepts_any_from_callback(self) -> None:
+        state = {
+            "state": STATE_ASK_SUBJECT,
+            "criteria": {
+                "brand": "kmipt",
+                "grade": 9,
+                "goal": "oge",
+                "subject": "math",
+                "format": None,
+            },
+            "contact": None,
+        }
+        step = advance_flow(state, brand_default="kmipt", callback_data="subject:any")
+        self.assertEqual(step.next_state, STATE_ASK_FORMAT)
+        self.assertIsNone(step.state_data["criteria"]["subject"])
+
+    def test_subject_step_rejects_invalid_callback(self) -> None:
+        state = {
+            "state": STATE_ASK_SUBJECT,
+            "criteria": {
+                "brand": "kmipt",
+                "grade": 9,
+                "goal": "oge",
+                "subject": None,
+                "format": None,
+            },
+            "contact": None,
+        }
+        step = advance_flow(state, brand_default="kmipt", callback_data="subject:geography")
+        self.assertEqual(step.next_state, STATE_ASK_SUBJECT)
+        self.assertIn("предмет", step.message.lower())
+
+    def test_format_step_rejects_invalid_value(self) -> None:
+        state = {
+            "state": STATE_ASK_FORMAT,
+            "criteria": {
+                "brand": "kmipt",
+                "grade": 11,
+                "goal": "ege",
+                "subject": "physics",
+                "format": None,
+            },
+            "contact": None,
+        }
+        step = advance_flow(state, brand_default="kmipt", message_text="заочно")
+        self.assertEqual(step.next_state, STATE_ASK_FORMAT)
+        self.assertIn("формат", step.message.lower())
+
+    def test_suggest_state_without_input_returns_guidance(self) -> None:
+        state = {
+            "state": STATE_SUGGEST_PRODUCTS,
+            "criteria": {
+                "brand": "kmipt",
+                "grade": 10,
+                "goal": "ege",
+                "subject": "math",
+                "format": "online",
+            },
+            "contact": None,
+        }
+        step = advance_flow(state, brand_default="kmipt")
+        self.assertEqual(step.next_state, STATE_SUGGEST_PRODUCTS)
+        self.assertTrue(step.should_suggest_products)
+        self.assertIn("нажмите", step.message.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

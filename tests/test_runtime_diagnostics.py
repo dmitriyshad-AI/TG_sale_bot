@@ -2,9 +2,12 @@ import tempfile
 import unittest
 from pathlib import Path
 import json
+from unittest.mock import patch
 
 from sales_agent.sales_core.config import Settings
 from sales_agent.sales_core.runtime_diagnostics import (
+    _can_write_parent,
+    _summarize_issues,
     enforce_startup_preflight,
     _is_path_within,
     _safe_md_count,
@@ -36,12 +39,48 @@ products:
 
 
 class RuntimeDiagnosticsTests(unittest.TestCase):
+    def test_summarize_issues_handles_empty_and_missing_message(self) -> None:
+        self.assertEqual(_summarize_issues([]), "no issues reported")
+        summary = _summarize_issues([{"code": "only_code"}], limit=3)
+        self.assertEqual(summary, "only_code")
+
     def test_normalize_preflight_mode(self) -> None:
         self.assertEqual(normalize_preflight_mode("off"), "off")
         self.assertEqual(normalize_preflight_mode("FAIL"), "fail")
         self.assertEqual(normalize_preflight_mode("strict"), "strict")
         self.assertEqual(normalize_preflight_mode("  unknown "), "off")
         self.assertEqual(normalize_preflight_mode(None), "off")
+
+    def test_can_write_parent_returns_false_when_probe_write_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "data" / "sales_agent.db"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            with patch("pathlib.Path.write_text", side_effect=OSError("read only fs")):
+                self.assertFalse(_can_write_parent(db_path))
+
+    def test_is_path_within_handles_resolve_error(self) -> None:
+        with patch("pathlib.Path.resolve", side_effect=RuntimeError("resolve failure")):
+            self.assertFalse(_is_path_within(Path("/tmp/a"), Path("/tmp")))
+
+    def test_is_path_within_fallback_for_legacy_paths(self) -> None:
+        class LegacyResolved:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+            def relative_to(self, other: "LegacyResolved"):
+                if self.value == other.value or self.value.startswith(other.value.rstrip("/") + "/"):
+                    return self.value
+                raise ValueError
+
+        class LegacyPath:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+            def resolve(self) -> LegacyResolved:
+                return LegacyResolved(self.value)
+
+        self.assertTrue(_is_path_within(LegacyPath("/srv/app/data"), LegacyPath("/srv/app")))
+        self.assertFalse(_is_path_within(LegacyPath("/srv/other"), LegacyPath("/srv/app")))
 
     def test_helper_path_within_and_md_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -389,6 +428,55 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
             )
             with self.assertRaises(RuntimeError):
                 enforce_startup_preflight(settings)
+
+    def test_enforce_startup_preflight_returns_off_mode_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            settings = Settings(
+                telegram_bot_token="",
+                openai_api_key="",
+                openai_model="gpt-4.1",
+                tallanto_api_url="",
+                tallanto_api_key="",
+                brand_default="kmipt",
+                database_path=root / "data" / "sales_agent.db",
+                catalog_path=root / "catalog.yaml",
+                knowledge_path=root / "knowledge",
+                vector_store_meta_path=root / "data" / "vector_store.json",
+                openai_vector_store_id="",
+                admin_user="",
+                admin_pass="",
+                startup_preflight_mode="off",
+            )
+            payload = enforce_startup_preflight(settings)
+
+        self.assertEqual(payload["status"], "off")
+        self.assertEqual(payload["issues"], [])
+
+    def test_enforce_startup_preflight_allows_warn_in_fail_mode(self) -> None:
+        diagnostics = {"status": "warn", "runtime": {"x": 1}, "issues": [{"code": "warn"}]}
+        with patch(
+            "sales_agent.sales_core.runtime_diagnostics.build_runtime_diagnostics",
+            return_value=diagnostics,
+        ):
+            result = enforce_startup_preflight(Settings(
+                telegram_bot_token="tg",
+                openai_api_key="openai",
+                openai_model="gpt-4.1",
+                tallanto_api_url="",
+                tallanto_api_key="",
+                brand_default="kmipt",
+                database_path=Path("/tmp/db.sqlite"),
+                catalog_path=Path("/tmp/catalog.yaml"),
+                knowledge_path=Path("/tmp/knowledge"),
+                vector_store_meta_path=Path("/tmp/vector.json"),
+                openai_vector_store_id="",
+                admin_user="",
+                admin_pass="",
+                startup_preflight_mode="fail",
+            ))
+
+        self.assertEqual(result["status"], "warn")
 
 
 if __name__ == "__main__":

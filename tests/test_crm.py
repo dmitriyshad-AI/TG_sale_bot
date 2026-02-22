@@ -9,6 +9,50 @@ from sales_agent.sales_core.config import Settings
 from sales_agent.sales_core.crm import AmoCRMClient, NoopCRMClient, TallantoCRMClient, build_crm_client
 
 
+class _MockHttpxResponse:
+    def __init__(self, status_code: int, payload, text: str, request_url: str = "https://amo.example/api/v4/leads") -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text
+        self.request = httpx.Request("POST", request_url)
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            response = httpx.Response(self.status_code, request=self.request, text=self.text)
+            raise httpx.HTTPStatusError("error", request=self.request, response=response)
+
+    def json(self):
+        return self._payload
+
+
+class _MockAsyncHttpxClient:
+    def __init__(self, response: _MockHttpxResponse) -> None:
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, *args, **kwargs):
+        return self._response
+
+
+class _MockHttpxClient:
+    def __init__(self, response: _MockHttpxResponse) -> None:
+        self._response = response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def post(self, *args, **kwargs):
+        return self._response
+
+
 class CRMFactoryTests(unittest.TestCase):
     def _settings(self, **overrides) -> Settings:
         payload = {
@@ -58,6 +102,33 @@ class CRMFactoryTests(unittest.TestCase):
 
 
 class CRMClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
+    def test_amo_api_url_keeps_api_v4_prefix(self) -> None:
+        client = AmoCRMClient(base_url="https://amo.example/api/v4", access_token="token")
+        self.assertEqual(client._api_url("/leads"), "https://amo.example/api/v4/leads")
+
+    def test_amo_extract_entity_id_falls_back_to_top_level_id(self) -> None:
+        self.assertEqual(AmoCRMClient._extract_entity_id({"id": 7}, "leads"), "7")
+
+    def test_amo_safe_error_message_for_request_error(self) -> None:
+        req = httpx.Request("POST", "https://amo.example/api/v4/leads")
+        error = httpx.RequestError("network", request=req)
+        message = AmoCRMClient._safe_error_message(error)
+        self.assertIn("connection error", message.lower())
+
+    async def test_amo_post_json_async_returns_empty_dict_for_non_object_json(self) -> None:
+        client = AmoCRMClient(base_url="https://amo.example", access_token="token")
+        response = _MockHttpxResponse(200, [{"id": 1}], text="[]")
+        with patch("sales_agent.sales_core.crm.httpx.AsyncClient", return_value=_MockAsyncHttpxClient(response)):
+            payload = await client._post_json_async("/leads", [{"name": "x"}])
+        self.assertEqual(payload, {})
+
+    def test_amo_post_json_returns_empty_dict_for_non_object_json(self) -> None:
+        client = AmoCRMClient(base_url="https://amo.example", access_token="token")
+        response = _MockHttpxResponse(200, [{"id": 1}], text="[]")
+        with patch("sales_agent.sales_core.crm.httpx.Client", return_value=_MockHttpxClient(response)):
+            payload = client._post_json("/leads", [{"name": "x"}])
+        self.assertEqual(payload, {})
+
     async def test_tallanto_adapter_create_lead_async_maps_result(self) -> None:
         tallanto = SimpleNamespace(
             create_lead_async=AsyncMock(
@@ -135,6 +206,13 @@ class CRMClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("http error", (result.error or "").lower())
         self.assertIn("401", (result.error or ""))
 
+    async def test_amo_client_create_lead_returns_error_when_no_lead_id(self) -> None:
+        client = AmoCRMClient(base_url="https://amo.example", access_token="token")
+        with patch.object(client, "_post_json_async", return_value={"_embedded": {"leads": [{}]}}):
+            result = await client.create_lead_async(phone="+79990000000", brand="kmipt")
+        self.assertFalse(result.success)
+        self.assertIn("no lead id", (result.error or "").lower())
+
     def test_amo_client_create_copilot_task_success(self) -> None:
         client = AmoCRMClient(base_url="https://amo.example", access_token="token")
         with patch.object(
@@ -173,6 +251,13 @@ class CRMClientBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result.success)
         self.assertIn("500", (result.error or ""))
+
+    def test_amo_client_create_copilot_task_returns_error_when_no_lead_id(self) -> None:
+        client = AmoCRMClient(base_url="https://amo.example", access_token="token")
+        with patch.object(client, "_post_json", return_value={"_embedded": {"leads": [{}]}}):
+            result = client.create_copilot_task(summary="sum", draft_reply="draft")
+        self.assertFalse(result.success)
+        self.assertIn("no lead id", (result.error or "").lower())
 
     async def test_noop_client_returns_disabled_error(self) -> None:
         client = NoopCRMClient()
