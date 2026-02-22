@@ -233,6 +233,25 @@ SALES_TONE_PATH=
     --require-render-persistent \
     --check-telegram-webhook
   ```
+  - Регулярный remote smoke можно включить через GitHub Actions workflow `Release Smoke`:
+    1. Добавьте GitHub Secret `RELEASE_SMOKE_BASE_URL=https://<your-domain>`.
+    2. Опционально добавьте `TELEGRAM_BOT_TOKEN` (для проверки webhook в Telegram API).
+    3. Workflow запускается вручную и по cron (каждые 30 минут).
+- Резервное копирование SQLite:
+  ```bash
+  # Создать backup (по умолчанию gzip + ротация последних 14 файлов)
+  python3 scripts/backup_sqlite.py --db-path data/sales_agent.db --output-dir data/backups
+
+  # Восстановить из backup
+  python3 scripts/restore_sqlite.py --backup-path data/backups/sales-agent-<timestamp>.db.gz --db-path data/sales_agent.db --force
+  ```
+- Легкий нагрузочный smoke (без внешних библиотек):
+  ```bash
+  # health / catalog / assistant
+  python3 scripts/load_smoke.py --base-url http://127.0.0.1:8000 --target health --requests 60 --concurrency 10
+  python3 scripts/load_smoke.py --base-url http://127.0.0.1:8000 --target catalog --requests 60 --concurrency 10
+  python3 scripts/load_smoke.py --base-url http://127.0.0.1:8000 --target assistant --assistant-token <ASSISTANT_API_TOKEN> --requests 30 --concurrency 6
+  ```
 - Режим стартового preflight:
   - `STARTUP_PREFLIGHT_MODE=off` — выключить блокировку старта.
   - `STARTUP_PREFLIGHT_MODE=fail` — блокировать только при критических ошибках (рекомендуется).
@@ -343,7 +362,7 @@ SALES_TONE_PATH=
   ```
 - Локальная quality-проверка (как в CI):
   ```bash
-  pytest --cov=sales_agent --cov=scripts --cov-report=term-missing --cov-fail-under=80 -q
+  pytest --cov=sales_agent --cov=scripts --cov-report=term-missing --cov-fail-under=85 -q
   cd webapp && npm ci && npm run typecheck && npm run build
   ```
 

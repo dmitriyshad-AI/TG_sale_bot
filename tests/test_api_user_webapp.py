@@ -13,6 +13,7 @@ try:
     from fastapi.testclient import TestClient
 
     from sales_agent.sales_api.main import create_app
+    from sales_agent.sales_core import db as db_module
     from sales_agent.sales_core.config import Settings
 
     HAS_FASTAPI = True
@@ -367,6 +368,75 @@ products:
         )
         self.assertIn("summary_text", kwargs["user_context"])
         self.assertTrue(kwargs["user_context"]["summary_text"])
+
+    def test_assistant_ask_uses_and_updates_server_side_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = root / "app.db"
+            app = create_app(_settings(db_path, root / "missing_dist"))
+            client = TestClient(app)
+
+            conn = db_module.get_connection(db_path)
+            try:
+                user_id = db_module.get_or_create_user(
+                    conn,
+                    channel="telegram",
+                    external_id="42",
+                    username="user_42",
+                    first_name="Dmitriy",
+                    last_name="",
+                )
+                db_module.upsert_conversation_context(
+                    conn,
+                    user_id=user_id,
+                    summary={
+                        "profile": {"grade": 10, "goal": "ЕГЭ"},
+                        "intents": ["поступление"],
+                        "recent_user_requests": ["Нужна стратегия поступления в МФТИ"],
+                        "summary_text": "Профиль: 10 класс; цель: ЕГЭ. Последний запрос: стратегия МФТИ.",
+                    },
+                )
+            finally:
+                conn.close()
+
+            with patch("sales_agent.sales_api.main.LLMClient") as llm_cls:
+                llm = llm_cls.return_value
+                llm.answer_knowledge_question_async = AsyncMock(
+                    return_value=SimpleNamespace(answer_text="ok", sources=[], used_fallback=False)
+                )
+                llm.build_consultative_reply_async = AsyncMock(
+                    return_value=SimpleNamespace(
+                        answer_text="Рекомендую ЕГЭ-трек.",
+                        used_fallback=False,
+                        recommended_product_ids=[],
+                    )
+                )
+                llm.build_general_help_reply_async = AsyncMock(
+                    return_value=SimpleNamespace(answer_text="ok", used_fallback=False)
+                )
+                response = client.post(
+                    "/api/assistant/ask",
+                    json={
+                        "question": "Как выстроить подготовку к ЕГЭ по математике?",
+                        "criteria": {"brand": "kmipt", "goal": "ege", "subject": "math", "grade": 10},
+                    },
+                    headers=_assistant_headers(user_id=42),
+                )
+
+            self.assertEqual(response.status_code, 200)
+            kwargs = llm.build_consultative_reply_async.await_args.kwargs
+            self.assertIn("summary_text", kwargs["user_context"])
+            self.assertIn("стратегия", kwargs["user_context"]["summary_text"].lower())
+
+            conn = db_module.get_connection(db_path)
+            try:
+                saved = db_module.get_conversation_context(conn, user_id=user_id)
+            finally:
+                conn.close()
+            self.assertIn("summary_text", saved)
+            self.assertIn("ЕГЭ", str(saved["summary_text"]))
+            recent_requests = saved.get("recent_user_requests", [])
+            self.assertTrue(any("подготовку к ЕГЭ" in item for item in recent_requests))
 
     def test_assistant_ask_limits_and_truncates_recent_history(self) -> None:
         long_text = ("очень длинный фрагмент " * 40).strip()

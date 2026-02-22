@@ -5,6 +5,9 @@ from unittest.mock import patch
 
 from sales_agent.sales_core.tallanto_readonly import (
     TallantoReadOnlyClient,
+    _flatten_text_values,
+    _parse_datetime,
+    _to_list,
     extract_tallanto_items,
     normalize_tallanto_fields,
     normalize_tallanto_modules,
@@ -27,6 +30,11 @@ class _MockHTTPResponse:
 
 
 class TallantoReadOnlyClientTests(unittest.TestCase):
+    def test_is_configured_reflects_required_fields(self) -> None:
+        self.assertFalse(TallantoReadOnlyClient(base_url="", token="x").is_configured())
+        self.assertFalse(TallantoReadOnlyClient(base_url="https://crm.example/api", token="").is_configured())
+        self.assertTrue(TallantoReadOnlyClient(base_url="https://crm.example/api", token="x").is_configured())
+
     def test_call_rejects_write_method(self) -> None:
         client = TallantoReadOnlyClient(base_url="https://crm.example/api", token="token")
         with self.assertRaises(RuntimeError):
@@ -54,6 +62,13 @@ class TallantoReadOnlyClientTests(unittest.TestCase):
         payload = sent_request.data.decode("utf-8")
         self.assertIn('"method": "list_possible_modules"', payload)
         self.assertIn('"api_key": "token"', payload)
+
+    @patch("sales_agent.sales_core.tallanto_readonly.urlopen")
+    def test_call_handles_none_params(self, mock_urlopen) -> None:
+        mock_urlopen.return_value = _MockHTTPResponse('{"result": []}')
+        client = TallantoReadOnlyClient(base_url="https://crm.example/api", token="token")
+        result = client.call("list_possible_modules", None)
+        self.assertEqual(result, {"result": []})
 
     @patch("sales_agent.sales_core.tallanto_readonly.urlopen")
     def test_call_raises_runtime_error_on_http(self, mock_urlopen) -> None:
@@ -96,6 +111,11 @@ class TallantoReadOnlyClientTests(unittest.TestCase):
         payload = {"result": {"data": {"entries": [{"id": 1}, {"id": 2}]}}}
         items = extract_tallanto_items(payload)
         self.assertEqual(items, [{"id": 1}, {"id": 2}])
+
+    def test_extract_tallanto_items_returns_wrapped_single_dict(self) -> None:
+        payload = {"result": {"id": "123", "name": "lead"}}
+        items = extract_tallanto_items(payload)
+        self.assertEqual(items, [{"id": "123", "name": "lead"}])
 
     def test_sanitize_lookup_context_extracts_safe_fields(self) -> None:
         context = sanitize_tallanto_lookup_context(
@@ -143,6 +163,28 @@ class TallantoReadOnlyClientTests(unittest.TestCase):
         self.assertEqual(context["tags"], ["vip", "parents", "retarget"])
         self.assertEqual(context["interests"], ["camp", "olympiad", "physics"])
         self.assertGreaterEqual(context["last_touch_days"], 0)
+
+    def test_sanitize_lookup_context_uses_days_since_last_touch(self) -> None:
+        context = sanitize_tallanto_lookup_context(
+            {"result": [{"tags": "vip", "interest": "math", "days_since_last_touch": "14"}]}
+        )
+        self.assertEqual(context["last_touch_days"], 14)
+
+    def test_private_helpers_cover_edge_cases(self) -> None:
+        self.assertEqual(_to_list(None), [])
+        self.assertEqual(_to_list((1, 2)), [1, 2])
+        self.assertEqual(_to_list("x"), ["x"])
+
+        flattened = list(_flatten_text_values({"a": "math", "b": 2}))
+        self.assertEqual(flattened, ["math", "2"])
+        self.assertEqual(list(_flatten_text_values(3.5)), ["3.5"])
+
+        parsed_iso = _parse_datetime("2026-02-22T10:30:00")
+        parsed_date = _parse_datetime("2026-02-22")
+        parsed_bad = _parse_datetime("not-a-date")
+        self.assertIsNotNone(parsed_iso)
+        self.assertIsNotNone(parsed_date)
+        self.assertIsNone(parsed_bad)
 
     def test_normalizers_extract_values(self) -> None:
         modules = normalize_tallanto_modules({"result": [{"module": "contacts"}, {"name": "leads"}]})

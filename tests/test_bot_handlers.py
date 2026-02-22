@@ -63,6 +63,16 @@ def _make_update_with_web_app_data(data: str):
     )
 
 
+def _make_update_without_message():
+    return SimpleNamespace(
+        message=None,
+        callback_query=None,
+        effective_user=_make_user(),
+        effective_chat=SimpleNamespace(id=5001),
+        update_id=9002,
+    )
+
+
 def _sample_products():
     catalog = parse_catalog(
         {
@@ -146,6 +156,22 @@ class BotSyncCoverageTests(unittest.TestCase):
             SimpleNamespace(user_webapp_url="", admin_webapp_url="https://example.com/admin/miniapp"),
         ):
             self.assertEqual(bot._resolve_user_webapp_url(), "https://example.com/app")
+
+    def test_resolve_user_webapp_url_returns_empty_without_expected_marker(self) -> None:
+        with patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(user_webapp_url="", admin_webapp_url="https://example.com/admin"),
+        ):
+            self.assertEqual(bot._resolve_user_webapp_url(), "")
+
+    def test_resolve_user_webapp_url_returns_empty_when_admin_url_has_no_base(self) -> None:
+        with patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(user_webapp_url="", admin_webapp_url="/admin/miniapp"),
+        ):
+            self.assertEqual(bot._resolve_user_webapp_url(), "")
 
     def test_build_user_miniapp_markup_returns_none_when_url_not_configured(self) -> None:
         with patch.object(
@@ -360,6 +386,18 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
         mock_reply.assert_awaited()
         self.assertIn("выключен", mock_reply.await_args_list[0].args[1].lower())
 
+    async def test_app_returns_early_when_message_missing(self) -> None:
+        update = _make_update_without_message()
+        with patch.object(bot.db_module, "log_message") as mock_log:
+            await bot.app(update=update, context=SimpleNamespace(args=[], user_data={}))
+        mock_log.assert_not_called()
+
+    async def test_adminapp_returns_early_when_message_missing(self) -> None:
+        update = _make_update_without_message()
+        with patch.object(bot.db_module, "log_message") as mock_log:
+            await bot.adminapp(update=update, context=SimpleNamespace(args=[], user_data={}))
+        mock_log.assert_not_called()
+
     async def test_app_returns_no_url_message_when_not_configured(self) -> None:
         update = _make_update_with_message("/app")
         with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
@@ -416,6 +454,25 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
 
         mock_reply.assert_awaited()
         self.assertIn("ограничен", mock_reply.await_args_list[0].args[1].lower())
+
+    async def test_adminapp_returns_no_url_message_when_admin_url_missing(self) -> None:
+        update = _make_update_with_message("/adminapp")
+        with patch.object(bot.db_module, "get_connection", return_value=_DummyConn()), patch.object(
+            bot, "_get_or_create_user_id", return_value=1
+        ), patch.object(bot.db_module, "log_message"), patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(
+                database_path=Path("/tmp/test.db"),
+                admin_miniapp_enabled=True,
+                admin_webapp_url="",
+                admin_telegram_ids=(101,),
+            ),
+        ), patch.object(bot, "_reply", new_callable=AsyncMock) as mock_reply:
+            await bot.adminapp(update=update, context=SimpleNamespace(args=[], user_data={}))
+
+        mock_reply.assert_awaited()
+        self.assertIn("не задан", mock_reply.await_args_list[0].args[1].lower())
 
     async def test_adminapp_returns_webapp_button_for_admin(self) -> None:
         update = _make_update_with_message("/adminapp")
@@ -475,6 +532,21 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
         update.message.reply_text.assert_awaited_once()
         reply_text = update.message.reply_text.call_args.args[0]
         self.assertIn("не смог их распознать", reply_text)
+
+    async def test_on_web_app_data_returns_when_payload_missing(self) -> None:
+        update = _make_update_with_message("regular text")
+        update.message.web_app_data = None
+        await bot.on_web_app_data(update=update, context=SimpleNamespace(user_data={}))
+        update.message.reply_text.assert_not_awaited()
+
+    async def test_on_web_app_data_skips_duplicate_update(self) -> None:
+        update = _make_update_with_web_app_data('{"flow":"catalog"}')
+        with patch.object(bot, "_is_duplicate_update", return_value=True), patch.object(
+            bot.db_module, "log_message"
+        ) as mock_log:
+            await bot.on_web_app_data(update=update, context=SimpleNamespace(user_data={}))
+        update.message.reply_text.assert_not_awaited()
+        mock_log.assert_not_called()
 
     async def test_handle_flow_step_regular_prompt(self) -> None:
         update = _make_update_with_message("10")

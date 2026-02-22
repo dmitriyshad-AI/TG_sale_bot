@@ -235,10 +235,57 @@ docker compose -f docker-compose.prod.yml up -d --build
    - выполните `Manual Deploy` (или restart);
    - убедитесь в админке/БД, что история и сессии сохранились.
 
+### Резервные копии SQLite на Render (рекомендуется даже с Persistent Disk)
+
+1. Создайте папку backup-файлов на persistent disk (если нужно):
+   ```bash
+   mkdir -p /var/data/backups
+   ```
+2. Снимите backup вручную:
+   ```bash
+   python3 scripts/backup_sqlite.py \
+     --db-path /var/data/sales_agent.db \
+     --output-dir /var/data/backups \
+     --prefix render-sales-agent \
+     --keep-last 30
+   ```
+3. Проверка восстановления (в staging path):
+   ```bash
+   python3 scripts/restore_sqlite.py \
+     --backup-path /var/data/backups/render-sales-agent-<timestamp>.db.gz \
+     --db-path /var/data/sales_agent.restore.db
+   ```
+4. Если нужно восстановить боевую БД:
+   ```bash
+   python3 scripts/restore_sqlite.py \
+     --backup-path /var/data/backups/render-sales-agent-<timestamp>.db.gz \
+     --db-path /var/data/sales_agent.db \
+     --force
+   ```
+5. После восстановления выполните smoke:
+   ```bash
+   python3 scripts/release_smoke.py \
+     --base-url https://<your-render-domain> \
+     --strict-runtime \
+     --require-webhook-mode \
+     --require-render-persistent
+   ```
+
+Примечание: для регулярного контроля можно включить GitHub Actions workflow `Release Smoke`:
+- Secret `RELEASE_SMOKE_BASE_URL=https://<your-render-domain>`
+- Optional Secret `TELEGRAM_BOT_TOKEN` (для проверки `getWebhookInfo`)
+- cron каждые 30 минут + ручной запуск.
+
 ### Важно по эксплуатации
 
 - Не запускайте один и тот же токен одновременно локально и в Render.
 - Free Web Service может засыпать при простое. Для стабильного 24/7 лучше paid plan или webhook-архитектура.
+- Для smoke-нагрузки перед релизом используйте:
+  ```bash
+  python3 scripts/load_smoke.py --base-url https://<your-render-domain> --target health --requests 60 --concurrency 10
+  python3 scripts/load_smoke.py --base-url https://<your-render-domain> --target catalog --requests 60 --concurrency 10
+  python3 scripts/load_smoke.py --base-url https://<your-render-domain> --target assistant --assistant-token <ASSISTANT_API_TOKEN> --requests 30 --concurrency 6
+  ```
 
 ### Webhook режим на Render (рекомендуется для single web service)
 

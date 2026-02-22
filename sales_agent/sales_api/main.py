@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime, timezone
 import html
 import json
 import logging
@@ -28,7 +28,9 @@ from sales_agent.sales_core.db import (
     claim_webhook_update,
     count_webhook_updates_by_status,
     enqueue_webhook_update,
+    get_conversation_context,
     get_connection,
+    get_or_create_user,
     get_crm_cache,
     init_db,
     list_conversation_messages,
@@ -37,6 +39,7 @@ from sales_agent.sales_core.db import (
     mark_webhook_update_done,
     mark_webhook_update_retry,
     requeue_stuck_webhook_updates,
+    upsert_conversation_context,
     upsert_crm_cache,
 )
 from sales_agent.sales_core.runtime_diagnostics import build_runtime_diagnostics
@@ -64,6 +67,9 @@ ASSISTANT_API_TOKEN_HEADER = "X-Assistant-Token"
 FORWARDED_FOR_HEADER = "X-Forwarded-For"
 ASSISTANT_RECENT_HISTORY_LIMIT = 12
 ASSISTANT_RECENT_HISTORY_TEXT_LIMIT = 350
+ASSISTANT_CONTEXT_RECENT_REQUESTS_LIMIT = 8
+ASSISTANT_CONTEXT_INTENTS_LIMIT = 12
+ASSISTANT_CONTEXT_SUMMARY_MAX = 1200
 ASSISTANT_KNOWLEDGE_HINTS = {
     "договор",
     "документ",
@@ -89,6 +95,37 @@ ASSISTANT_CONSULTATIVE_HINTS = {
     "курс",
     "лагерь",
     "мфти",
+}
+ASSISTANT_CONTEXT_INTENT_KEYWORDS = {
+    "поступление": {"поступить", "поступлен", "мфти", "вуз"},
+    "стратегия": {"стратег", "траект", "план"},
+    "егэ": {"егэ"},
+    "огэ": {"огэ"},
+    "олимпиады": {"олимп"},
+    "лагерь": {"лагерь", "смена"},
+    "успеваемость": {"успеваем", "база"},
+    "условия": {"условия", "договор", "документ"},
+    "оплата": {"оплата", "стоимость", "цена", "вычет", "рассроч"},
+}
+
+GOAL_LABELS = {
+    "ege": "ЕГЭ",
+    "oge": "ОГЭ",
+    "olympiad": "олимпиады",
+    "camp": "лагерь",
+    "base": "успеваемость",
+}
+
+SUBJECT_LABELS = {
+    "math": "математика",
+    "physics": "физика",
+    "informatics": "информатика",
+}
+
+FORMAT_LABELS = {
+    "online": "онлайн",
+    "offline": "очно",
+    "hybrid": "гибрид",
 }
 
 
@@ -131,6 +168,156 @@ def _sanitize_recent_history(items: Optional[list[AssistantHistoryItem]]) -> lis
             text = f"{text[:ASSISTANT_RECENT_HISTORY_TEXT_LIMIT - 3].rstrip()}..."
         sanitized.append({"role": item.role, "text": text})
     return sanitized
+
+
+def _compact_text(value: object, *, limit: int = 350) -> str:
+    if not isinstance(value, str):
+        return ""
+    normalized = " ".join(value.split()).strip()
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: max(0, limit - 3)].rstrip()}..."
+
+
+def _merge_unique_tail(items: list[str], *, limit: int) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = _compact_text(item, limit=ASSISTANT_RECENT_HISTORY_TEXT_LIMIT)
+        if not text:
+            continue
+        key = _normalize_lookup_token(text)
+        if not key or key in seen:
+            continue
+        result.append(text)
+        seen.add(key)
+    if len(result) <= limit:
+        return result
+    return result[-limit:]
+
+
+def _extract_context_intents(text: str) -> list[str]:
+    normalized = _normalize_lookup_token(text)
+    if not normalized:
+        return []
+    tags: list[str] = []
+    for label, keywords in ASSISTANT_CONTEXT_INTENT_KEYWORDS.items():
+        if any(keyword in normalized for keyword in keywords):
+            tags.append(label)
+    return tags
+
+
+def _format_context_summary(
+    *,
+    profile: dict[str, object],
+    intents: list[str],
+    recent_requests: list[str],
+) -> str:
+    chunks: list[str] = []
+
+    profile_parts: list[str] = []
+    grade = profile.get("grade")
+    if isinstance(grade, int):
+        profile_parts.append(f"{grade} класс")
+
+    goal = _compact_text(str(profile.get("goal") or ""), limit=80)
+    if goal:
+        profile_parts.append(f"цель: {goal}")
+
+    subject = _compact_text(str(profile.get("subject") or ""), limit=80)
+    if subject:
+        profile_parts.append(f"предмет: {subject}")
+
+    learning_format = _compact_text(str(profile.get("format") or ""), limit=80)
+    if learning_format:
+        profile_parts.append(f"формат: {learning_format}")
+
+    target = _compact_text(str(profile.get("target") or ""), limit=80)
+    if target:
+        profile_parts.append(f"цель: {target}")
+
+    if profile_parts:
+        chunks.append("Профиль: " + "; ".join(profile_parts) + ".")
+
+    cleaned_intents = [item.strip() for item in intents if item.strip()]
+    if cleaned_intents:
+        chunks.append("Интересы: " + ", ".join(cleaned_intents) + ".")
+
+    cleaned_requests = [item.strip() for item in recent_requests if item.strip()]
+    if cleaned_requests:
+        chunks.append("Последние запросы: " + " | ".join(cleaned_requests[-2:]) + ".")
+
+    summary = " ".join(chunks).strip()
+    if len(summary) <= ASSISTANT_CONTEXT_SUMMARY_MAX:
+        return summary
+    return f"{summary[: ASSISTANT_CONTEXT_SUMMARY_MAX - 3].rstrip()}..."
+
+
+def _merge_assistant_context(
+    current: dict[str, object],
+    *,
+    question: str,
+    criteria: SearchCriteria,
+    recent_history: list[dict[str, str]],
+    context_summary: str,
+) -> dict[str, object]:
+    existing = current if isinstance(current, dict) else {}
+    profile = existing.get("profile") if isinstance(existing.get("profile"), dict) else {}
+    profile = dict(profile)
+
+    if criteria.grade is not None:
+        profile["grade"] = int(criteria.grade)
+    if criteria.goal:
+        profile["goal"] = GOAL_LABELS.get(criteria.goal, criteria.goal)
+    if criteria.subject:
+        profile["subject"] = SUBJECT_LABELS.get(criteria.subject, criteria.subject)
+    if criteria.format:
+        profile["format"] = FORMAT_LABELS.get(criteria.format, criteria.format)
+
+    normalized_question = _normalize_lookup_token(question)
+    if "мфти" in normalized_question:
+        profile["target"] = "МФТИ"
+    elif "мгу" in normalized_question:
+        profile["target"] = "МГУ"
+
+    previous_intents = existing.get("intents") if isinstance(existing.get("intents"), list) else []
+    merged_intents = _merge_unique_tail(
+        [str(item) for item in previous_intents] + _extract_context_intents(question),
+        limit=ASSISTANT_CONTEXT_INTENTS_LIMIT,
+    )
+
+    history_user_requests = [
+        _compact_text(item.get("text"), limit=ASSISTANT_RECENT_HISTORY_TEXT_LIMIT)
+        for item in recent_history
+        if item.get("role") == "user"
+    ]
+    previous_requests = (
+        existing.get("recent_user_requests")
+        if isinstance(existing.get("recent_user_requests"), list)
+        else []
+    )
+    merged_requests = _merge_unique_tail(
+        [str(item) for item in previous_requests]
+        + history_user_requests
+        + [_compact_text(question, limit=ASSISTANT_RECENT_HISTORY_TEXT_LIMIT)],
+        limit=ASSISTANT_CONTEXT_RECENT_REQUESTS_LIMIT,
+    )
+
+    summary_text = _compact_text(context_summary, limit=ASSISTANT_CONTEXT_SUMMARY_MAX)
+    if not summary_text:
+        summary_text = _format_context_summary(
+            profile=profile,
+            intents=merged_intents,
+            recent_requests=merged_requests,
+        )
+
+    return {
+        "profile": profile,
+        "intents": merged_intents,
+        "recent_user_requests": merged_requests,
+        "summary_text": summary_text,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _is_format_compatible(criteria_format: Optional[str], product_format: Optional[str]) -> bool:
@@ -889,12 +1076,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         assistant_access = _require_assistant_access(request)
         client_ip = _request_client_ip(request)
 
-        user_id = assistant_access.get("user_id")
-        if isinstance(user_id, int):
+        telegram_user_id = assistant_access.get("user_id")
+        telegram_user_id_int = telegram_user_id if isinstance(telegram_user_id, int) else None
+        if telegram_user_id_int is not None:
             _enforce_rate_limit(
                 request=request,
                 limiter=assistant_rate_limiter,
-                key=f"assistant:user:{user_id}",
+                key=f"assistant:user:{telegram_user_id_int}",
                 limit=cfg.assistant_rate_limit_user_requests,
                 scope="assistant_user",
             )
@@ -940,16 +1128,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 model=cfg.openai_model,
                 timeout_seconds=ASSISTANT_TIMEOUT_SECONDS,
             )
+            persisted_context: Dict[str, Any] = {}
+            context_user_id: Optional[int] = None
+            if telegram_user_id_int is not None:
+                conn_context = get_connection(cfg.database_path)
+                try:
+                    context_user_id = get_or_create_user(
+                        conn_context,
+                        channel="telegram",
+                        external_id=str(telegram_user_id_int),
+                    )
+                    persisted_context = get_conversation_context(conn_context, user_id=context_user_id)
+                finally:
+                    conn_context.close()
+
             user_context: Dict[str, Any] = {}
             recent_history = _sanitize_recent_history(payload.recent_history)
+            summary_text = ""
+            if isinstance(persisted_context, dict):
+                summary_text = _compact_text(persisted_context.get("summary_text"), limit=ASSISTANT_CONTEXT_SUMMARY_MAX)
+
             if isinstance(payload.context_summary, str) and payload.context_summary.strip():
-                user_context["summary_text"] = payload.context_summary.strip()
-            elif recent_history:
+                summary_text = _compact_text(payload.context_summary, limit=ASSISTANT_CONTEXT_SUMMARY_MAX)
+            elif not summary_text and recent_history:
                 history_excerpt = " | ".join(
                     f"{item['role']}: {item['text']}" for item in recent_history[-4:]
                 )
                 if history_excerpt:
-                    user_context["summary_text"] = history_excerpt[:1200]
+                    summary_text = _compact_text(history_excerpt, limit=ASSISTANT_CONTEXT_SUMMARY_MAX)
+
+            if summary_text:
+                user_context["summary_text"] = summary_text
 
             answer_text = ""
             sources: list[str] = []
@@ -1009,6 +1218,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             "why_match": explain_match(product, criteria),
                         }
                     )
+
+            if context_user_id is not None:
+                merged_context = _merge_assistant_context(
+                    persisted_context if isinstance(persisted_context, dict) else {},
+                    question=question,
+                    criteria=criteria,
+                    recent_history=recent_history,
+                    context_summary=summary_text,
+                )
+                conn_update = get_connection(cfg.database_path)
+                try:
+                    upsert_conversation_context(conn_update, user_id=context_user_id, summary=merged_context)
+                finally:
+                    conn_update.close()
 
             return {
                 "ok": True,
