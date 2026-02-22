@@ -5,10 +5,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 from uuid import uuid4
+import re
 
 from sales_agent.sales_core.catalog import CatalogValidationError, load_catalog
 from sales_agent.sales_core.config import Settings
 from sales_agent.sales_core.vector_store import load_vector_store_id
+
+try:
+    from telegram import __version__ as TELEGRAM_LIBRARY_VERSION
+except Exception:  # pragma: no cover - import failure depends on runtime env
+    TELEGRAM_LIBRARY_VERSION = ""
+
+PTB_BUSINESS_MIN_MAJOR = 21
+PTB_BUSINESS_MIN_MINOR = 1
 
 
 @dataclass(frozen=True)
@@ -100,9 +109,36 @@ def _is_path_within(child: Path, parent: Path) -> bool:
             return False
 
 
+def _parse_major_minor(version: str) -> tuple[int, int]:
+    if not isinstance(version, str):
+        return (0, 0)
+    parts = version.strip().split(".")
+    if len(parts) < 2:
+        return (0, 0)
+
+    def _num(value: str) -> int:
+        match = re.match(r"(\d+)", value.strip())
+        if not match:
+            return 0
+        return int(match.group(1))
+
+    return (_num(parts[0]), _num(parts[1]))
+
+
+def _ptb_business_ready(version: str) -> bool:
+    major, minor = _parse_major_minor(version)
+    if major > PTB_BUSINESS_MIN_MAJOR:
+        return True
+    if major == PTB_BUSINESS_MIN_MAJOR and minor >= PTB_BUSINESS_MIN_MINOR:
+        return True
+    return False
+
+
 def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
     issues: List[DiagnosticIssue] = []
     database_parent_writable = _can_write_parent(settings.database_path)
+    ptb_version = TELEGRAM_LIBRARY_VERSION.strip() if isinstance(TELEGRAM_LIBRARY_VERSION, str) else ""
+    ptb_business_ready = _ptb_business_ready(ptb_version)
 
     if not settings.telegram_bot_token:
         issues.append(
@@ -118,6 +154,19 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
                 severity="error",
                 code="openai_key_missing",
                 message="OPENAI_API_KEY is empty.",
+            )
+        )
+
+    if not ptb_business_ready:
+        issues.append(
+            DiagnosticIssue(
+                severity="warning",
+                code="ptb_business_features_unavailable",
+                message=(
+                    "python-telegram-bot version does not support Telegram Business API features. "
+                    f"Upgrade to >= {PTB_BUSINESS_MIN_MAJOR}.{PTB_BUSINESS_MIN_MINOR} "
+                    f"(detected: {ptb_version or 'unknown'})."
+                ),
             )
         )
 
@@ -271,6 +320,8 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
             "telegram_webhook_secret_set": bool(settings.telegram_webhook_secret),
             "openai_key_set": bool(settings.openai_api_key),
             "openai_model": settings.openai_model,
+            "python_telegram_bot_version": ptb_version or "unknown",
+            "python_telegram_bot_business_ready": ptb_business_ready,
             "assistant_api_token_set": bool(settings.assistant_api_token),
             "assistant_rate_limit_window_seconds": settings.assistant_rate_limit_window_seconds,
             "assistant_rate_limit_user_requests": settings.assistant_rate_limit_user_requests,

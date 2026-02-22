@@ -97,10 +97,13 @@ class PreflightAuditScriptTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload.get("status"), "ok")
+        self.assertIn(payload.get("status"), {"ok", "warn"})
         runtime = payload.get("runtime", {})
         self.assertTrue(runtime.get("catalog_ok"))
         self.assertTrue(runtime.get("vector_store_id_set"))
+        if payload.get("status") == "warn":
+            codes = {item.get("code") for item in payload.get("issues", []) if isinstance(item, dict)}
+            self.assertIn("ptb_business_features_unavailable", codes)
 
     def test_main_returns_zero_for_warn_and_prints_summary(self) -> None:
         diagnostics = {

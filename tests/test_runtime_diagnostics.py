@@ -7,6 +7,8 @@ from unittest.mock import patch
 from sales_agent.sales_core.config import Settings
 from sales_agent.sales_core.runtime_diagnostics import (
     _can_write_parent,
+    _parse_major_minor,
+    _ptb_business_ready,
     _summarize_issues,
     enforce_startup_preflight,
     _is_path_within,
@@ -50,6 +52,15 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         self.assertEqual(normalize_preflight_mode("strict"), "strict")
         self.assertEqual(normalize_preflight_mode("  unknown "), "off")
         self.assertEqual(normalize_preflight_mode(None), "off")
+
+    def test_parse_major_minor_and_ptb_business_ready(self) -> None:
+        self.assertEqual(_parse_major_minor("21.11.1"), (21, 11))
+        self.assertEqual(_parse_major_minor("21.1a1"), (21, 1))
+        self.assertEqual(_parse_major_minor("broken"), (0, 0))
+        self.assertTrue(_ptb_business_ready("21.1.0"))
+        self.assertTrue(_ptb_business_ready("22.0"))
+        self.assertFalse(_ptb_business_ready("21.0.9"))
+        self.assertFalse(_ptb_business_ready("20.8"))
 
     def test_can_write_parent_returns_false_when_probe_write_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -118,7 +129,8 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
             )
             settings.database_path.parent.mkdir(parents=True, exist_ok=True)
 
-            diagnostics = build_runtime_diagnostics(settings)
+            with patch("sales_agent.sales_core.runtime_diagnostics.TELEGRAM_LIBRARY_VERSION", "21.11.1"):
+                diagnostics = build_runtime_diagnostics(settings)
 
         self.assertEqual(diagnostics["status"], "fail")
         issue_codes = {item["code"] for item in diagnostics["issues"]}
@@ -153,7 +165,8 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
                 telegram_webhook_secret="secret",
             )
 
-            diagnostics = build_runtime_diagnostics(settings)
+            with patch("sales_agent.sales_core.runtime_diagnostics.TELEGRAM_LIBRARY_VERSION", "21.11.1"):
+                diagnostics = build_runtime_diagnostics(settings)
 
         self.assertEqual(diagnostics["status"], "ok")
         runtime = diagnostics["runtime"]
@@ -163,6 +176,8 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         self.assertEqual(runtime["vector_store_id_source"], "env")
         self.assertIn("tallanto_read_only", runtime)
         self.assertIn("tallanto_token_set", runtime)
+        self.assertIn("python_telegram_bot_version", runtime)
+        self.assertIn("python_telegram_bot_business_ready", runtime)
 
     def test_diagnostics_warns_when_vector_store_loaded_only_from_meta_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -193,7 +208,8 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
                 admin_user="",
                 admin_pass="",
             )
-            diagnostics = build_runtime_diagnostics(settings)
+            with patch("sales_agent.sales_core.runtime_diagnostics.TELEGRAM_LIBRARY_VERSION", "21.11.1"):
+                diagnostics = build_runtime_diagnostics(settings)
 
         self.assertEqual(diagnostics["status"], "warn")
         runtime = diagnostics["runtime"]
@@ -230,11 +246,45 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
                 tallanto_read_only=True,
                 tallanto_api_token="",
             )
-            diagnostics = build_runtime_diagnostics(settings)
+            with patch("sales_agent.sales_core.runtime_diagnostics.TELEGRAM_LIBRARY_VERSION", "21.11.1"):
+                diagnostics = build_runtime_diagnostics(settings)
 
         self.assertEqual(diagnostics["status"], "warn")
         issue_codes = {item["code"] for item in diagnostics["issues"]}
         self.assertIn("tallanto_readonly_incomplete", issue_codes)
+
+    def test_diagnostics_warns_when_ptb_is_below_business_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            catalog_path = root / "catalog.yaml"
+            _write_catalog(catalog_path)
+            knowledge_path = root / "knowledge"
+            knowledge_path.mkdir(parents=True, exist_ok=True)
+            (knowledge_path / "faq_general.md").write_text("FAQ", encoding="utf-8")
+            db_path = root / "data" / "sales_agent.db"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+
+            settings = Settings(
+                telegram_bot_token="tg-token",
+                openai_api_key="sk-test",
+                openai_model="gpt-4.1",
+                tallanto_api_url="",
+                tallanto_api_key="",
+                brand_default="kmipt",
+                database_path=db_path,
+                catalog_path=catalog_path,
+                knowledge_path=knowledge_path,
+                vector_store_meta_path=root / "data" / "vector_store.json",
+                openai_vector_store_id="vs_123",
+                admin_user="",
+                admin_pass="",
+            )
+            with patch("sales_agent.sales_core.runtime_diagnostics.TELEGRAM_LIBRARY_VERSION", "20.8"):
+                diagnostics = build_runtime_diagnostics(settings)
+
+        self.assertEqual(diagnostics["status"], "warn")
+        issue_codes = {item["code"] for item in diagnostics["issues"]}
+        self.assertIn("ptb_business_features_unavailable", issue_codes)
 
     def test_diagnostics_warns_for_render_non_persistent_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -298,7 +348,8 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
                 running_on_render=True,
                 persistent_data_root=persistent,
             )
-            diagnostics = build_runtime_diagnostics(settings)
+            with patch("sales_agent.sales_core.runtime_diagnostics.TELEGRAM_LIBRARY_VERSION", "21.11.1"):
+                diagnostics = build_runtime_diagnostics(settings)
 
         self.assertEqual(diagnostics["status"], "ok")
         runtime = diagnostics["runtime"]
