@@ -1,6 +1,10 @@
 import unittest
+from unittest.mock import Mock
 
 from sales_agent.sales_core.copilot import (
+    create_crm_copilot_task,
+    create_tallanto_copilot_task,
+    detect_source_format,
     import_dialogue,
     parse_telegram_export,
     parse_whatsapp_export,
@@ -36,6 +40,37 @@ class CopilotTests(unittest.TestCase):
         self.assertEqual(len(messages), 2)
         self.assertEqual(messages[1]["text"], "Есть несколько вариантов")
 
+    def test_parse_whatsapp_export_merges_multiline_message(self) -> None:
+        raw = (
+            "12/02/2026, 10:00 - Клиент: Добрый день\n"
+            "Нужна стратегия поступления в МФТИ\n"
+            "12/02/2026, 10:05 - Менеджер: Понял, давайте уточним детали\n"
+        )
+        messages = parse_whatsapp_export(raw)
+        self.assertEqual(len(messages), 2)
+        self.assertIn("стратегия поступления", messages[0]["text"])
+        self.assertIn("\n", messages[0]["text"])
+
+    def test_parse_telegram_export_skips_invalid_items_and_empty_text(self) -> None:
+        payload = {
+            "messages": [
+                42,
+                {"from": "Client", "date": "2026-02-12T10:00:00", "text": ""},
+                {
+                    "from": "Client",
+                    "date": "2026-02-12T10:02:00",
+                    "text": ["Первая часть ", {"text": "и продолжение"}],
+                },
+                {"from": "Client", "date": "2026-02-12T10:05:00", "text": [{"type": "plain"}]},
+            ]
+        }
+        messages = parse_telegram_export(payload)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["text"], "Первая часть и продолжение")
+
+    def test_parse_telegram_export_returns_empty_when_messages_not_list(self) -> None:
+        self.assertEqual(parse_telegram_export({"messages": "not-a-list"}), [])
+
     def test_summarize_dialogue_extracts_profile(self) -> None:
         messages = [
             {
@@ -52,6 +87,18 @@ class CopilotTests(unittest.TestCase):
         self.assertEqual(profile["subject"], "math")
         self.assertIn("price", profile["objections"])
 
+    def test_summarize_dialogue_empty_input_returns_default_profile(self) -> None:
+        summary, profile = summarize_dialogue([])
+        self.assertIn("пустой", summary.lower())
+        self.assertIsNone(profile["grade"])
+        self.assertEqual(profile["objections"], [])
+
+    def test_detect_source_format_by_filename_and_content(self) -> None:
+        self.assertEqual(detect_source_format("dialog.json", "[]"), "telegram_json")
+        self.assertEqual(detect_source_format("dialog.txt", "{}"), "whatsapp_txt")
+        self.assertEqual(detect_source_format("dialog.bin", '{"messages":[{"text":"ok"}]}'), "telegram_json")
+        self.assertEqual(detect_source_format("dialog.bin", "plain text"), "whatsapp_txt")
+
     def test_import_dialogue_detects_format(self) -> None:
         source_format, messages = import_dialogue(
             "export.json",
@@ -63,6 +110,10 @@ class CopilotTests(unittest.TestCase):
     def test_import_dialogue_raises_on_invalid_telegram_json(self) -> None:
         with self.assertRaises(ValueError):
             import_dialogue("export.json", b"{broken-json")
+
+    def test_import_dialogue_raises_on_non_object_json(self) -> None:
+        with self.assertRaises(ValueError):
+            import_dialogue("export.json", b"[]")
 
     def test_run_copilot_returns_draft(self) -> None:
         content = (
@@ -81,6 +132,45 @@ class CopilotTests(unittest.TestCase):
             catalog_context=[{"title": "Курс 1"}],
         )
         self.assertIn("2-3 подходящие программы", draft)
+
+    def test_propose_reply_mentions_budget_for_price_objection(self) -> None:
+        draft = propose_reply(
+            summary="summary",
+            customer_profile={"grade": 10, "goal": "ege", "subject": "physics", "objections": ["price"]},
+            catalog_context=None,
+        )
+        self.assertIn("бюджете", draft)
+
+    def test_create_tallanto_copilot_task_uses_tasks_module(self) -> None:
+        tallanto = Mock()
+        tallanto.set_entry.return_value = {"ok": True}
+        result = create_tallanto_copilot_task(
+            tallanto=tallanto,
+            summary="summary",
+            draft_reply="draft",
+            contact=None,
+        )
+        self.assertEqual(result, {"ok": True})
+        tallanto.set_entry.assert_called_once()
+        call = tallanto.set_entry.call_args.kwargs
+        self.assertEqual(call["module"], "tasks")
+        self.assertEqual(call["fields_values"]["contact"], "")
+
+    def test_create_crm_copilot_task_proxies_to_client(self) -> None:
+        crm = Mock()
+        crm.create_copilot_task.return_value = {"ok": True}
+        result = create_crm_copilot_task(
+            crm=crm,
+            summary="sum",
+            draft_reply="reply",
+            contact="+79990000000",
+        )
+        self.assertEqual(result, {"ok": True})
+        crm.create_copilot_task.assert_called_once_with(
+            summary="sum",
+            draft_reply="reply",
+            contact="+79990000000",
+        )
 
 
 if __name__ == "__main__":

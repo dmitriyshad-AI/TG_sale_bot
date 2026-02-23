@@ -157,7 +157,7 @@ class ApiWebhookTests(unittest.TestCase):
                 with TestClient(app) as client:
                     response = client.post(
                         "/telegram/webhook",
-                        data="{invalid",
+                        content="{invalid",
                         headers={
                             "Content-Type": "application/json",
                             "X-Telegram-Bot-Api-Secret-Token": "secret-3",

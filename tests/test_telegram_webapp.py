@@ -81,6 +81,44 @@ class TelegramWebAppTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "expired_auth_date")
 
+    def test_verify_fails_when_hash_or_auth_date_missing(self) -> None:
+        no_hash = verify_telegram_webapp_init_data(
+            init_data="auth_date=1700000000&query_id=q",
+            bot_token="123:ABC",
+        )
+        self.assertFalse(no_hash.ok)
+        self.assertEqual(no_hash.reason, "missing_hash")
+
+        no_auth_date = verify_telegram_webapp_init_data(
+            init_data="query_id=q&hash=abc",
+            bot_token="123:ABC",
+        )
+        self.assertFalse(no_auth_date.ok)
+        self.assertEqual(no_auth_date.reason, "missing_auth_date")
+
+    def test_verify_fails_when_auth_date_invalid_or_in_future(self) -> None:
+        invalid_auth = verify_telegram_webapp_init_data(
+            init_data="auth_date=notanumber&query_id=q&hash=abc",
+            bot_token="123:ABC",
+        )
+        self.assertFalse(invalid_auth.ok)
+        self.assertEqual(invalid_auth.reason, "invalid_auth_date")
+
+        bot_token = "123:ABC"
+        now = int(time.time())
+        future = now + 600
+        init_data = _build_init_data(
+            {"auth_date": str(future), "query_id": "AAEAAAE", "user": json.dumps({"id": 101}, ensure_ascii=False)},
+            bot_token=bot_token,
+        )
+        future_result = verify_telegram_webapp_init_data(
+            init_data=init_data,
+            bot_token=bot_token,
+            now_ts=now,
+        )
+        self.assertFalse(future_result.ok)
+        self.assertEqual(future_result.reason, "future_auth_date")
+
     def test_verify_fails_when_bot_token_missing(self) -> None:
         result = verify_telegram_webapp_init_data(
             init_data="auth_date=1700000000&hash=x",
@@ -88,6 +126,46 @@ class TelegramWebAppTests(unittest.TestCase):
         )
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "missing_bot_token")
+
+    def test_verify_accepts_payload_with_invalid_user_json(self) -> None:
+        bot_token = "123:ABC"
+        now = int(time.time())
+        init_data = _build_init_data(
+            {
+                "auth_date": str(now),
+                "query_id": "AAEAAAE",
+                "user": "not-json",
+            },
+            bot_token=bot_token,
+        )
+        result = verify_telegram_webapp_init_data(
+            init_data=init_data,
+            bot_token=bot_token,
+            now_ts=now,
+        )
+        self.assertTrue(result.ok)
+        self.assertIsNone(result.user)
+        self.assertIsNone(result.user_id)
+
+    def test_verify_accepts_payload_when_user_id_is_not_int(self) -> None:
+        bot_token = "123:ABC"
+        now = int(time.time())
+        init_data = _build_init_data(
+            {
+                "auth_date": str(now),
+                "query_id": "AAEAAAE",
+                "user": json.dumps({"id": "abc", "username": "x"}, ensure_ascii=False),
+            },
+            bot_token=bot_token,
+        )
+        result = verify_telegram_webapp_init_data(
+            init_data=init_data,
+            bot_token=bot_token,
+            now_ts=now,
+        )
+        self.assertTrue(result.ok)
+        self.assertIsNone(result.user_id)
+        self.assertIsNone(result.user)
 
 
 if __name__ == "__main__":

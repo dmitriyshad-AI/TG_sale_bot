@@ -27,6 +27,13 @@ def _product_stub(candidate: ProductCandidate, idx: int = 1) -> dict:
 
 
 class BuildCatalogDraftScriptTests(unittest.TestCase):
+    def test_parse_args_reads_custom_values(self) -> None:
+        with patch("sys.argv", ["build_catalog_draft.py", "--limit-per-brand", "7", "--timeout", "3.5"]):
+            args = build_catalog_draft.parse_args()
+        self.assertEqual(args.limit_per_brand, 7)
+        self.assertEqual(args.timeout, 3.5)
+        self.assertTrue(str(args.output).endswith("products.auto_draft.yaml"))
+
     def test_main_returns_error_when_no_products_collected(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             output = Path(tmpdir) / "products.auto_draft.yaml"
@@ -122,6 +129,80 @@ class BuildCatalogDraftScriptTests(unittest.TestCase):
             payload = yaml.safe_load(output.read_text(encoding="utf-8"))
             products = payload.get("products", [])
             self.assertEqual(len(products), 1)
+
+    def test_main_enforces_minimum_limit_of_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "products.auto_draft.yaml"
+            args = argparse.Namespace(output=output, limit_per_brand=0, timeout=1.0)
+            candidate_1 = ProductCandidate(
+                brand="kmipt",
+                title="Математика ЕГЭ",
+                url="https://kmipt.ru/courses/ege/math",
+                format_hint="offline",
+            )
+            candidate_2 = ProductCandidate(
+                brand="kmipt",
+                title="Физика ЕГЭ",
+                url="https://kmipt.ru/courses/ege/phys",
+                format_hint="offline",
+            )
+
+            def collect_side_effect(*, brand, listing_urls, timeout):
+                return [candidate_1, candidate_2] if brand == "kmipt" else []
+
+            with patch.object(build_catalog_draft, "parse_args", return_value=args), patch.object(
+                build_catalog_draft, "collect_candidates_for_brand", side_effect=collect_side_effect
+            ), patch.object(build_catalog_draft, "KMIPT_FALLBACK_CANDIDATES", []), patch.object(
+                build_catalog_draft, "fetch_html", return_value="<html>ok</html>"
+            ) as fetch_mock, patch.object(
+                build_catalog_draft, "build_product_from_candidate", side_effect=lambda c, detail_html, used_ids: _product_stub(c, idx=len(used_ids) + 1)
+            ):
+                result = build_catalog_draft.main()
+
+            self.assertEqual(result, 0)
+            self.assertEqual(fetch_mock.call_count, 1)
+            payload = yaml.safe_load(output.read_text(encoding="utf-8"))
+            self.assertEqual(len(payload.get("products", [])), 1)
+
+    def test_main_skips_broken_candidate_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "products.auto_draft.yaml"
+            args = argparse.Namespace(output=output, limit_per_brand=3, timeout=1.0)
+            broken = ProductCandidate(
+                brand="kmipt",
+                title="Broken",
+                url="https://kmipt.ru/courses/broken",
+                format_hint="offline",
+            )
+            valid = ProductCandidate(
+                brand="kmipt",
+                title="Valid",
+                url="https://kmipt.ru/courses/valid",
+                format_hint="offline",
+            )
+
+            def collect_side_effect(*, brand, listing_urls, timeout):
+                return [broken, valid] if brand == "kmipt" else []
+
+            def build_side_effect(candidate, detail_html, used_ids):
+                if candidate.url.endswith("/broken"):
+                    raise RuntimeError("broken page")
+                return _product_stub(candidate, idx=1)
+
+            with patch.object(build_catalog_draft, "parse_args", return_value=args), patch.object(
+                build_catalog_draft, "collect_candidates_for_brand", side_effect=collect_side_effect
+            ), patch.object(build_catalog_draft, "KMIPT_FALLBACK_CANDIDATES", []), patch.object(
+                build_catalog_draft, "fetch_html", return_value="<html>ok</html>"
+            ), patch.object(
+                build_catalog_draft, "build_product_from_candidate", side_effect=build_side_effect
+            ):
+                result = build_catalog_draft.main()
+
+            self.assertEqual(result, 0)
+            payload = yaml.safe_load(output.read_text(encoding="utf-8"))
+            products = payload.get("products", [])
+            self.assertEqual(len(products), 1)
+            self.assertEqual(products[0]["title"], "Valid")
 
 
 if __name__ == "__main__":

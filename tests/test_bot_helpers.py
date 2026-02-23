@@ -12,13 +12,19 @@ try:
     from sales_agent.sales_bot.bot import (
         _apply_start_meta_to_state,
         _build_stitched_user_text,
+        _build_consultative_fallback_text,
+        _build_consultative_question,
+        _build_webapp_data_reply_text,
         _build_inline_keyboard,
         _build_user_name,
         _criteria_from_state,
+        _extract_webapp_top,
         _extract_goal_hint,
         _extract_grade_hint,
         _extract_subject_hint,
         _format_product_blurb,
+        _format_soft_picks,
+        _is_duplicate_outbound_reply,
         _is_consultative_query,
         _is_duplicate_update,
         _is_flow_interrupt_question,
@@ -28,8 +34,19 @@ try:
         _is_small_talk_message,
         _is_structured_flow_input,
         _looks_like_fragmented_context_message,
+        _load_current_state_name,
+        _missing_criteria_fields,
         _next_state_for_consultative,
+        _normalize_webapp_grade,
+        _normalize_webapp_label,
+        _normalize_webapp_payload,
+        _outbound_dedup_cache_key,
+        _parse_db_timestamp,
+        _recent_dialogue_for_llm,
         _resolve_vector_store_id,
+        _select_recommended_products,
+        _shorten_text,
+        _should_offer_products,
         _target_message,
         _update_user_context_summary,
     )
@@ -66,6 +83,11 @@ def _sample_products():
 
 @unittest.skipUnless(HAS_BOT_DEPS, "bot dependencies are not installed")
 class BotHelpersTests(unittest.TestCase):
+    def test_apply_start_meta_sets_kmipt_brand(self) -> None:
+        state = {"state": "ask_grade", "criteria": {}, "contact": None}
+        updated = _apply_start_meta_to_state(state, {"brand": "KMIPT"})
+        self.assertEqual(updated["criteria"]["brand"], "kmipt")
+
     def test_apply_start_meta_ignores_non_kmipt_brand(self) -> None:
         state = {"state": "ask_grade", "criteria": {"brand": "kmipt"}, "contact": None}
         updated = _apply_start_meta_to_state(state, {"brand": "foton", "source": "site"})
@@ -186,6 +208,7 @@ class BotHelpersTests(unittest.TestCase):
         self.assertTrue(_is_structured_flow_input("11?"))
         self.assertTrue(_is_structured_flow_input("ЕГЭ!"))
         self.assertTrue(_is_structured_flow_input("онлайн."))
+        self.assertFalse(_is_structured_flow_input("  "))
 
     def test_flow_interrupt_question_detection(self) -> None:
         self.assertTrue(_is_flow_interrupt_question("Можно ли совмещать школу и подготовку?"))
@@ -254,6 +277,46 @@ class BotHelpersTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_recent_dialogue_for_llm_filters_and_truncates(self) -> None:
+        class _DummyConn:
+            pass
+
+        history = [
+            {"direction": "inbound", "text": "/start"},
+            {"direction": "unknown", "text": "ignored"},
+            {"direction": "inbound", "text": ""},
+            {"direction": "inbound", "text": "A" * 430},
+            {"direction": "outbound", "text": "Ответ менеджера"},
+        ]
+        with patch.object(bot.db_module, "list_recent_messages", return_value=history):
+            result = _recent_dialogue_for_llm(_DummyConn(), user_id=1, limit=8)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["role"], "user")
+        self.assertEqual(len(result[0]["text"]), 400)
+        self.assertEqual(result[1]["role"], "assistant")
+
+    def test_parse_db_timestamp_returns_none_for_invalid(self) -> None:
+        self.assertIsNone(_parse_db_timestamp(None))
+
+    def test_update_user_context_summary_handles_non_dict_context(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "helper_context_invalid.db"
+            db_module.init_db(db_path)
+            conn = db_module.get_connection(db_path)
+            try:
+                user_id = db_module.get_or_create_user(conn, channel="telegram", external_id="2002")
+                with patch.object(bot.db_module, "get_conversation_context", return_value="bad-context"):
+                    summary = _update_user_context_summary(
+                        conn,
+                        user_id=user_id,
+                        message_text="Хочу очно и цель поступить в МГУ",
+                        state_payload={"criteria": {"format": "hybrid"}},
+                    )
+                self.assertEqual(summary["profile"]["target"], "МГУ")
+                self.assertEqual(summary["profile"]["format"], "Гибрид")
+            finally:
+                conn.close()
+
     def test_next_state_for_consultative_does_not_loop_to_goal_when_complete(self) -> None:
         state = _next_state_for_consultative(
             {
@@ -265,6 +328,193 @@ class BotHelpersTests(unittest.TestCase):
             }
         )
         self.assertEqual(state, "suggest_products")
+
+    def test_missing_criteria_fields_marks_empty_subject(self) -> None:
+        missing = _missing_criteria_fields({"grade": 11, "goal": "ege", "subject": None, "format": "online"})
+        self.assertEqual(missing, ["subject"])
+
+    def test_format_soft_picks_and_consultative_question_branches(self) -> None:
+        products = [
+            SimpleNamespace(title="Курс 1", usp=["Фокус на задачах"]),
+            SimpleNamespace(title="Курс 2", usp=[]),
+        ]
+        picks = _format_soft_picks(products)
+        self.assertIn("Что уже может подойти", picks)
+        self.assertIn("Курс 2", picks)
+        self.assertIn("подходит для текущей цели", picks)
+        self.assertEqual(_format_soft_picks([]), "")
+
+        self.assertIn(
+            "какой сейчас класс",
+            _build_consultative_question({"grade": None, "goal": None, "subject": None, "format": None}, "fallback").lower(),
+        )
+        self.assertIn(
+            "в приоритете",
+            _build_consultative_question({"grade": 10, "goal": None, "subject": None, "format": None}, "fallback").lower(),
+        )
+        self.assertIn(
+            "какой предмет",
+            _build_consultative_question({"grade": 10, "goal": "ege", "subject": None, "format": None}, "fallback").lower(),
+        )
+        self.assertIn(
+            "как удобнее",
+            _build_consultative_question({"grade": 10, "goal": "ege", "subject": "math", "format": None}, "fallback").lower(),
+        )
+        self.assertIn(
+            "2-3 программы",
+            _build_consultative_question({"grade": 10, "goal": "ege", "subject": "math", "format": "online"}, "fallback"),
+        )
+        with patch.object(bot, "_missing_criteria_fields", return_value=["custom"]):
+            self.assertEqual(_build_consultative_question({}, "fallback-question"), "fallback-question")
+
+    def test_should_offer_products_branches(self) -> None:
+        self.assertTrue(_should_offer_products(state_name="suggest_products", missing_fields=["grade"], user_text="x"))
+        self.assertTrue(_should_offer_products(state_name="ask_grade", missing_fields=[], user_text="x"))
+        self.assertTrue(
+            _should_offer_products(state_name="ask_format", missing_fields=["format"], user_text="подберите курс")
+        )
+        self.assertFalse(
+            _should_offer_products(state_name="ask_goal", missing_fields=["goal", "format"], user_text="привет")
+        )
+
+    def test_load_current_state_name_and_select_recommended_products(self) -> None:
+        with patch.object(bot, "_load_current_state_payload", return_value={"state": "ask_subject"}):
+            self.assertEqual(_load_current_state_name(SimpleNamespace()), "ask_subject")
+        with patch.object(bot, "_load_current_state_payload", return_value={"state": 123}):
+            self.assertIsNone(_load_current_state_name(SimpleNamespace()))
+
+        p1 = SimpleNamespace(id="a", title="A")
+        p2 = SimpleNamespace(id="b", title="B")
+        self.assertEqual(_select_recommended_products([p1, p2], ["b", "b", "c"]), [p2])
+        self.assertEqual(_select_recommended_products([p1, p2], ["zzz"]), [p1, p2])
+        self.assertEqual(_select_recommended_products([], ["a"]), [])
+
+    def test_build_consultative_fallback_text_repeated_and_regular(self) -> None:
+        products = [SimpleNamespace(title="Курс", usp=["План поступления"])]
+        repeated = _build_consultative_fallback_text(
+            text="Цель поступить в МФТИ",
+            criteria={"grade": 10, "goal": "ege"},
+            products=products,
+            next_question="Какой сейчас класс у ученика?",
+            show_picks=True,
+            repeated_without_new_info=True,
+            repeat_count=3,
+        )
+        self.assertIn("Понял вас, цель поступить в МФТИ.", repeated)
+        self.assertIn("Например: «11 класс».", repeated)
+
+        repeated_mgu = _build_consultative_fallback_text(
+            text="Хочу в МГУ",
+            criteria={"grade": None, "goal": None},
+            products=products,
+            next_question="Какой предмет сейчас основной?",
+            show_picks=False,
+            repeated_without_new_info=True,
+            repeat_count=2,
+        )
+        self.assertIn("цель поступить в МГУ", repeated_mgu)
+        self.assertIn("Например: «математика».", repeated_mgu)
+
+        regular_ege = _build_consultative_fallback_text(
+            text="",
+            criteria={"grade": 10, "goal": "ege"},
+            products=products,
+            next_question="Какой предмет в приоритете?",
+            show_picks=False,
+            repeated_without_new_info=False,
+            repeat_count=0,
+        )
+        self.assertIn("Для 10 класса", regular_ege)
+        self.assertIn("ЕГЭ", regular_ege)
+
+        regular_olymp = _build_consultative_fallback_text(
+            text="хочу поступить в МФТИ",
+            criteria={"grade": None, "goal": "olympiad"},
+            products=products,
+            next_question="Уточните формат занятий",
+            show_picks=True,
+            repeated_without_new_info=False,
+            repeat_count=0,
+        )
+        self.assertIn("олимпиадный трек", regular_olymp.lower())
+        self.assertIn("Что уже может подойти", regular_olymp)
+
+    def test_webapp_helpers_and_reply_text(self) -> None:
+        self.assertEqual(_shorten_text("abcdef", max_len=5), "ab...")
+        self.assertEqual(_shorten_text("abc", max_len=5), "abc")
+
+        self.assertEqual(_normalize_webapp_payload("{bad-json"), {})
+        self.assertEqual(_normalize_webapp_payload("[]"), {})
+        self.assertEqual(_normalize_webapp_payload('{"flow":"catalog"}'), {"flow": "catalog"})
+
+        self.assertEqual(_normalize_webapp_grade(7), 7)
+        self.assertEqual(_normalize_webapp_grade("11"), 11)
+        self.assertIsNone(_normalize_webapp_grade("12"))
+        self.assertIsNone(_normalize_webapp_grade("abc"))
+        self.assertIsNone(_normalize_webapp_grade(None))
+
+        self.assertEqual(_normalize_webapp_label(" ege ", mapping={"ege": "ЕГЭ"}), "ЕГЭ")
+        self.assertEqual(_normalize_webapp_label(" custom ", mapping={"ege": "ЕГЭ"}), "custom")
+        self.assertIsNone(_normalize_webapp_label(" ", mapping={}))
+        self.assertIsNone(_normalize_webapp_label(None, mapping={}))
+
+        self.assertEqual(_extract_webapp_top({"top": "bad"}), [])
+        top = _extract_webapp_top(
+            {
+                "top": [
+                    "bad",
+                    {"id": "2", "title": "Программа", "url": ""},
+                    {"id": "3", "title": "", "url": "https://example.com"},
+                    {"id": "4", "title": "Лишнее", "url": "https://example.com/4"},
+                ]
+            }
+        )
+        self.assertEqual(
+            top,
+            [
+                {"id": "2", "title": "Программа", "url": ""},
+                {"id": "3", "title": "Программа без названия", "url": "https://example.com"},
+            ],
+        )
+
+        text_invalid, flow_invalid = _build_webapp_data_reply_text("{bad-json")
+        self.assertEqual(flow_invalid, "unknown")
+        self.assertIn("не смог их распознать", text_invalid)
+
+        raw = (
+            '{"flow":"catalog","criteria":{"grade":"10","goal":"ege","subject":"math","format":"online"},'
+            '"top":[{"id":"p1","title":"Очень длинное название ' + ("x" * 200) + '","url":"https://example.com/p1"}]}'
+        )
+        text_valid, flow_valid = _build_webapp_data_reply_text(raw)
+        self.assertEqual(flow_valid, "catalog")
+        self.assertIn("Класс: 10", text_valid)
+        self.assertIn("Варианты из Mini App:", text_valid)
+        self.assertIn("Ссылка: https://example.com/p1", text_valid)
+
+        no_criteria_text, _ = _build_webapp_data_reply_text('{"flow":"catalog","criteria":{},"top":[]}')
+        self.assertIn("Параметры не переданы", no_criteria_text)
+
+    def test_outbound_dedup_helpers(self) -> None:
+        cache = bot._OUTBOUND_REPLY_DEDUP_CACHE
+        cache.clear()
+        try:
+            update = SimpleNamespace(update_id=10, effective_chat=SimpleNamespace(id=100))
+            self.assertIsNone(_outbound_dedup_cache_key(update, "   "))
+            self.assertIsNone(_outbound_dedup_cache_key(SimpleNamespace(update_id=None, effective_chat=None), "x"))
+
+            key = _outbound_dedup_cache_key(update, "Привет")
+            self.assertEqual(key, "100:10:привет")
+
+            self.assertFalse(_is_duplicate_outbound_reply(update, "Привет"))
+            cache[key] = 0.0
+            with patch.object(bot.time, "monotonic", return_value=bot.OUTBOUND_REPLY_DEDUP_WINDOW_SECONDS + 5):
+                self.assertFalse(_is_duplicate_outbound_reply(update, "Привет"))
+
+            with patch.object(bot.time, "monotonic", return_value=100.0):
+                cache[key] = 99.5
+                self.assertTrue(_is_duplicate_outbound_reply(update, "Привет"))
+        finally:
+            cache.clear()
 
     def test_build_user_name_from_first_and_last_name(self) -> None:
         update = SimpleNamespace(effective_user=SimpleNamespace(first_name="Ivan", last_name="Petrov"))

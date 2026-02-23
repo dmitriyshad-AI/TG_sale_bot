@@ -50,6 +50,22 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
         def __exit__(self, exc_type, exc, tb):
             return False
 
+    def test_parse_args_reads_cli_flags(self) -> None:
+        with patch(
+            "sys.argv",
+            [
+                "sync_vector_store.py",
+                "--name",
+                "kb",
+                "--dry-run",
+                "--prune-missing",
+            ],
+        ):
+            args = sync_vector_store.parse_args()
+        self.assertEqual(args.name, "kb")
+        self.assertTrue(args.dry_run)
+        self.assertTrue(args.prune_missing)
+
     @patch("scripts.sync_vector_store.urlopen")
     def test_request_json_post_parses_response(self, mock_urlopen) -> None:
         mock_urlopen.return_value = self._MockHTTPResponse('{"id":"ok"}')
@@ -71,6 +87,24 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 sync_vector_store._create_vector_store(api_key="k1", name="sales")
 
+    def test_create_vector_store_returns_id_on_success(self) -> None:
+        with patch.object(sync_vector_store, "_request_json", return_value={"id": "vs_123"}):
+            result = sync_vector_store._create_vector_store(api_key="k1", name="sales")
+        self.assertEqual(result, "vs_123")
+
+    def test_attach_file_to_vector_store_calls_api(self) -> None:
+        with patch.object(sync_vector_store, "_request_json", return_value={"ok": True}) as request_mock:
+            sync_vector_store._attach_file_to_vector_store(
+                api_key="k1",
+                vector_store_id="vs_1",
+                file_id="file_1",
+            )
+        request_mock.assert_called_once_with(
+            "https://api.openai.com/v1/vector_stores/vs_1/files",
+            "k1",
+            {"file_id": "file_1"},
+        )
+
     def test_upload_file_raises_when_response_has_no_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             file_path = Path(tmpdir) / "x.md"
@@ -78,6 +112,14 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
             with patch("scripts.sync_vector_store.urlopen", return_value=self._MockHTTPResponse('{"status":"ok"}')):
                 with self.assertRaises(RuntimeError):
                     sync_vector_store._upload_file(api_key="k1", file_path=file_path)
+
+    def test_upload_file_returns_id_on_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = Path(tmpdir) / "x.md"
+            file_path.write_text("hello", encoding="utf-8")
+            with patch("scripts.sync_vector_store.urlopen", return_value=self._MockHTTPResponse('{"id":"file_123"}')):
+                file_id = sync_vector_store._upload_file(api_key="k1", file_path=file_path)
+        self.assertEqual(file_id, "file_123")
 
     @patch("scripts.sync_vector_store.urlopen")
     def test_delete_file_from_vector_store_uses_delete_method(self, mock_urlopen) -> None:
@@ -248,6 +290,22 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
         indexed = sync_vector_store._index_existing_files(meta, vector_store_id="vs_1")
         self.assertEqual(indexed, {"faq.md": {"file_id": "file_1", "sha256": "abc"}})
 
+    def test_index_existing_files_returns_empty_for_mismatch_or_non_list(self) -> None:
+        self.assertEqual(
+            sync_vector_store._index_existing_files(
+                {"vector_store_id": "vs_other", "files": [{"name": "faq.md", "file_id": "f1", "sha256": "x"}]},
+                vector_store_id="vs_1",
+            ),
+            {},
+        )
+        self.assertEqual(
+            sync_vector_store._index_existing_files(
+                {"vector_store_id": "vs_1", "files": "bad"},
+                vector_store_id="vs_1",
+            ),
+            {},
+        )
+
     def test_list_vector_store_files_handles_pagination(self) -> None:
         responses = [
             {"data": [{"id": "file_1", "filename": "faq.md"}], "has_more": True, "last_id": "cursor_1"},
@@ -266,6 +324,38 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
             ],
         )
         self.assertEqual(get_mock.call_count, 2)
+
+    def test_list_vector_store_files_handles_invalid_items_and_cursor(self) -> None:
+        responses = [
+            {
+                "data": [
+                    "invalid",
+                    {"id": "   ", "filename": "blank.md"},
+                    {"file_id": "file_1", "filename": 42},
+                    {"file_id": "file_2"},
+                ],
+                "has_more": True,
+                "last_id": "",
+            }
+        ]
+        with patch.object(sync_vector_store, "_request_json_get", side_effect=responses) as get_mock:
+            items = sync_vector_store._list_vector_store_files(
+                api_key="key",
+                vector_store_id="vs_1",
+            )
+        self.assertEqual(
+            items,
+            [
+                {"file_id": "file_1", "name": ""},
+                {"file_id": "file_2", "name": ""},
+            ],
+        )
+        self.assertEqual(get_mock.call_count, 1)
+
+    def test_list_vector_store_files_returns_empty_when_data_not_list(self) -> None:
+        with patch.object(sync_vector_store, "_request_json_get", return_value={"data": "bad"}):
+            items = sync_vector_store._list_vector_store_files(api_key="key", vector_store_id="vs_1")
+        self.assertEqual(items, [])
 
     def test_main_reuses_unchanged_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -386,6 +476,42 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
             self.assertEqual(meta.get("vector_store_id"), "vs_new")
             self.assertEqual(meta.get("stats"), {"uploaded": 1, "reused": 0, "removed": 0, "total": 1})
 
+    def test_main_dry_run_without_existing_vector_store_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            knowledge_dir = root / "knowledge"
+            knowledge_dir.mkdir(parents=True, exist_ok=True)
+            (knowledge_dir / "faq_general.md").write_text("FAQ", encoding="utf-8")
+            meta_path = root / "data" / "vector_store.json"
+
+            args = argparse.Namespace(
+                knowledge_dir=knowledge_dir,
+                meta_path=meta_path,
+                vector_store_id=None,
+                name="sales-agent-knowledge",
+                dry_run=True,
+                prune_missing=False,
+            )
+            settings = self._settings(
+                root=root,
+                knowledge_path=knowledge_dir,
+                meta_path=meta_path,
+                openai_api_key="test-key",
+            )
+            with patch.object(sync_vector_store, "parse_args", return_value=args), patch.object(
+                sync_vector_store, "get_settings", return_value=settings
+            ), patch.object(sync_vector_store, "_upload_file") as upload_mock, patch.object(
+                sync_vector_store, "_attach_file_to_vector_store"
+            ) as attach_mock, patch.object(
+                sync_vector_store, "write_vector_store_meta"
+            ) as write_meta_mock:
+                result = sync_vector_store.main()
+
+            self.assertEqual(result, 0)
+            upload_mock.assert_not_called()
+            attach_mock.assert_not_called()
+            write_meta_mock.assert_not_called()
+
     def test_main_dry_run_does_not_write_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -489,6 +615,106 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
             self.assertEqual(meta.get("stats"), {"uploaded": 0, "reused": 1, "removed": 1, "total": 1})
             names = {item["name"] for item in meta["files"]}
             self.assertEqual(names, {"faq_general.md"})
+
+    def test_main_keeps_orphaned_files_when_prune_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            knowledge_dir = root / "knowledge"
+            knowledge_dir.mkdir(parents=True, exist_ok=True)
+            faq = knowledge_dir / "faq_general.md"
+            faq.write_text("FAQ", encoding="utf-8")
+            faq_sha = sync_vector_store._file_sha256(faq)
+
+            meta_path = root / "data" / "vector_store.json"
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "vector_store_id": "vs_existing",
+                        "files": [
+                            {"name": "faq_general.md", "file_id": "file_faq", "sha256": faq_sha},
+                            {"name": "legacy.md", "file_id": "file_legacy", "sha256": "legacy-sha"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            args = argparse.Namespace(
+                knowledge_dir=knowledge_dir,
+                meta_path=meta_path,
+                vector_store_id=None,
+                name="sales-agent-knowledge",
+                dry_run=False,
+                prune_missing=False,
+            )
+            settings = self._settings(
+                root=root,
+                knowledge_path=knowledge_dir,
+                meta_path=meta_path,
+                openai_api_key="test-key",
+            )
+            with patch.object(sync_vector_store, "parse_args", return_value=args), patch.object(
+                sync_vector_store, "get_settings", return_value=settings
+            ), patch.object(sync_vector_store, "_upload_file") as upload_mock, patch.object(
+                sync_vector_store, "_attach_file_to_vector_store"
+            ) as attach_mock:
+                result = sync_vector_store.main()
+
+            self.assertEqual(result, 0)
+            upload_mock.assert_not_called()
+            attach_mock.assert_not_called()
+            meta = read_vector_store_meta(meta_path)
+            statuses = {item["name"]: item.get("status") for item in meta.get("files", [])}
+            self.assertEqual(statuses["faq_general.md"], "reused")
+            self.assertEqual(statuses["legacy.md"], "orphaned")
+
+    def test_main_dry_run_prune_reports_stale_without_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            knowledge_dir = root / "knowledge"
+            knowledge_dir.mkdir(parents=True, exist_ok=True)
+            (knowledge_dir / "faq_general.md").write_text("FAQ", encoding="utf-8")
+            meta_path = root / "data" / "vector_store.json"
+            meta_path.parent.mkdir(parents=True, exist_ok=True)
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "vector_store_id": "vs_existing",
+                        "files": [
+                            {"name": "legacy.md", "file_id": "file_legacy", "sha256": "legacy-sha"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            args = argparse.Namespace(
+                knowledge_dir=knowledge_dir,
+                meta_path=meta_path,
+                vector_store_id=None,
+                name="sales-agent-knowledge",
+                dry_run=True,
+                prune_missing=True,
+            )
+            settings = self._settings(
+                root=root,
+                knowledge_path=knowledge_dir,
+                meta_path=meta_path,
+                openai_api_key="test-key",
+            )
+            with patch.object(sync_vector_store, "parse_args", return_value=args), patch.object(
+                sync_vector_store, "get_settings", return_value=settings
+            ), patch.object(sync_vector_store, "_delete_file_from_vector_store") as delete_mock, patch.object(
+                sync_vector_store, "_list_vector_store_files", return_value=[]
+            ), patch.object(
+                sync_vector_store, "write_vector_store_meta"
+            ) as write_meta_mock:
+                result = sync_vector_store.main()
+
+            self.assertEqual(result, 0)
+            delete_mock.assert_not_called()
+            write_meta_mock.assert_not_called()
 
     def test_main_prunes_replaced_file_ids_when_content_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -620,6 +846,34 @@ class SyncVectorStoreScriptTests(unittest.TestCase):
 
             meta = read_vector_store_meta(meta_path)
             self.assertEqual(meta.get("stats"), {"uploaded": 0, "reused": 1, "removed": 1, "total": 1})
+
+    def test_main_returns_error_on_unexpected_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            knowledge_dir = root / "knowledge"
+            knowledge_dir.mkdir(parents=True, exist_ok=True)
+            (knowledge_dir / "faq_general.md").write_text("FAQ", encoding="utf-8")
+            meta_path = root / "data" / "vector_store.json"
+            args = argparse.Namespace(
+                knowledge_dir=knowledge_dir,
+                meta_path=meta_path,
+                vector_store_id=None,
+                name="sales-agent-knowledge",
+                dry_run=False,
+                prune_missing=False,
+            )
+            settings = self._settings(
+                root=root,
+                knowledge_path=knowledge_dir,
+                meta_path=meta_path,
+                openai_api_key="test-key",
+            )
+
+            with patch.object(sync_vector_store, "parse_args", return_value=args), patch.object(
+                sync_vector_store, "get_settings", return_value=settings
+            ), patch.object(sync_vector_store, "_create_vector_store", side_effect=RuntimeError("boom")):
+                result = sync_vector_store.main()
+            self.assertEqual(result, 1)
 
 
 if __name__ == "__main__":
