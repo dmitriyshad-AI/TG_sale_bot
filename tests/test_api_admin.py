@@ -16,7 +16,15 @@ except ModuleNotFoundError:
 
 @unittest.skipUnless(HAS_ADMIN_DEPS, "fastapi dependencies are not installed")
 class ApiAdminTests(unittest.TestCase):
-    def _settings(self, db_path: Path, admin_user: str = "admin", admin_pass: str = "secret") -> Settings:
+    def _settings(
+        self,
+        db_path: Path,
+        admin_user: str = "admin",
+        admin_pass: str = "secret",
+        *,
+        enable_lead_radar: bool = False,
+        lead_radar_scheduler_enabled: bool = True,
+    ) -> Settings:
         return Settings(
             telegram_bot_token="",
             openai_api_key="",
@@ -35,6 +43,13 @@ class ApiAdminTests(unittest.TestCase):
             enable_call_copilot=True,
             enable_tallanto_enrichment=True,
             enable_director_agent=True,
+            enable_lead_radar=enable_lead_radar,
+            lead_radar_scheduler_enabled=lead_radar_scheduler_enabled,
+            lead_radar_interval_seconds=86400,
+            lead_radar_no_reply_hours=1,
+            lead_radar_call_no_next_step_hours=1,
+            lead_radar_stale_warm_days=1,
+            lead_radar_max_items_per_run=100,
         )
 
     def test_admin_endpoints_require_auth(self) -> None:
@@ -345,6 +360,243 @@ class ApiAdminTests(unittest.TestCase):
             self.assertEqual(detail_ui.status_code, 200)
             self.assertIn("Business Thread", detail_ui.text)
             self.assertIn("нужна подготовка к ЕГЭ", detail_ui.text)
+
+    def test_admin_followups_and_lead_radar_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            app = create_app(
+                self._settings(
+                    db_path,
+                    enable_lead_radar=True,
+                    lead_radar_scheduler_enabled=False,
+                )
+            )
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            conn = db.get_connection(db_path)
+            try:
+                no_reply_user = db.get_or_create_user(
+                    conn,
+                    channel="telegram",
+                    external_id="radar-u1",
+                    username="u1",
+                    first_name="NoReply",
+                )
+                db.log_message(conn, user_id=no_reply_user, direction="inbound", text="Подберите курс", meta={})
+                conn.execute(
+                    "UPDATE messages SET created_at = datetime('now', '-5 hours') WHERE user_id = ?",
+                    (no_reply_user,),
+                )
+
+                call_user = db.get_or_create_user(
+                    conn,
+                    channel="telegram",
+                    external_id="radar-u2",
+                    username="u2",
+                    first_name="CallUser",
+                )
+                call_thread_id = f"tg:{call_user}"
+                db.create_approval_action(
+                    conn,
+                    draft_id=None,
+                    user_id=call_user,
+                    thread_id=call_thread_id,
+                    action="manual_action",
+                    actor="manager",
+                    payload={"source": "call_summary", "note": "call completed"},
+                )
+                conn.execute(
+                    "UPDATE approval_actions SET created_at = datetime('now', '-4 hours') WHERE thread_id = ?",
+                    (call_thread_id,),
+                )
+
+                warm_user = db.get_or_create_user(
+                    conn,
+                    channel="telegram",
+                    external_id="radar-u3",
+                    username="u3",
+                    first_name="WarmUser",
+                )
+                warm_thread_id = f"tg:{warm_user}"
+                db.create_lead_score(
+                    conn,
+                    user_id=warm_user,
+                    thread_id=warm_thread_id,
+                    score=62.0,
+                    temperature="warm",
+                    confidence=0.7,
+                    factors={"reason": "needs followup"},
+                )
+                conn.execute(
+                    "UPDATE lead_scores SET created_at = datetime('now', '-3 days') WHERE thread_id = ?",
+                    (warm_thread_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            run_response = client.post("/admin/followups/run", auth=auth, json={"dry_run": False})
+            self.assertEqual(run_response.status_code, 200)
+            run_payload = run_response.json()
+            self.assertTrue(run_payload["ok"])
+            self.assertEqual(run_payload["created_followups"], 3)
+            self.assertEqual(run_payload["created_drafts"], 3)
+            self.assertEqual(run_payload["rules"]["radar:no_reply"]["created"], 1)
+            self.assertEqual(run_payload["rules"]["radar:call_no_next_step"]["created"], 1)
+            self.assertEqual(run_payload["rules"]["radar:stale_warm"]["created"], 1)
+
+            run_again = client.post("/admin/followups/run", auth=auth, json={"dry_run": False})
+            self.assertEqual(run_again.status_code, 200)
+            self.assertEqual(run_again.json()["created_followups"], 0)
+
+            followups_all = client.get("/admin/followups", auth=auth)
+            self.assertEqual(followups_all.status_code, 200)
+            self.assertEqual(len(followups_all.json()["items"]), 3)
+
+            followups_hot = client.get("/admin/followups?priority=hot", auth=auth)
+            self.assertEqual(followups_hot.status_code, 200)
+            self.assertEqual(len(followups_hot.json()["items"]), 2)
+
+            followups_radar = client.get("/admin/followups?radar_only=true", auth=auth)
+            self.assertEqual(followups_radar.status_code, 200)
+            reasons = [str(item.get("reason") or "") for item in followups_radar.json()["items"]]
+            self.assertEqual(len(reasons), 3)
+            self.assertTrue(all(reason.startswith("radar:") for reason in reasons))
+
+            followups_ui = client.get("/admin/ui/followups?radar_only=true", auth=auth)
+            self.assertEqual(followups_ui.status_code, 200)
+            self.assertIn("Followups", followups_ui.text)
+            self.assertIn("radar:no_reply", followups_ui.text)
+
+    def test_admin_followups_run_returns_503_when_lead_radar_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            app = create_app(self._settings(db_path, enable_lead_radar=False))
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            response = client.post("/admin/followups/run", auth=auth, json={})
+            self.assertEqual(response.status_code, 503)
+
+    def test_admin_calls_upload_and_inbox_enrichment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            app = create_app(self._settings(db_path))
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(
+                    conn,
+                    channel="telegram",
+                    external_id="call-test-user",
+                    username="calluser",
+                    first_name="Call",
+                    last_name="User",
+                )
+                db.log_message(
+                    conn,
+                    user_id=user_id,
+                    direction="inbound",
+                    text="Нужна консультация по ЕГЭ",
+                    meta={},
+                )
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            transcript = (
+                "Здравствуйте. Хотим записаться на курс ЕГЭ по математике. "
+                "Интересует стоимость и формат занятий."
+            )
+            upload_response = client.post(
+                "/admin/calls/upload",
+                auth=auth,
+                data={"user_id": str(user_id)},
+                files={"audio_file": ("call.txt", transcript.encode("utf-8"), "text/plain")},
+            )
+            self.assertEqual(upload_response.status_code, 200)
+            upload_payload = upload_response.json()
+            self.assertTrue(upload_payload["ok"])
+            item = upload_payload["item"]
+            self.assertEqual(item["status"], "done")
+            self.assertIn(item["warmth"], {"hot", "warm", "cold"})
+            self.assertIn("ЕГЭ", item["transcript_text"])
+
+            call_id = int(item["id"])
+            list_response = client.get("/admin/calls", auth=auth)
+            self.assertEqual(list_response.status_code, 200)
+            self.assertEqual(len(list_response.json()["items"]), 1)
+            self.assertEqual(int(list_response.json()["items"][0]["id"]), call_id)
+
+            detail_response = client.get(f"/admin/calls/{call_id}", auth=auth)
+            self.assertEqual(detail_response.status_code, 200)
+            detail_item = detail_response.json()["item"]
+            self.assertEqual(detail_item["id"], call_id)
+            self.assertIn("summary_text", detail_item)
+            self.assertIn("next_best_action", detail_item)
+
+            inbox_detail_response = client.get(f"/admin/inbox/{user_id}", auth=auth)
+            self.assertEqual(inbox_detail_response.status_code, 200)
+            inbox_detail = inbox_detail_response.json()
+            self.assertIsNotNone(inbox_detail.get("latest_call_insights"))
+            self.assertGreaterEqual(len(inbox_detail.get("followups") or []), 1)
+            self.assertIsNotNone(inbox_detail.get("lead_score"))
+
+            calls_ui = client.get("/admin/ui/calls", auth=auth)
+            self.assertEqual(calls_ui.status_code, 200)
+            self.assertIn("Calls", calls_ui.text)
+            self.assertIn("Загрузить и обработать звонок", calls_ui.text)
+
+            call_detail_ui = client.get(f"/admin/ui/calls/{call_id}", auth=auth)
+            self.assertEqual(call_detail_ui.status_code, 200)
+            self.assertIn("Call Detail", call_detail_ui.text)
+            self.assertIn("Transcript", call_detail_ui.text)
+
+    def test_admin_calls_ui_upload_redirects_to_call_detail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            app = create_app(self._settings(db_path))
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(conn, channel="telegram", external_id="call-u2")
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            response = client.post(
+                "/admin/ui/calls/upload",
+                auth=auth,
+                data={
+                    "user_id": str(user_id),
+                    "recording_url": "https://example.com/rec/1",
+                    "transcript_hint": "Клиенту нужен план поступления в МФТИ.",
+                },
+                follow_redirects=False,
+            )
+            self.assertEqual(response.status_code, 303)
+            location = response.headers.get("location", "")
+            self.assertTrue(location.startswith("/admin/ui/calls/"))
+
+    def test_admin_calls_endpoints_return_503_when_feature_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            settings = self._settings(db_path)
+            settings.enable_call_copilot = False
+            app = create_app(settings)
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            calls_response = client.get("/admin/calls", auth=auth)
+            self.assertEqual(calls_response.status_code, 503)
+
+            upload_response = client.post(
+                "/admin/calls/upload",
+                auth=auth,
+                data={"recording_url": "https://example.com/x"},
+            )
+            self.assertEqual(upload_response.status_code, 503)
 
     def test_admin_copilot_import_returns_summary_and_draft(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

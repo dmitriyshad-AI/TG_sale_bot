@@ -38,6 +38,9 @@ class DatabaseTests(unittest.TestCase):
                 "business_connections",
                 "business_threads",
                 "business_messages",
+                "call_records",
+                "call_transcripts",
+                "call_summaries",
             }.issubset(table_names)
         )
 
@@ -242,6 +245,73 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(recent[0]["text"], "msg-2")
         self.assertEqual(recent[1]["text"], "msg-3")
         self.assertEqual(recent[0]["meta"]["n"], 2)
+
+    def test_call_records_lifecycle_and_lookup(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="call-user-1")
+        thread_id = f"tg:{user_id}"
+
+        call_id = db.create_call_record(
+            self.conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            source_type="upload",
+            source_ref="recording.m4a",
+            file_path="/tmp/recording.m4a",
+            status="queued",
+            created_by="test",
+        )
+        self.assertGreater(call_id, 0)
+
+        updated = db.update_call_record_status(self.conn, call_id=call_id, status="processing")
+        self.assertTrue(updated)
+        updated = db.update_call_record_status(self.conn, call_id=call_id, status="done", duration_seconds=123.4)
+        self.assertTrue(updated)
+
+        transcript_id = db.upsert_call_transcript(
+            self.conn,
+            call_id=call_id,
+            provider="heuristic",
+            transcript_text="Клиент интересуется ЕГЭ по математике.",
+            language="ru",
+            confidence=0.61,
+        )
+        self.assertGreater(transcript_id, 0)
+
+        summary_id = db.upsert_call_summary(
+            self.conn,
+            call_id=call_id,
+            summary_text="Клиент готов обсудить программу и формат.",
+            interests=["ЕГЭ", "математика"],
+            objections=["цена"],
+            next_best_action="Назначить консультацию",
+            warmth="hot",
+            confidence=0.79,
+            model_name="call_copilot_v1",
+        )
+        self.assertGreater(summary_id, 0)
+
+        item = db.get_call_record(self.conn, call_id=call_id)
+        self.assertIsNotNone(item)
+        assert item is not None
+        self.assertEqual(item["status"], "done")
+        self.assertEqual(item["warmth"], "hot")
+        self.assertIn("ЕГЭ", item["interests"])
+        self.assertEqual(item["transcript_provider"], "heuristic")
+
+        records = db.list_call_records(self.conn, status="done", limit=10)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["id"], call_id)
+
+        latest = db.get_latest_call_summary_for_thread(self.conn, thread_id=thread_id)
+        self.assertIsNotNone(latest)
+        assert latest is not None
+        self.assertEqual(latest["call_id"], call_id)
+        self.assertEqual(latest["warmth"], "hot")
+        self.assertIn("цена", latest["objections"])
+
+    def test_update_call_record_status_returns_false_for_missing_call(self) -> None:
+        updated = db.update_call_record_status(self.conn, call_id=99999, status="done")
+        self.assertFalse(updated)
 
     def test_get_and_upsert_conversation_context(self) -> None:
         user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="704")

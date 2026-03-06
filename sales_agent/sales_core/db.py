@@ -211,6 +211,52 @@ CREATE_TABLE_STATEMENTS = [
         UNIQUE(business_connection_id, telegram_message_id, direction)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS call_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        thread_id TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        source_ref TEXT,
+        file_path TEXT,
+        status TEXT NOT NULL DEFAULT 'queued',
+        error_text TEXT,
+        duration_seconds REAL,
+        created_by TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS call_transcripts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        call_id INTEGER NOT NULL UNIQUE,
+        provider TEXT NOT NULL,
+        transcript_text TEXT NOT NULL,
+        language TEXT,
+        confidence REAL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(call_id) REFERENCES call_records(id)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS call_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        call_id INTEGER NOT NULL UNIQUE,
+        summary_text TEXT NOT NULL,
+        interests_json TEXT NOT NULL DEFAULT '[]',
+        objections_json TEXT NOT NULL DEFAULT '[]',
+        next_best_action TEXT,
+        warmth TEXT NOT NULL DEFAULT 'warm',
+        confidence REAL,
+        model_name TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(call_id) REFERENCES call_records(id)
+    );
+    """,
 ]
 
 CREATE_INDEX_STATEMENTS = [
@@ -247,6 +293,12 @@ CREATE_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_business_messages_connection_created ON business_messages(business_connection_id, created_at);",
     "CREATE INDEX IF NOT EXISTS idx_business_messages_user_created ON business_messages(user_id, created_at);",
     "CREATE INDEX IF NOT EXISTS idx_business_messages_deleted_created ON business_messages(is_deleted, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_call_records_user_created ON call_records(user_id, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_call_records_thread_created ON call_records(thread_id, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_call_records_status_created ON call_records(status, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_call_transcripts_call ON call_transcripts(call_id);",
+    "CREATE INDEX IF NOT EXISTS idx_call_summaries_call ON call_summaries(call_id);",
+    "CREATE INDEX IF NOT EXISTS idx_call_summaries_warmth_created ON call_summaries(warmth, created_at);",
 ]
 
 
@@ -749,6 +801,16 @@ def _safe_json_loads(raw_value: Optional[str]) -> Dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _safe_json_list(raw_value: Optional[str]) -> list[Any]:
+    if not raw_value:
+        return []
+    try:
+        payload = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return []
+    return payload if isinstance(payload, list) else []
 
 
 def create_reply_draft(
@@ -1266,6 +1328,7 @@ def get_inbox_thread_detail(
     followups = list_followup_tasks(conn, status=None, limit=500)
     followups = [item for item in followups if item.get("thread_id") == thread_id]
     lead_score = get_latest_lead_score(conn, thread_id=thread_id)
+    latest_call_insights = get_latest_call_summary_for_thread(conn, thread_id=thread_id)
     actions = list_approval_actions_for_thread(conn, thread_id=thread_id, limit=100)
     return {
         "thread_id": thread_id,
@@ -1275,6 +1338,7 @@ def get_inbox_thread_detail(
         "outcome": outcome,
         "followups": followups,
         "lead_score": lead_score,
+        "latest_call_insights": latest_call_insights,
         "approval_actions": actions,
     }
 
@@ -1656,3 +1720,298 @@ def list_business_messages(
         rows.append(item)
     rows.reverse()
     return rows
+
+
+def create_call_record(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    thread_id: str,
+    source_type: str,
+    source_ref: Optional[str] = None,
+    file_path: Optional[str] = None,
+    status: str = "queued",
+    error_text: Optional[str] = None,
+    duration_seconds: Optional[float] = None,
+    created_by: Optional[str] = None,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO call_records (
+            user_id,
+            thread_id,
+            source_type,
+            source_ref,
+            file_path,
+            status,
+            error_text,
+            duration_seconds,
+            created_by
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(user_id),
+            thread_id.strip(),
+            source_type.strip(),
+            (source_ref or "").strip() or None,
+            (file_path or "").strip() or None,
+            (status or "").strip() or "queued",
+            (error_text or "").strip() or None,
+            duration_seconds,
+            (created_by or "").strip() or None,
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def update_call_record_status(
+    conn: sqlite3.Connection,
+    *,
+    call_id: int,
+    status: str,
+    error_text: Optional[str] = None,
+    duration_seconds: Optional[float] = None,
+) -> bool:
+    row = conn.execute("SELECT id FROM call_records WHERE id = ? LIMIT 1", (int(call_id),)).fetchone()
+    if not row:
+        return False
+    conn.execute(
+        """
+        UPDATE call_records
+        SET
+            status = ?,
+            error_text = ?,
+            duration_seconds = COALESCE(?, duration_seconds),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (
+            (status or "").strip() or "queued",
+            (error_text or "").strip() or None,
+            duration_seconds,
+            int(call_id),
+        ),
+    )
+    conn.commit()
+    return True
+
+
+def upsert_call_transcript(
+    conn: sqlite3.Connection,
+    *,
+    call_id: int,
+    provider: str,
+    transcript_text: str,
+    language: Optional[str] = None,
+    confidence: Optional[float] = None,
+) -> int:
+    conn.execute(
+        """
+        INSERT INTO call_transcripts (call_id, provider, transcript_text, language, confidence)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(call_id) DO UPDATE SET
+            provider = excluded.provider,
+            transcript_text = excluded.transcript_text,
+            language = excluded.language,
+            confidence = excluded.confidence,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            int(call_id),
+            provider.strip(),
+            transcript_text.strip(),
+            (language or "").strip() or None,
+            confidence,
+        ),
+    )
+    conn.commit()
+    row = conn.execute("SELECT id FROM call_transcripts WHERE call_id = ? LIMIT 1", (int(call_id),)).fetchone()
+    return int(row["id"]) if row else 0
+
+
+def upsert_call_summary(
+    conn: sqlite3.Connection,
+    *,
+    call_id: int,
+    summary_text: str,
+    interests: Optional[list[str]] = None,
+    objections: Optional[list[str]] = None,
+    next_best_action: Optional[str] = None,
+    warmth: str = "warm",
+    confidence: Optional[float] = None,
+    model_name: Optional[str] = None,
+) -> int:
+    conn.execute(
+        """
+        INSERT INTO call_summaries (
+            call_id,
+            summary_text,
+            interests_json,
+            objections_json,
+            next_best_action,
+            warmth,
+            confidence,
+            model_name
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(call_id) DO UPDATE SET
+            summary_text = excluded.summary_text,
+            interests_json = excluded.interests_json,
+            objections_json = excluded.objections_json,
+            next_best_action = excluded.next_best_action,
+            warmth = excluded.warmth,
+            confidence = excluded.confidence,
+            model_name = excluded.model_name,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            int(call_id),
+            summary_text.strip(),
+            json.dumps(interests or [], ensure_ascii=False),
+            json.dumps(objections or [], ensure_ascii=False),
+            (next_best_action or "").strip() or None,
+            (warmth or "").strip().lower() or "warm",
+            confidence,
+            (model_name or "").strip() or None,
+        ),
+    )
+    conn.commit()
+    row = conn.execute("SELECT id FROM call_summaries WHERE call_id = ? LIMIT 1", (int(call_id),)).fetchone()
+    return int(row["id"]) if row else 0
+
+
+def get_call_record(conn: sqlite3.Connection, *, call_id: int) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT
+            c.id,
+            c.user_id,
+            c.thread_id,
+            c.source_type,
+            c.source_ref,
+            c.file_path,
+            c.status,
+            c.error_text,
+            c.duration_seconds,
+            c.created_by,
+            c.created_at,
+            c.updated_at,
+            u.channel,
+            u.external_id,
+            u.username,
+            u.first_name,
+            u.last_name,
+            t.provider AS transcript_provider,
+            t.transcript_text,
+            t.language AS transcript_language,
+            t.confidence AS transcript_confidence,
+            t.created_at AS transcript_created_at,
+            t.updated_at AS transcript_updated_at,
+            s.summary_text,
+            s.interests_json,
+            s.objections_json,
+            s.next_best_action,
+            s.warmth,
+            s.confidence AS summary_confidence,
+            s.model_name AS summary_model_name,
+            s.created_at AS summary_created_at,
+            s.updated_at AS summary_updated_at
+        FROM call_records c
+        JOIN users u ON u.id = c.user_id
+        LEFT JOIN call_transcripts t ON t.call_id = c.id
+        LEFT JOIN call_summaries s ON s.call_id = c.id
+        WHERE c.id = ?
+        LIMIT 1
+        """,
+        (int(call_id),),
+    ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["interests"] = _safe_json_list(item.pop("interests_json", None))
+    item["objections"] = _safe_json_list(item.pop("objections_json", None))
+    return item
+
+
+def list_call_records(
+    conn: sqlite3.Connection,
+    *,
+    status: Optional[str] = None,
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    params: list[Any] = []
+    where_sql = ""
+    if isinstance(status, str) and status.strip():
+        where_sql = "WHERE c.status = ?"
+        params.append(status.strip())
+    params.append(max(1, int(limit)))
+    cursor = conn.execute(
+        f"""
+        SELECT
+            c.id,
+            c.user_id,
+            c.thread_id,
+            c.source_type,
+            c.source_ref,
+            c.status,
+            c.error_text,
+            c.duration_seconds,
+            c.created_by,
+            c.created_at,
+            c.updated_at,
+            u.channel,
+            u.external_id,
+            u.username,
+            u.first_name,
+            u.last_name,
+            s.summary_text,
+            s.warmth,
+            s.next_best_action,
+            s.confidence AS summary_confidence
+        FROM call_records c
+        JOIN users u ON u.id = c.user_id
+        LEFT JOIN call_summaries s ON s.call_id = c.id
+        {where_sql}
+        ORDER BY c.id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def get_latest_call_summary_for_thread(
+    conn: sqlite3.Connection,
+    *,
+    thread_id: str,
+) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT
+            c.id AS call_id,
+            c.thread_id,
+            c.created_at AS call_created_at,
+            s.summary_text,
+            s.interests_json,
+            s.objections_json,
+            s.next_best_action,
+            s.warmth,
+            s.confidence AS summary_confidence,
+            s.model_name AS summary_model_name,
+            s.created_at AS summary_created_at
+        FROM call_records c
+        JOIN call_summaries s ON s.call_id = c.id
+        WHERE c.thread_id = ?
+        ORDER BY c.id DESC
+        LIMIT 1
+        """,
+        (thread_id.strip(),),
+    ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["interests"] = _safe_json_list(item.pop("interests_json", None))
+    item["objections"] = _safe_json_list(item.pop("objections_json", None))
+    return item

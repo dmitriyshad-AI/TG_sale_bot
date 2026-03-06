@@ -65,6 +65,13 @@ class ConfigTests(unittest.TestCase):
             "ENABLE_CALL_COPILOT": "1",
             "ENABLE_TALLANTO_ENRICHMENT": "yes",
             "ENABLE_DIRECTOR_AGENT": "on",
+            "ENABLE_LEAD_RADAR": "true",
+            "LEAD_RADAR_SCHEDULER_ENABLED": "false",
+            "LEAD_RADAR_INTERVAL_SECONDS": "1200",
+            "LEAD_RADAR_NO_REPLY_HOURS": "8",
+            "LEAD_RADAR_CALL_NO_NEXT_STEP_HOURS": "30",
+            "LEAD_RADAR_STALE_WARM_DAYS": "10",
+            "LEAD_RADAR_MAX_ITEMS_PER_RUN": "77",
         },
         clear=True,
     )
@@ -114,6 +121,13 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(settings.enable_call_copilot)
         self.assertTrue(settings.enable_tallanto_enrichment)
         self.assertTrue(settings.enable_director_agent)
+        self.assertTrue(settings.enable_lead_radar)
+        self.assertFalse(settings.lead_radar_scheduler_enabled)
+        self.assertEqual(settings.lead_radar_interval_seconds, 1200)
+        self.assertEqual(settings.lead_radar_no_reply_hours, 8)
+        self.assertEqual(settings.lead_radar_call_no_next_step_hours, 30)
+        self.assertEqual(settings.lead_radar_stale_warm_days, 10)
+        self.assertEqual(settings.lead_radar_max_items_per_run, 77)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_get_settings_uses_defaults(self) -> None:
@@ -161,6 +175,13 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(settings.enable_call_copilot)
         self.assertFalse(settings.enable_tallanto_enrichment)
         self.assertFalse(settings.enable_director_agent)
+        self.assertFalse(settings.enable_lead_radar)
+        self.assertTrue(settings.lead_radar_scheduler_enabled)
+        self.assertEqual(settings.lead_radar_interval_seconds, 3600)
+        self.assertEqual(settings.lead_radar_no_reply_hours, 6)
+        self.assertEqual(settings.lead_radar_call_no_next_step_hours, 24)
+        self.assertEqual(settings.lead_radar_stale_warm_days, 7)
+        self.assertEqual(settings.lead_radar_max_items_per_run, 50)
 
     @patch.dict(
         os.environ,
@@ -170,6 +191,11 @@ class ConfigTests(unittest.TestCase):
             "ASSISTANT_RATE_LIMIT_IP_REQUESTS": "10000",
             "CRM_RATE_LIMIT_WINDOW_SECONDS": "5",
             "CRM_RATE_LIMIT_IP_REQUESTS": "0",
+            "LEAD_RADAR_INTERVAL_SECONDS": "5",
+            "LEAD_RADAR_NO_REPLY_HOURS": "999",
+            "LEAD_RADAR_CALL_NO_NEXT_STEP_HOURS": "-2",
+            "LEAD_RADAR_STALE_WARM_DAYS": "9999",
+            "LEAD_RADAR_MAX_ITEMS_PER_RUN": "0",
         },
         clear=True,
     )
@@ -180,6 +206,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.assistant_rate_limit_ip_requests, 5000)
         self.assertEqual(settings.crm_rate_limit_window_seconds, 30)
         self.assertEqual(settings.crm_rate_limit_ip_requests, 1)
+        self.assertEqual(settings.lead_radar_interval_seconds, 60)
+        self.assertEqual(settings.lead_radar_no_reply_hours, 168)
+        self.assertEqual(settings.lead_radar_call_no_next_step_hours, 1)
+        self.assertEqual(settings.lead_radar_stale_warm_days, 180)
+        self.assertEqual(settings.lead_radar_max_items_per_run, 1)
 
     @patch.dict(
         os.environ,

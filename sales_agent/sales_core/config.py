@@ -57,6 +57,13 @@ class Settings:
     enable_call_copilot: bool = False
     enable_tallanto_enrichment: bool = False
     enable_director_agent: bool = False
+    enable_lead_radar: bool = False
+    lead_radar_scheduler_enabled: bool = True
+    lead_radar_interval_seconds: int = 3600
+    lead_radar_no_reply_hours: int = 6
+    lead_radar_call_no_next_step_hours: int = 24
+    lead_radar_stale_warm_days: int = 7
+    lead_radar_max_items_per_run: int = 50
 
 
 def project_root() -> Path:
@@ -178,6 +185,36 @@ def get_settings() -> Settings:
         min_value=1,
         max_value=5000,
     )
+    lead_radar_interval_seconds = _parse_int_env(
+        "LEAD_RADAR_INTERVAL_SECONDS",
+        3600,
+        min_value=60,
+        max_value=86400,
+    )
+    lead_radar_no_reply_hours = _parse_int_env(
+        "LEAD_RADAR_NO_REPLY_HOURS",
+        6,
+        min_value=1,
+        max_value=168,
+    )
+    lead_radar_call_no_next_step_hours = _parse_int_env(
+        "LEAD_RADAR_CALL_NO_NEXT_STEP_HOURS",
+        24,
+        min_value=1,
+        max_value=168,
+    )
+    lead_radar_stale_warm_days = _parse_int_env(
+        "LEAD_RADAR_STALE_WARM_DAYS",
+        7,
+        min_value=1,
+        max_value=180,
+    )
+    lead_radar_max_items_per_run = _parse_int_env(
+        "LEAD_RADAR_MAX_ITEMS_PER_RUN",
+        50,
+        min_value=1,
+        max_value=500,
+    )
     tallanto_api_key = os.getenv("TALLANTO_API_KEY", "").strip()
     tallanto_api_token = os.getenv("TALLANTO_API_TOKEN", "").strip() or tallanto_api_key
     tallanto_read_only = os.getenv("TALLANTO_READ_ONLY", "").strip() == "1"
@@ -242,4 +279,11 @@ def get_settings() -> Settings:
         enable_call_copilot=_parse_bool_env("ENABLE_CALL_COPILOT", default=False),
         enable_tallanto_enrichment=_parse_bool_env("ENABLE_TALLANTO_ENRICHMENT", default=False),
         enable_director_agent=_parse_bool_env("ENABLE_DIRECTOR_AGENT", default=False),
+        enable_lead_radar=_parse_bool_env("ENABLE_LEAD_RADAR", default=False),
+        lead_radar_scheduler_enabled=_parse_bool_env("LEAD_RADAR_SCHEDULER_ENABLED", default=True),
+        lead_radar_interval_seconds=lead_radar_interval_seconds,
+        lead_radar_no_reply_hours=lead_radar_no_reply_hours,
+        lead_radar_call_no_next_step_hours=lead_radar_call_no_next_step_hours,
+        lead_radar_stale_warm_days=lead_radar_stale_warm_days,
+        lead_radar_max_items_per_run=lead_radar_max_items_per_run,
     )

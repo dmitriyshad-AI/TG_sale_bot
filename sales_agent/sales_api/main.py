@@ -21,6 +21,11 @@ from telegram import Update
 
 from sales_agent.sales_bot import bot as bot_runtime
 from sales_agent.sales_core.catalog import CatalogValidationError, Product, SearchCriteria, explain_match, select_top_products
+from sales_agent.sales_core.call_copilot import (
+    build_call_insights,
+    build_transcript_fallback,
+    extract_transcript_from_file,
+)
 from sales_agent.sales_core.config import Settings, get_settings, project_root
 from sales_agent.sales_core.copilot import run_copilot_from_file
 from sales_agent.sales_core.crm import build_crm_client
@@ -28,6 +33,7 @@ from sales_agent.sales_core.db import (
     claim_webhook_update,
     count_webhook_updates_by_status,
     create_approval_action,
+    create_call_record,
     create_followup_task,
     create_lead_score,
     create_reply_draft,
@@ -36,15 +42,18 @@ from sales_agent.sales_core.db import (
     get_conversation_outcome,
     get_conversation_context,
     get_connection,
+    get_call_record,
     get_or_create_user,
     get_crm_cache,
     get_inbox_thread_detail,
+    get_latest_call_summary_for_thread,
     get_revenue_metrics_snapshot,
     get_reply_draft,
     get_latest_lead_score,
     init_db,
     list_approval_actions_for_thread,
     list_business_messages,
+    list_call_records,
     list_followup_tasks,
     list_inbox_threads,
     list_recent_business_threads,
@@ -55,8 +64,11 @@ from sales_agent.sales_core.db import (
     mark_webhook_update_done,
     mark_webhook_update_retry,
     requeue_stuck_webhook_updates,
+    update_call_record_status,
     update_reply_draft_status,
     update_reply_draft_text,
+    upsert_call_summary,
+    upsert_call_transcript,
     upsert_conversation_outcome,
     upsert_conversation_context,
     upsert_crm_cache,
@@ -89,6 +101,11 @@ ASSISTANT_RECENT_HISTORY_TEXT_LIMIT = 350
 ASSISTANT_CONTEXT_RECENT_REQUESTS_LIMIT = 8
 ASSISTANT_CONTEXT_INTENTS_LIMIT = 12
 ASSISTANT_CONTEXT_SUMMARY_MAX = 1200
+LEAD_RADAR_RULE_NO_REPLY = "radar:no_reply"
+LEAD_RADAR_RULE_CALL_NO_NEXT_STEP = "radar:call_no_next_step"
+LEAD_RADAR_RULE_STALE_WARM = "radar:stale_warm"
+LEAD_RADAR_MODEL_NAME = "lead_radar_v1"
+CALL_COPILOT_MODEL_NAME = "call_copilot_v1"
 ASSISTANT_KNOWLEDGE_HINTS = {
     "договор",
     "документ",
@@ -221,6 +238,11 @@ class RevenueEventPayload(BaseModel):
     ]
     payload: Optional[Dict[str, Any]] = None
     draft_id: Optional[int] = None
+
+
+class LeadRadarRunPayload(BaseModel):
+    dry_run: bool = False
+    limit: Optional[int] = Field(default=None, ge=1, le=500)
 
 
 def _normalize_lookup_token(value: object) -> str:
@@ -732,7 +754,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app_instance.state.webhook_worker_task = asyncio.create_task(webhook_worker_loop(app_instance))
             app_instance.state.webhook_worker_event.set()
             logger.info("Telegram webhook application initialized at path: %s", webhook_path)
+        if cfg.enable_lead_radar and cfg.lead_radar_scheduler_enabled:
+            app_instance.state.lead_radar_event = asyncio.Event()
+            app_instance.state.lead_radar_task = asyncio.create_task(lead_radar_loop(app_instance))
+            app_instance.state.lead_radar_event.set()
+            logger.info(
+                "Lead radar scheduler started (interval=%ss, no_reply=%sh, call_no_next_step=%sh, stale_warm=%sd)",
+                cfg.lead_radar_interval_seconds,
+                cfg.lead_radar_no_reply_hours,
+                cfg.lead_radar_call_no_next_step_hours,
+                cfg.lead_radar_stale_warm_days,
+            )
         yield
+        if cfg.enable_lead_radar and cfg.lead_radar_scheduler_enabled:
+            radar_task = getattr(app_instance.state, "lead_radar_task", None)
+            if radar_task is not None:
+                radar_task.cancel()
+                try:
+                    await radar_task
+                except asyncio.CancelledError:
+                    pass
+            logger.info("Lead radar scheduler stopped")
         if telegram_application is not None:
             worker_task = getattr(app_instance.state, "webhook_worker_task", None)
             if worker_task is not None:
@@ -978,6 +1020,82 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User {user_id} not found.")
 
+    def _calls_storage_root() -> Path:
+        if cfg.persistent_data_root != Path():
+            return cfg.persistent_data_root / "calls_uploads"
+        return project_root() / "data" / "calls_uploads"
+
+    def _resolve_call_thread_and_user(
+        conn: Any,
+        *,
+        user_id_input: Optional[int],
+        thread_id_input: Optional[str],
+    ) -> tuple[int, str]:
+        normalized_thread = (thread_id_input or "").strip()
+        resolved_user_id: Optional[int] = None
+
+        if isinstance(user_id_input, int):
+            _require_user_exists(conn, user_id_input)
+            resolved_user_id = int(user_id_input)
+            if not normalized_thread:
+                normalized_thread = _thread_id_from_user_id(resolved_user_id)
+
+        if resolved_user_id is None and normalized_thread.startswith("tg:"):
+            user_token = normalized_thread[3:]
+            if user_token.isdigit():
+                candidate_user_id = int(user_token)
+                _require_user_exists(conn, candidate_user_id)
+                resolved_user_id = candidate_user_id
+
+        if resolved_user_id is None and normalized_thread.startswith("biz:"):
+            row = conn.execute(
+                """
+                SELECT user_id
+                FROM business_threads
+                WHERE thread_key = ?
+                LIMIT 1
+                """,
+                (normalized_thread,),
+            ).fetchone()
+            if row and row["user_id"] is not None:
+                resolved_user_id = int(row["user_id"])
+
+        if resolved_user_id is None:
+            external_id = f"call-import-{uuid4().hex[:12]}"
+            resolved_user_id = get_or_create_user(
+                conn,
+                channel="call_import",
+                external_id=external_id,
+            )
+            if not normalized_thread:
+                normalized_thread = _thread_id_from_user_id(resolved_user_id)
+
+        if not normalized_thread:
+            normalized_thread = _thread_id_from_user_id(resolved_user_id)
+        return resolved_user_id, normalized_thread
+
+    async def _store_call_upload_file(upload: UploadFile) -> Optional[Path]:
+        filename = (upload.filename or "").strip()
+        if not filename:
+            return None
+        suffix = Path(filename).suffix.lower()
+        if not suffix or len(suffix) > 12:
+            suffix = ".bin"
+        target_dir = _calls_storage_root()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        file_path = target_dir / f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid4().hex}{suffix}"
+        content = await upload.read()
+        if not content:
+            return None
+        file_path.write_bytes(content)
+        return file_path
+
+    def _priority_from_warmth(value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized in {"hot", "warm", "cold"}:
+            return normalized
+        return "warm"
+
     def _format_thread_display_name(item: Dict[str, Any]) -> str:
         first_name = str(item.get("first_name") or "").strip()
         last_name = str(item.get("last_name") or "").strip()
@@ -990,6 +1108,420 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if external_id:
             return external_id
         return f"user #{item.get('user_id')}"
+
+    def _is_radar_reason(reason: object) -> bool:
+        if not isinstance(reason, str):
+            return False
+        return reason.startswith("radar:")
+
+    def _pending_radar_followup_exists(conn: Any, *, thread_id: str, rule_key: str) -> bool:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM followup_tasks
+            WHERE thread_id = ?
+              AND status = 'pending'
+              AND reason LIKE ?
+            LIMIT 1
+            """,
+            (thread_id, f"{rule_key}:%"),
+        ).fetchone()
+        return row is not None
+
+    def _collect_no_reply_candidates(conn: Any, *, no_reply_hours: int, limit: int) -> list[Dict[str, Any]]:
+        cursor = conn.execute(
+            """
+            WITH last_inbound AS (
+                SELECT m.user_id, m.id AS inbound_message_id, m.created_at AS inbound_at, m.text AS inbound_text
+                FROM messages m
+                JOIN (
+                    SELECT user_id, MAX(id) AS max_id
+                    FROM messages
+                    WHERE direction = 'inbound'
+                    GROUP BY user_id
+                ) latest ON latest.max_id = m.id
+            ),
+            last_outbound AS (
+                SELECT user_id, MAX(id) AS outbound_message_id
+                FROM messages
+                WHERE direction = 'outbound'
+                GROUP BY user_id
+            )
+            SELECT li.user_id, li.inbound_message_id, li.inbound_at, li.inbound_text
+            FROM last_inbound li
+            LEFT JOIN last_outbound lo ON lo.user_id = li.user_id
+            WHERE (lo.outbound_message_id IS NULL OR lo.outbound_message_id < li.inbound_message_id)
+              AND julianday(li.inbound_at) <= julianday('now') - (? / 24.0)
+            ORDER BY li.inbound_message_id DESC
+            LIMIT ?
+            """,
+            (max(1, int(no_reply_hours)), max(1, int(limit))),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def _collect_call_no_next_step_candidates(
+        conn: Any,
+        *,
+        call_no_next_step_hours: int,
+        limit: int,
+    ) -> list[Dict[str, Any]]:
+        cursor = conn.execute(
+            """
+            WITH call_actions AS (
+                SELECT thread_id, MAX(id) AS max_id
+                FROM approval_actions
+                WHERE action = 'manual_action'
+                  AND (
+                    LOWER(COALESCE(payload_json, '')) LIKE '%call%'
+                    OR LOWER(COALESCE(payload_json, '')) LIKE '%звон%'
+                  )
+                GROUP BY thread_id
+            )
+            SELECT aa.id AS action_id, aa.user_id, aa.thread_id, aa.created_at, aa.payload_json
+            FROM approval_actions aa
+            JOIN call_actions ca ON ca.max_id = aa.id
+            WHERE julianday(aa.created_at) <= julianday('now') - (? / 24.0)
+            ORDER BY aa.id DESC
+            LIMIT ?
+            """,
+            (max(1, int(call_no_next_step_hours)), max(1, int(limit))),
+        )
+        rows: list[Dict[str, Any]] = []
+        for row in cursor.fetchall():
+            item = dict(row)
+            raw_payload = item.pop("payload_json", None)
+            try:
+                payload = json.loads(raw_payload) if isinstance(raw_payload, str) else {}
+            except json.JSONDecodeError:
+                payload = {}
+            item["payload"] = payload if isinstance(payload, dict) else {}
+            rows.append(item)
+        return rows
+
+    def _collect_stale_warm_candidates(conn: Any, *, stale_warm_days: int, limit: int) -> list[Dict[str, Any]]:
+        cursor = conn.execute(
+            """
+            WITH latest_scores AS (
+                SELECT thread_id, MAX(id) AS max_id
+                FROM lead_scores
+                GROUP BY thread_id
+            )
+            SELECT ls.id AS score_id, ls.user_id, ls.thread_id, ls.score, ls.temperature, ls.created_at
+            FROM lead_scores ls
+            JOIN latest_scores latest ON latest.max_id = ls.id
+            WHERE LOWER(ls.temperature) = 'warm'
+              AND julianday(ls.created_at) <= julianday('now') - ?
+            ORDER BY ls.id DESC
+            LIMIT ?
+            """,
+            (max(1, int(stale_warm_days)), max(1, int(limit))),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def _safe_thread_id(value: object) -> str:
+        if not isinstance(value, str):
+            return ""
+        return value.strip()
+
+    def _build_radar_idempotency_key(*, rule_key: str, thread_id: str, source_token: str) -> str:
+        cleaned_rule = rule_key.replace(":", "_").strip("_")
+        cleaned_thread = _safe_thread_id(thread_id).replace(":", "_").replace("/", "_")
+        cleaned_token = (source_token or "").strip().replace(":", "_").replace("/", "_")
+        key = f"lr:{cleaned_rule}:{cleaned_thread}:{cleaned_token}"
+        return key[:120]
+
+    def _create_radar_artifacts(
+        conn: Any,
+        *,
+        user_id: int,
+        thread_id: str,
+        rule_key: str,
+        priority: str,
+        reason_human: str,
+        draft_text: str,
+        source_token: str,
+        trigger: str,
+    ) -> Dict[str, Any]:
+        task_id = create_followup_task(
+            conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            priority=priority,
+            reason=f"{rule_key}: {reason_human}",
+            status="pending",
+            due_at=None,
+            assigned_to="lead_radar:auto",
+            related_draft_id=None,
+        )
+        create_approval_action(
+            conn,
+            draft_id=None,
+            user_id=user_id,
+            thread_id=thread_id,
+            action="followup_created",
+            actor="lead_radar:auto",
+            payload={
+                "source": "lead_radar",
+                "rule": rule_key,
+                "trigger": trigger,
+                "followup_task_id": task_id,
+            },
+        )
+
+        draft_id = create_reply_draft(
+            conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            source_message_id=None,
+            draft_text=draft_text.strip(),
+            model_name=LEAD_RADAR_MODEL_NAME,
+            quality={"source": "lead_radar", "rule": rule_key, "trigger": trigger},
+            created_by="lead_radar:auto",
+            status="created",
+            idempotency_key=_build_radar_idempotency_key(
+                rule_key=rule_key,
+                thread_id=thread_id,
+                source_token=source_token,
+            ),
+        )
+        create_approval_action(
+            conn,
+            draft_id=draft_id,
+            user_id=user_id,
+            thread_id=thread_id,
+            action="draft_created",
+            actor="lead_radar:auto",
+            payload={
+                "source": "lead_radar",
+                "rule": rule_key,
+                "trigger": trigger,
+                "followup_task_id": task_id,
+            },
+        )
+        return {"task_id": int(task_id), "draft_id": int(draft_id)}
+
+    def _resolve_radar_limit(limit_override: Optional[int]) -> int:
+        max_cfg = max(1, int(cfg.lead_radar_max_items_per_run))
+        if limit_override is None:
+            return max_cfg
+        return max(1, min(int(limit_override), max_cfg))
+
+    lead_radar_lock: Optional[asyncio.Lock] = None
+
+    async def run_lead_radar_once(
+        *,
+        trigger: str,
+        dry_run: bool = False,
+        limit_override: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        effective_limit = _resolve_radar_limit(limit_override)
+        if not cfg.enable_lead_radar:
+            return {
+                "ok": False,
+                "enabled": False,
+                "trigger": trigger,
+                "dry_run": bool(dry_run),
+                "limit": effective_limit,
+                "created_followups": 0,
+                "created_drafts": 0,
+                "scanned": 0,
+                "rules": {},
+            }
+
+        nonlocal lead_radar_lock
+        if lead_radar_lock is None:
+            lead_radar_lock = asyncio.Lock()
+
+        async with lead_radar_lock:
+            conn = get_connection(cfg.database_path)
+            try:
+                no_reply_candidates = _collect_no_reply_candidates(
+                    conn,
+                    no_reply_hours=cfg.lead_radar_no_reply_hours,
+                    limit=effective_limit,
+                )
+                call_candidates = _collect_call_no_next_step_candidates(
+                    conn,
+                    call_no_next_step_hours=cfg.lead_radar_call_no_next_step_hours,
+                    limit=effective_limit,
+                )
+                stale_warm_candidates = _collect_stale_warm_candidates(
+                    conn,
+                    stale_warm_days=cfg.lead_radar_stale_warm_days,
+                    limit=effective_limit,
+                )
+
+                result: Dict[str, Any] = {
+                    "ok": True,
+                    "enabled": True,
+                    "trigger": trigger,
+                    "dry_run": bool(dry_run),
+                    "limit": effective_limit,
+                    "created_followups": 0,
+                    "created_drafts": 0,
+                    "scanned": len(no_reply_candidates) + len(call_candidates) + len(stale_warm_candidates),
+                    "rules": {
+                        LEAD_RADAR_RULE_NO_REPLY: {"candidates": len(no_reply_candidates), "created": 0},
+                        LEAD_RADAR_RULE_CALL_NO_NEXT_STEP: {"candidates": len(call_candidates), "created": 0},
+                        LEAD_RADAR_RULE_STALE_WARM: {"candidates": len(stale_warm_candidates), "created": 0},
+                    },
+                }
+
+                remaining = effective_limit
+                for candidate in no_reply_candidates:
+                    if remaining <= 0:
+                        break
+                    user_id = int(candidate.get("user_id") or 0)
+                    if user_id <= 0:
+                        continue
+                    thread_id = _thread_id_from_user_id(user_id)
+                    if _pending_radar_followup_exists(conn, thread_id=thread_id, rule_key=LEAD_RADAR_RULE_NO_REPLY):
+                        continue
+                    if get_conversation_outcome(conn, thread_id=thread_id) is not None:
+                        continue
+                    inbound_text = str(candidate.get("inbound_text") or "").strip()
+                    reason_human = f"Нет ответа менеджера после входящего сообщения более {cfg.lead_radar_no_reply_hours} ч."
+                    draft_text = (
+                        "Здравствуйте! Спасибо за ожидание. Возвращаюсь к вашему запросу.\n\n"
+                        "Хочу уточнить 1-2 детали и сразу предложить конкретный следующий шаг под вашу цель.\n\n"
+                        f"Последний запрос клиента: {inbound_text or 'без текста'}"
+                    )
+                    if dry_run:
+                        result["rules"][LEAD_RADAR_RULE_NO_REPLY]["created"] += 1
+                        remaining -= 1
+                        continue
+                    created = _create_radar_artifacts(
+                        conn,
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        rule_key=LEAD_RADAR_RULE_NO_REPLY,
+                        priority="hot",
+                        reason_human=reason_human,
+                        draft_text=draft_text,
+                        source_token=str(candidate.get("inbound_message_id") or "na"),
+                        trigger=trigger,
+                    )
+                    result["rules"][LEAD_RADAR_RULE_NO_REPLY]["created"] += 1
+                    result["created_followups"] += 1
+                    result["created_drafts"] += 1 if created.get("draft_id") else 0
+                    remaining -= 1
+
+                for candidate in call_candidates:
+                    if remaining <= 0:
+                        break
+                    user_id = int(candidate.get("user_id") or 0)
+                    thread_id = _safe_thread_id(candidate.get("thread_id"))
+                    if user_id <= 0 or not thread_id:
+                        continue
+                    if _pending_radar_followup_exists(
+                        conn,
+                        thread_id=thread_id,
+                        rule_key=LEAD_RADAR_RULE_CALL_NO_NEXT_STEP,
+                    ):
+                        continue
+                    if get_conversation_outcome(conn, thread_id=thread_id) is not None:
+                        continue
+                    action_time = str(candidate.get("created_at") or "").strip()
+                    reason_human = (
+                        "После звонка не зафиксирован следующий шаг "
+                        f"более {cfg.lead_radar_call_no_next_step_hours} ч."
+                    )
+                    draft_text = (
+                        "Спасибо за разговор. Подтверждаю, что зафиксировал ваш запрос.\n\n"
+                        "Предлагаю согласовать удобное время короткого follow-up, "
+                        "чтобы закрыть оставшиеся вопросы и выбрать следующий шаг.\n\n"
+                        f"Контекст звонка (время события): {action_time or 'не указано'}"
+                    )
+                    if dry_run:
+                        result["rules"][LEAD_RADAR_RULE_CALL_NO_NEXT_STEP]["created"] += 1
+                        remaining -= 1
+                        continue
+                    created = _create_radar_artifacts(
+                        conn,
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        rule_key=LEAD_RADAR_RULE_CALL_NO_NEXT_STEP,
+                        priority="hot",
+                        reason_human=reason_human,
+                        draft_text=draft_text,
+                        source_token=str(candidate.get("action_id") or "na"),
+                        trigger=trigger,
+                    )
+                    result["rules"][LEAD_RADAR_RULE_CALL_NO_NEXT_STEP]["created"] += 1
+                    result["created_followups"] += 1
+                    result["created_drafts"] += 1 if created.get("draft_id") else 0
+                    remaining -= 1
+
+                for candidate in stale_warm_candidates:
+                    if remaining <= 0:
+                        break
+                    user_id = int(candidate.get("user_id") or 0)
+                    thread_id = _safe_thread_id(candidate.get("thread_id"))
+                    if user_id <= 0 or not thread_id:
+                        continue
+                    if _pending_radar_followup_exists(conn, thread_id=thread_id, rule_key=LEAD_RADAR_RULE_STALE_WARM):
+                        continue
+                    if get_conversation_outcome(conn, thread_id=thread_id) is not None:
+                        continue
+                    score = float(candidate.get("score") or 0.0)
+                    score_created_at = str(candidate.get("created_at") or "").strip()
+                    reason_human = (
+                        f"Теплый лид без активности более {cfg.lead_radar_stale_warm_days} дней "
+                        "(нужна реактивация)."
+                    )
+                    draft_text = (
+                        "Возвращаюсь к вашему запросу и подготовил обновленный следующий шаг.\n\n"
+                        "Если вам удобно, можем быстро сверить текущую цель и выбрать оптимальную программу.\n\n"
+                        f"Текущий warm-score: {score:.1f}; дата оценки: {score_created_at or 'не указана'}."
+                    )
+                    if dry_run:
+                        result["rules"][LEAD_RADAR_RULE_STALE_WARM]["created"] += 1
+                        remaining -= 1
+                        continue
+                    created = _create_radar_artifacts(
+                        conn,
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        rule_key=LEAD_RADAR_RULE_STALE_WARM,
+                        priority="warm",
+                        reason_human=reason_human,
+                        draft_text=draft_text,
+                        source_token=str(candidate.get("score_id") or "na"),
+                        trigger=trigger,
+                    )
+                    result["rules"][LEAD_RADAR_RULE_STALE_WARM]["created"] += 1
+                    result["created_followups"] += 1
+                    result["created_drafts"] += 1 if created.get("draft_id") else 0
+                    remaining -= 1
+            finally:
+                conn.close()
+        return result
+
+    async def lead_radar_loop(app_instance: FastAPI) -> None:
+        event = getattr(app_instance.state, "lead_radar_event", None)
+        if event is None:
+            return
+        interval = max(60, int(cfg.lead_radar_interval_seconds))
+        while True:
+            try:
+                summary = await run_lead_radar_once(trigger="scheduler")
+                if int(summary.get("created_followups") or 0) > 0:
+                    logger.info(
+                        "Lead radar created followups=%s drafts=%s",
+                        summary.get("created_followups"),
+                        summary.get("created_drafts"),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Lead radar scheduler iteration failed")
+
+            try:
+                await asyncio.wait_for(event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            finally:
+                event.clear()
 
     def render_page(title: str, body_html: str) -> HTMLResponse:
         page = f"""
@@ -1020,6 +1552,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     <a href="/admin">Dashboard</a>
     <a href="/admin/ui/inbox">Inbox</a>
     <a href="/admin/ui/business-inbox">Business Inbox</a>
+    <a href="/admin/ui/followups">Followups</a>
+    <a href="/admin/ui/calls">Calls</a>
     <a href="/admin/ui/revenue-metrics">Revenue Metrics</a>
     <a href="/admin/ui/leads">Leads</a>
     <a href="/admin/ui/conversations">Conversations</a>
@@ -1087,6 +1621,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "enable_call_copilot": cfg.enable_call_copilot,
                 "enable_tallanto_enrichment": cfg.enable_tallanto_enrichment,
                 "enable_director_agent": cfg.enable_director_agent,
+                "enable_lead_radar": cfg.enable_lead_radar,
+                "lead_radar_scheduler_enabled": cfg.lead_radar_scheduler_enabled,
+            },
+            "lead_radar": {
+                "interval_seconds": cfg.lead_radar_interval_seconds,
+                "no_reply_hours": cfg.lead_radar_no_reply_hours,
+                "call_no_next_step_hours": cfg.lead_radar_call_no_next_step_hours,
+                "stale_warm_days": cfg.lead_radar_stale_warm_days,
+                "max_items_per_run": cfg.lead_radar_max_items_per_run,
             },
         }
 
@@ -1116,7 +1659,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             f"ENABLE_BUSINESS_INBOX={cfg.enable_business_inbox}<br/>"
             f"ENABLE_CALL_COPILOT={cfg.enable_call_copilot}<br/>"
             f"ENABLE_TALLANTO_ENRICHMENT={cfg.enable_tallanto_enrichment}<br/>"
-            f"ENABLE_DIRECTOR_AGENT={cfg.enable_director_agent}"
+            f"ENABLE_DIRECTOR_AGENT={cfg.enable_director_agent}<br/>"
+            f"ENABLE_LEAD_RADAR={cfg.enable_lead_radar}<br/>"
+            f"LEAD_RADAR_SCHEDULER_ENABLED={cfg.lead_radar_scheduler_enabled}<br/>"
+            f"LEAD_RADAR_INTERVAL_SECONDS={cfg.lead_radar_interval_seconds}<br/>"
+            f"LEAD_RADAR_NO_REPLY_HOURS={cfg.lead_radar_no_reply_hours}<br/>"
+            f"LEAD_RADAR_CALL_NO_NEXT_STEP_HOURS={cfg.lead_radar_call_no_next_step_hours}<br/>"
+            f"LEAD_RADAR_STALE_WARM_DAYS={cfg.lead_radar_stale_warm_days}<br/>"
+            f"LEAD_RADAR_MAX_ITEMS_PER_RUN={cfg.lead_radar_max_items_per_run}"
             "</div>"
         )
         return render_page("Revenue Metrics", body)
@@ -1129,6 +1679,281 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             conn.close()
         return {"ok": True, "items": items}
+
+    @app.get("/admin/followups")
+    async def admin_followups(
+        _: str = Depends(require_admin),
+        status_filter: Optional[str] = Query(default=None, alias="status"),
+        priority: Optional[str] = Query(default=None),
+        radar_only: bool = False,
+        limit: int = 200,
+    ):
+        normalized_status = (status_filter or "").strip() or None
+        normalized_priority = (priority or "").strip().lower() or None
+        conn = get_connection(cfg.database_path)
+        try:
+            items = list_followup_tasks(
+                conn,
+                status=normalized_status,
+                limit=max(1, min(limit, 500)),
+            )
+        finally:
+            conn.close()
+        if normalized_priority:
+            items = [
+                item
+                for item in items
+                if str(item.get("priority") or "").strip().lower() == normalized_priority
+            ]
+        if radar_only:
+            items = [item for item in items if _is_radar_reason(item.get("reason"))]
+        return {"ok": True, "items": items}
+
+    @app.post("/admin/followups/run")
+    async def admin_followups_run(
+        payload: Optional[LeadRadarRunPayload] = None,
+        admin_username: str = Depends(require_admin),
+    ):
+        if not cfg.enable_lead_radar:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Lead radar is disabled. Set ENABLE_LEAD_RADAR=true.",
+            )
+        run_payload = payload or LeadRadarRunPayload()
+        result = await run_lead_radar_once(
+            trigger=f"manual:{admin_username}",
+            dry_run=run_payload.dry_run,
+            limit_override=run_payload.limit,
+        )
+        return result
+
+    async def _process_manual_call_upload(
+        *,
+        user_id: Optional[int],
+        thread_id: Optional[str],
+        recording_url: Optional[str],
+        transcript_hint: Optional[str],
+        audio_file: Optional[UploadFile],
+    ) -> Dict[str, Any]:
+        has_file = audio_file is not None and bool((audio_file.filename or "").strip())
+        has_url = bool((recording_url or "").strip())
+        if not has_file and not has_url:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Provide audio_file or recording_url.",
+            )
+
+        stored_file_path: Optional[Path] = None
+        transcript_text = ""
+        source_type = "url" if has_url and not has_file else "upload"
+        source_ref = (recording_url or "").strip() or None
+        if has_file and audio_file is not None:
+            stored_file_path = await _store_call_upload_file(audio_file)
+            if stored_file_path is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Uploaded file is empty.",
+                )
+            transcript_text = extract_transcript_from_file(stored_file_path)
+            if not source_ref:
+                source_ref = (audio_file.filename or "").strip() or None
+
+        conn = get_connection(cfg.database_path)
+        try:
+            resolved_user_id, resolved_thread_id = _resolve_call_thread_and_user(
+                conn,
+                user_id_input=user_id,
+                thread_id_input=thread_id,
+            )
+            call_id = create_call_record(
+                conn,
+                user_id=resolved_user_id,
+                thread_id=resolved_thread_id,
+                source_type=source_type,
+                source_ref=source_ref,
+                file_path=str(stored_file_path) if stored_file_path else None,
+                status="queued",
+                created_by="admin:manual",
+            )
+            update_call_record_status(conn, call_id=call_id, status="processing")
+
+            effective_transcript = transcript_text or build_transcript_fallback(
+                source_type=source_type,
+                source_ref=source_ref,
+                transcript_hint=transcript_hint,
+            )
+            upsert_call_transcript(
+                conn,
+                call_id=call_id,
+                provider="heuristic",
+                transcript_text=effective_transcript,
+                language="ru",
+                confidence=0.55 if transcript_text else 0.4,
+            )
+
+            insights = build_call_insights(effective_transcript)
+            upsert_call_summary(
+                conn,
+                call_id=call_id,
+                summary_text=insights.summary_text,
+                interests=insights.interests,
+                objections=insights.objections,
+                next_best_action=insights.next_best_action,
+                warmth=insights.warmth,
+                confidence=insights.confidence,
+                model_name=CALL_COPILOT_MODEL_NAME,
+            )
+
+            lead_score_id = create_lead_score(
+                conn,
+                user_id=resolved_user_id,
+                thread_id=resolved_thread_id,
+                score=insights.score,
+                temperature=insights.warmth,
+                confidence=insights.confidence,
+                factors={
+                    "source": "call_copilot",
+                    "interests": insights.interests,
+                    "objections": insights.objections,
+                },
+            )
+            followup_id = create_followup_task(
+                conn,
+                user_id=resolved_user_id,
+                thread_id=resolved_thread_id,
+                priority=_priority_from_warmth(insights.warmth),
+                reason=f"call_copilot: {insights.next_best_action}",
+                status="pending",
+                due_at=None,
+                assigned_to="sales:manual",
+                related_draft_id=None,
+            )
+            create_approval_action(
+                conn,
+                draft_id=None,
+                user_id=resolved_user_id,
+                thread_id=resolved_thread_id,
+                action="manual_action",
+                actor="call_copilot:auto",
+                payload={
+                    "source": "call_copilot",
+                    "call_id": call_id,
+                    "followup_task_id": followup_id,
+                    "lead_score_id": lead_score_id,
+                    "next_best_action": insights.next_best_action,
+                },
+            )
+            create_approval_action(
+                conn,
+                draft_id=None,
+                user_id=resolved_user_id,
+                thread_id=resolved_thread_id,
+                action="followup_created",
+                actor="call_copilot:auto",
+                payload={
+                    "source": "call_copilot",
+                    "call_id": call_id,
+                    "followup_task_id": followup_id,
+                },
+            )
+            create_approval_action(
+                conn,
+                draft_id=None,
+                user_id=resolved_user_id,
+                thread_id=resolved_thread_id,
+                action="lead_scored",
+                actor="call_copilot:auto",
+                payload={
+                    "source": "call_copilot",
+                    "call_id": call_id,
+                    "lead_score_id": lead_score_id,
+                    "temperature": insights.warmth,
+                    "score": insights.score,
+                },
+            )
+            update_call_record_status(conn, call_id=call_id, status="done")
+            item = get_call_record(conn, call_id=call_id)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            if "call_id" in locals():
+                update_call_record_status(
+                    conn,
+                    call_id=int(call_id),
+                    status="failed",
+                    error_text=str(exc),
+                )
+            logger.exception("Call copilot processing failed")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Call processing failed: {exc}",
+            ) from exc
+        finally:
+            conn.close()
+            if audio_file is not None:
+                await audio_file.close()
+
+        return {"ok": True, "item": item}
+
+    @app.get("/admin/calls")
+    async def admin_calls(
+        _: str = Depends(require_admin),
+        status_filter: Optional[str] = Query(default=None, alias="status"),
+        limit: int = 100,
+    ):
+        if not cfg.enable_call_copilot:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Call Copilot is disabled. Set ENABLE_CALL_COPILOT=true.",
+            )
+        conn = get_connection(cfg.database_path)
+        try:
+            items = list_call_records(
+                conn,
+                status=(status_filter or "").strip() or None,
+                limit=max(1, min(limit, 500)),
+            )
+        finally:
+            conn.close()
+        return {"ok": True, "items": items}
+
+    @app.get("/admin/calls/{call_id}")
+    async def admin_call_detail(call_id: int, _: str = Depends(require_admin)):
+        if not cfg.enable_call_copilot:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Call Copilot is disabled. Set ENABLE_CALL_COPILOT=true.",
+            )
+        conn = get_connection(cfg.database_path)
+        try:
+            item = get_call_record(conn, call_id=call_id)
+        finally:
+            conn.close()
+        if item is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Call {call_id} not found.")
+        return {"ok": True, "item": item}
+
+    @app.post("/admin/calls/upload")
+    async def admin_calls_upload(
+        _: str = Depends(require_admin),
+        user_id: Optional[int] = Form(default=None),
+        thread_id: Optional[str] = Form(default=None),
+        recording_url: Optional[str] = Form(default=None),
+        transcript_hint: Optional[str] = Form(default=None),
+        audio_file: Optional[UploadFile] = File(default=None),
+    ):
+        if not cfg.enable_call_copilot:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Call Copilot is disabled. Set ENABLE_CALL_COPILOT=true.",
+            )
+        return await _process_manual_call_upload(
+            user_id=user_id,
+            thread_id=thread_id,
+            recording_url=recording_url,
+            transcript_hint=transcript_hint,
+            audio_file=audio_file,
+        )
 
     @app.get("/admin/business/inbox")
     async def admin_business_inbox(_: str = Depends(require_admin), limit: int = 100):
@@ -1566,6 +2391,212 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return render_page("Inbox", body)
 
+    @app.get("/admin/ui/followups", response_class=HTMLResponse)
+    async def admin_followups_ui(
+        _: str = Depends(require_admin),
+        status_filter: Optional[str] = Query(default=None, alias="status"),
+        priority: Optional[str] = Query(default=None),
+        radar_only: bool = False,
+        limit: int = 200,
+    ):
+        normalized_status = (status_filter or "").strip() or None
+        normalized_priority = (priority or "").strip().lower() or None
+        conn = get_connection(cfg.database_path)
+        try:
+            items = list_followup_tasks(
+                conn,
+                status=normalized_status,
+                limit=max(1, min(limit, 500)),
+            )
+        finally:
+            conn.close()
+        if normalized_priority:
+            items = [
+                item
+                for item in items
+                if str(item.get("priority") or "").strip().lower() == normalized_priority
+            ]
+        if radar_only:
+            items = [item for item in items if _is_radar_reason(item.get("reason"))]
+
+        rows: list[str] = []
+        for item in items:
+            thread_id = html.escape(str(item.get("thread_id") or ""))
+            thread_link = thread_id
+            raw_thread = str(item.get("thread_id") or "")
+            if raw_thread.startswith("tg:") and raw_thread[3:].isdigit():
+                thread_link = (
+                    f"<a href='/admin/ui/inbox/{int(raw_thread[3:])}'>"
+                    f"{thread_id}</a>"
+                )
+            elif raw_thread.startswith("biz:"):
+                thread_link = (
+                    f"<a href='/admin/ui/business-inbox/thread?thread_key={quote_plus(raw_thread)}'>"
+                    f"{thread_id}</a>"
+                )
+
+            rows.append(
+                "<tr>"
+                f"<td>{int(item.get('id') or 0)}</td>"
+                f"<td>{thread_link}</td>"
+                f"<td><span class='badge'>{html.escape(str(item.get('priority') or ''))}</span></td>"
+                f"<td><span class='badge'>{html.escape(str(item.get('status') or ''))}</span></td>"
+                f"<td>{html.escape(str(item.get('assigned_to') or '-'))}</td>"
+                f"<td>{html.escape(str(item.get('created_at') or '-'))}</td>"
+                f"<td><pre>{html.escape(str(item.get('reason') or ''))}</pre></td>"
+                "</tr>"
+            )
+
+        body = (
+            "<h1>Followups</h1>"
+            "<p class='muted'>Очередь задач для менеджеров, включая Lead Radar сигналы.</p>"
+            "<div class='card'>"
+            f"<b>Lead Radar:</b> enabled={cfg.enable_lead_radar} | "
+            f"interval={cfg.lead_radar_interval_seconds}s | "
+            f"no-reply={cfg.lead_radar_no_reply_hours}h | "
+            f"call-no-next={cfg.lead_radar_call_no_next_step_hours}h | "
+            f"stale-warm={cfg.lead_radar_stale_warm_days}d"
+            "</div>"
+            "<table>"
+            "<thead><tr><th>ID</th><th>Thread</th><th>Priority</th><th>Status</th><th>Assigned</th><th>Created</th><th>Reason</th></tr></thead>"
+            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=7>Нет задач</td></tr>'}</tbody>"
+            "</table>"
+        )
+        return render_page("Followups", body)
+
+    @app.get("/admin/ui/calls", response_class=HTMLResponse)
+    async def admin_calls_ui(
+        _: str = Depends(require_admin),
+        status_filter: Optional[str] = Query(default=None, alias="status"),
+        limit: int = 100,
+    ):
+        if not cfg.enable_call_copilot:
+            body = (
+                "<h1>Calls</h1>"
+                "<div class='card'>Call Copilot disabled. Set <code>ENABLE_CALL_COPILOT=true</code>.</div>"
+            )
+            return render_page("Calls", body)
+
+        conn = get_connection(cfg.database_path)
+        try:
+            items = list_call_records(
+                conn,
+                status=(status_filter or "").strip() or None,
+                limit=max(1, min(limit, 500)),
+            )
+        finally:
+            conn.close()
+
+        rows: list[str] = []
+        for item in items:
+            call_id = int(item.get("id") or 0)
+            thread_id = html.escape(str(item.get("thread_id") or ""))
+            warm = html.escape(str(item.get("warmth") or "-"))
+            summary = html.escape(str(item.get("summary_text") or ""))
+            if len(summary) > 200:
+                summary = f"{summary[:197]}..."
+            rows.append(
+                "<tr>"
+                f"<td><a href='/admin/ui/calls/{call_id}'>{call_id}</a></td>"
+                f"<td>{thread_id}</td>"
+                f"<td><span class='badge'>{html.escape(str(item.get('status') or ''))}</span></td>"
+                f"<td><span class='badge'>{warm}</span></td>"
+                f"<td>{html.escape(str(item.get('created_at') or '-'))}</td>"
+                f"<td>{summary or '-'}</td>"
+                "</tr>"
+            )
+
+        body = (
+            "<h1>Calls</h1>"
+            "<p class='muted'>Ручная загрузка звонков, автоконспект и next best action.</p>"
+            "<div class='card'>"
+            "<form method='post' action='/admin/ui/calls/upload' enctype='multipart/form-data'>"
+            "<p><label>User ID (optional): <input type='number' name='user_id' min='1' /></label></p>"
+            "<p><label>Thread ID (optional): <input name='thread_id' placeholder='tg:123 or biz:...' style='width:320px;' /></label></p>"
+            "<p><label>Recording URL (optional): <input name='recording_url' placeholder='https://...' style='width:420px;' /></label></p>"
+            "<p><label>Audio file (optional): <input type='file' name='audio_file' /></label></p>"
+            "<p><label>Transcript hint (optional):<br/><textarea name='transcript_hint' rows='3' style='width:100%;' placeholder='Краткий конспект звонка'></textarea></label></p>"
+            "<p><button type='submit'>Загрузить и обработать звонок</button></p>"
+            "</form>"
+            "</div>"
+            "<table>"
+            "<thead><tr><th>ID</th><th>Thread</th><th>Status</th><th>Warmth</th><th>Created</th><th>Summary</th></tr></thead>"
+            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=6>Нет звонков</td></tr>'}</tbody>"
+            "</table>"
+        )
+        return render_page("Calls", body)
+
+    @app.post("/admin/ui/calls/upload")
+    async def admin_calls_ui_upload(
+        _: str = Depends(require_admin),
+        user_id: Optional[int] = Form(default=None),
+        thread_id: Optional[str] = Form(default=None),
+        recording_url: Optional[str] = Form(default=None),
+        transcript_hint: Optional[str] = Form(default=None),
+        audio_file: Optional[UploadFile] = File(default=None),
+    ):
+        if not cfg.enable_call_copilot:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Call Copilot is disabled. Set ENABLE_CALL_COPILOT=true.",
+            )
+        result = await _process_manual_call_upload(
+            user_id=user_id,
+            thread_id=thread_id,
+            recording_url=recording_url,
+            transcript_hint=transcript_hint,
+            audio_file=audio_file,
+        )
+        item = result.get("item") if isinstance(result, dict) else None
+        if not isinstance(item, dict) or "id" not in item:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Call created but detail is missing.",
+            )
+        return RedirectResponse(
+            url=f"/admin/ui/calls/{int(item['id'])}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    @app.get("/admin/ui/calls/{call_id}", response_class=HTMLResponse)
+    async def admin_call_detail_ui(call_id: int, _: str = Depends(require_admin)):
+        if not cfg.enable_call_copilot:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Call Copilot is disabled. Set ENABLE_CALL_COPILOT=true.",
+            )
+        conn = get_connection(cfg.database_path)
+        try:
+            item = get_call_record(conn, call_id=call_id)
+        finally:
+            conn.close()
+        if item is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Call {call_id} not found.")
+
+        body = (
+            "<h1>Call Detail</h1>"
+            "<div class='card'>"
+            f"<b>Call ID:</b> {int(item.get('id') or 0)}<br/>"
+            f"<b>Thread:</b> {html.escape(str(item.get('thread_id') or '-'))}<br/>"
+            f"<b>Status:</b> <span class='badge'>{html.escape(str(item.get('status') or ''))}</span><br/>"
+            f"<b>Warmth:</b> <span class='badge'>{html.escape(str(item.get('warmth') or '-'))}</span><br/>"
+            f"<b>Created:</b> {html.escape(str(item.get('created_at') or '-'))}<br/>"
+            f"<b>Source:</b> {html.escape(str(item.get('source_type') or '-'))} "
+            f"{html.escape(str(item.get('source_ref') or ''))}"
+            "</div>"
+            "<div class='card'>"
+            f"<b>Summary</b><pre>{html.escape(str(item.get('summary_text') or ''))}</pre>"
+            f"<b>Next Best Action</b><pre>{html.escape(str(item.get('next_best_action') or ''))}</pre>"
+            f"<b>Interests</b><pre>{html.escape(', '.join(item.get('interests') or []))}</pre>"
+            f"<b>Objections</b><pre>{html.escape(', '.join(item.get('objections') or []))}</pre>"
+            "</div>"
+            "<div class='card'>"
+            f"<b>Transcript</b><pre>{html.escape(str(item.get('transcript_text') or ''))}</pre>"
+            "</div>"
+            "<p><a href='/admin/ui/calls'>← Назад к звонкам</a></p>"
+        )
+        return render_page("Call Detail", body)
+
     @app.get("/admin/ui/business-inbox", response_class=HTMLResponse)
     async def admin_business_inbox_ui(_: str = Depends(require_admin), limit: int = 100):
         conn = get_connection(cfg.database_path)
@@ -1735,6 +2766,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         actions = detail.get("approval_actions") if isinstance(detail.get("approval_actions"), list) else []
         lead_score = detail.get("lead_score") if isinstance(detail.get("lead_score"), dict) else None
         outcome = detail.get("outcome") if isinstance(detail.get("outcome"), dict) else None
+        latest_call_insights = (
+            detail.get("latest_call_insights") if isinstance(detail.get("latest_call_insights"), dict) else None
+        )
         user_item = detail.get("user") if isinstance(detail.get("user"), dict) else {}
 
         message_rows: list[str] = []
@@ -1812,11 +2846,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 f"<p><b>{html.escape(str(outcome.get('outcome') or '-'))}</b><br/>"
                 f"{html.escape(str(outcome.get('note') or ''))}</p>"
             )
+        call_insights_html = "<p class='muted'>Пока нет обработанных звонков.</p>"
+        if latest_call_insights:
+            interests = ", ".join(latest_call_insights.get("interests") or [])
+            objections = ", ".join(latest_call_insights.get("objections") or [])
+            call_insights_html = (
+                "<div class='card'>"
+                f"<b>Warmth:</b> {html.escape(str(latest_call_insights.get('warmth') or '-'))}<br/>"
+                f"<b>Summary:</b><pre>{html.escape(str(latest_call_insights.get('summary_text') or ''))}</pre>"
+                f"<b>Next Action:</b><pre>{html.escape(str(latest_call_insights.get('next_best_action') or ''))}</pre>"
+                f"<b>Interests:</b> {html.escape(interests or '-')}<br/>"
+                f"<b>Objections:</b> {html.escape(objections or '-')}"
+                "</div>"
+            )
 
         body = (
             f"<h1>Inbox Thread #{user_id}</h1>"
             f"<p class='muted'>Клиент: {customer_name}</p>"
             "<p><a href='/admin/ui/inbox'>← Назад к списку</a></p>"
+            "<h2>Latest Call Insights</h2>"
+            f"{call_insights_html}"
             "<h2>Lead Score</h2>"
             f"{lead_score_html}"
             f"<form method='post' action='/admin/ui/inbox/{user_id}/lead-score'>"
