@@ -245,6 +245,107 @@ class ApiAdminTests(unittest.TestCase):
             self.assertEqual(metrics_ui.status_code, 200)
             self.assertIn("Revenue Metrics", metrics_ui.text)
 
+    def test_admin_business_inbox_api_and_ui(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            app = create_app(self._settings(db_path))
+            conn = db.get_connection(db_path)
+            try:
+                business_user_id = db.get_or_create_user(
+                    conn,
+                    channel="telegram_business",
+                    external_id="client-42",
+                    username="client42",
+                    first_name="Client",
+                    last_name="Business",
+                )
+                db.upsert_business_connection(
+                    conn,
+                    business_connection_id="bc-test",
+                    telegram_user_id=501,
+                    user_chat_id=7001,
+                    can_reply=True,
+                    is_enabled=True,
+                    connected_at="2026-03-06T12:00:00+00:00",
+                    meta={"source": "test"},
+                )
+                thread_key = db.upsert_business_thread(
+                    conn,
+                    business_connection_id="bc-test",
+                    chat_id=88001,
+                    user_id=business_user_id,
+                    direction="inbound",
+                    occurred_at="2026-03-06T12:05:00+00:00",
+                    meta={"topic": "ege"},
+                )
+                db.log_business_message(
+                    conn,
+                    business_connection_id="bc-test",
+                    chat_id=88001,
+                    telegram_message_id=101,
+                    user_id=business_user_id,
+                    direction="inbound",
+                    text="Здравствуйте, нужна подготовка к ЕГЭ",
+                    payload={"event_type": "business_message"},
+                    created_at="2026-03-06T12:05:00+00:00",
+                )
+                draft_id = db.create_reply_draft(
+                    conn,
+                    user_id=business_user_id,
+                    thread_id=thread_key,
+                    draft_text="Черновик для business диалога",
+                    model_name="business_placeholder_v1",
+                    created_by="business_inbox:auto",
+                )
+                db.create_approval_action(
+                    conn,
+                    draft_id=draft_id,
+                    user_id=business_user_id,
+                    thread_id=thread_key,
+                    action="draft_created",
+                    actor="business_inbox:auto",
+                    payload={"source": "test"},
+                )
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            inbox_response = client.get("/admin/business/inbox", auth=auth)
+            self.assertEqual(inbox_response.status_code, 200)
+            items = inbox_response.json()["items"]
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["thread_key"], "biz:bc-test:88001")
+            self.assertEqual(items[0]["messages_count"], 1)
+
+            detail_response = client.get(
+                "/admin/business/inbox/thread",
+                auth=auth,
+                params={"thread_key": "biz:bc-test:88001"},
+            )
+            self.assertEqual(detail_response.status_code, 200)
+            detail = detail_response.json()
+            self.assertEqual(detail["thread"]["thread_key"], "biz:bc-test:88001")
+            self.assertEqual(len(detail["messages"]), 1)
+            self.assertEqual(detail["messages"][0]["text"], "Здравствуйте, нужна подготовка к ЕГЭ")
+            self.assertEqual(len(detail["drafts"]), 1)
+            self.assertGreaterEqual(len(detail["approval_actions"]), 1)
+
+            list_ui = client.get("/admin/ui/business-inbox", auth=auth)
+            self.assertEqual(list_ui.status_code, 200)
+            self.assertIn("Business Inbox", list_ui.text)
+            self.assertIn("biz:bc-test:88001", list_ui.text)
+
+            detail_ui = client.get(
+                "/admin/ui/business-inbox/thread",
+                auth=auth,
+                params={"thread_key": "biz:bc-test:88001"},
+            )
+            self.assertEqual(detail_ui.status_code, 200)
+            self.assertIn("Business Thread", detail_ui.text)
+            self.assertIn("нужна подготовка к ЕГЭ", detail_ui.text)
+
     def test_admin_copilot_import_returns_summary_and_draft(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"

@@ -1,5 +1,7 @@
 import unittest
 import json
+import datetime
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -73,6 +75,43 @@ def _make_update_without_message():
     )
 
 
+def _make_business_connection_update():
+    connection = SimpleNamespace(
+        id="bc-1",
+        user=SimpleNamespace(id=501, username="owner", first_name="Owner", last_name="User"),
+        user_chat_id=7001,
+        can_reply=True,
+        is_enabled=True,
+        date=datetime.datetime(2026, 3, 6, 12, 0, 0),
+    )
+    return SimpleNamespace(
+        business_connection=connection,
+    )
+
+
+def _make_business_message_update(*, edited: bool = False):
+    message = SimpleNamespace(
+        business_connection_id="bc-1",
+        chat=SimpleNamespace(id=8001),
+        from_user=SimpleNamespace(id=9001, username="client", first_name="Client", last_name="User"),
+        message_id=321,
+        text="Здравствуйте, подберите курс",
+        caption=None,
+        date=datetime.datetime(2026, 3, 6, 12, 5, 0),
+    )
+    payload = {"edited_business_message" if edited else "business_message": message}
+    return SimpleNamespace(**payload)
+
+
+def _make_business_deleted_update():
+    deleted = SimpleNamespace(
+        business_connection_id="bc-1",
+        chat=SimpleNamespace(id=8001),
+        message_ids=[321, 322],
+    )
+    return SimpleNamespace(deleted_business_messages=deleted)
+
+
 def _sample_products():
     catalog = parse_catalog(
         {
@@ -139,6 +178,26 @@ class BotSyncCoverageTests(unittest.TestCase):
         builder.token.assert_called_once_with("tg-token")
         self.assertEqual(app_mock.add_handler.call_count, 8)
         app_mock.run_polling.assert_called_once()
+
+    def test_build_application_adds_business_handlers_when_enabled(self) -> None:
+        app_mock = MagicMock()
+        builder = MagicMock()
+        builder.token.return_value = builder
+        builder.build.return_value = app_mock
+
+        with patch.object(
+            bot,
+            "settings",
+            SimpleNamespace(
+                telegram_bot_token="tg-token",
+                telegram_mode="polling",
+                enable_business_inbox=True,
+            ),
+        ), patch.object(bot, "ApplicationBuilder", return_value=builder):
+            application = bot.build_application("tg-token")
+
+        self.assertIs(application, app_mock)
+        self.assertEqual(app_mock.add_handler.call_count, 12)
 
     def test_main_raises_in_webhook_mode(self) -> None:
         with patch.object(
@@ -897,6 +956,122 @@ class BotAsyncCoverageTests(unittest.IsolatedAsyncioTestCase):
             llm_client.build_consultative_reply_async.await_args.kwargs["user_message"],
             semantic_text,
         )
+
+    async def test_on_business_connection_persists_connection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "business.db"
+            bot.db_module.init_db(db_path)
+            update = _make_business_connection_update()
+
+            with patch.object(
+                bot,
+                "settings",
+                SimpleNamespace(database_path=db_path, enable_business_inbox=True),
+            ):
+                await bot.on_business_connection(update=update, context=SimpleNamespace())
+
+            conn = bot.db_module.get_connection(db_path)
+            try:
+                item = bot.db_module.get_business_connection(conn, business_connection_id="bc-1")
+                self.assertIsNotNone(item)
+                self.assertEqual(item["telegram_user_id"], 501)
+                self.assertEqual(item["user_chat_id"], 7001)
+                self.assertTrue(item["can_reply"])
+                self.assertTrue(item["is_enabled"])
+            finally:
+                conn.close()
+
+    async def test_on_business_message_creates_message_and_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "business.db"
+            bot.db_module.init_db(db_path)
+            update = _make_business_message_update(edited=False)
+
+            with patch.object(
+                bot,
+                "settings",
+                SimpleNamespace(database_path=db_path, enable_business_inbox=True),
+            ):
+                await bot.on_business_message(update=update, context=SimpleNamespace())
+
+            conn = bot.db_module.get_connection(db_path)
+            try:
+                thread_key = bot.db_module.build_business_thread_key(
+                    business_connection_id="bc-1",
+                    chat_id=8001,
+                )
+                messages = bot.db_module.list_business_messages(conn, thread_key=thread_key, limit=20)
+                self.assertEqual(len(messages), 1)
+                self.assertEqual(messages[0]["direction"], "inbound")
+
+                drafts = bot.db_module.list_reply_drafts_for_thread(conn, thread_id=thread_key, limit=10)
+                self.assertEqual(len(drafts), 1)
+                self.assertEqual(drafts[0]["model_name"], bot.BUSINESS_DRAFT_MODEL)
+
+                actions = bot.db_module.list_approval_actions_for_thread(conn, thread_id=thread_key, limit=10)
+                self.assertGreaterEqual(len(actions), 1)
+                self.assertEqual(actions[0]["action"], "draft_created")
+            finally:
+                conn.close()
+
+    async def test_on_edited_business_message_logs_event_without_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "business.db"
+            bot.db_module.init_db(db_path)
+            update = _make_business_message_update(edited=True)
+
+            with patch.object(
+                bot,
+                "settings",
+                SimpleNamespace(database_path=db_path, enable_business_inbox=True),
+            ):
+                await bot.on_edited_business_message(update=update, context=SimpleNamespace())
+
+            conn = bot.db_module.get_connection(db_path)
+            try:
+                thread_key = bot.db_module.build_business_thread_key(
+                    business_connection_id="bc-1",
+                    chat_id=8001,
+                )
+                messages = bot.db_module.list_business_messages(conn, thread_key=thread_key, limit=20)
+                self.assertEqual(len(messages), 1)
+                self.assertEqual(messages[0]["payload"].get("event_type"), "edited_business_message")
+
+                drafts = bot.db_module.list_reply_drafts_for_thread(conn, thread_id=thread_key, limit=10)
+                self.assertEqual(drafts, [])
+            finally:
+                conn.close()
+
+    async def test_on_business_messages_deleted_marks_messages_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "business.db"
+            bot.db_module.init_db(db_path)
+            message_update = _make_business_message_update(edited=False)
+            deleted_update = _make_business_deleted_update()
+
+            with patch.object(
+                bot,
+                "settings",
+                SimpleNamespace(database_path=db_path, enable_business_inbox=True),
+            ):
+                await bot.on_business_message(update=message_update, context=SimpleNamespace())
+                await bot.on_business_messages_deleted(update=deleted_update, context=SimpleNamespace())
+
+            conn = bot.db_module.get_connection(db_path)
+            try:
+                thread_key = bot.db_module.build_business_thread_key(
+                    business_connection_id="bc-1",
+                    chat_id=8001,
+                )
+                messages = bot.db_module.list_business_messages(conn, thread_key=thread_key, limit=20)
+                self.assertEqual(len(messages), 1)
+                self.assertTrue(messages[0]["is_deleted"])
+
+                actions = bot.db_module.list_approval_actions_for_thread(conn, thread_id=thread_key, limit=20)
+                action_names = {item["action"] for item in actions}
+                self.assertIn("manual_action", action_names)
+            finally:
+                conn.close()
 
 
 if __name__ == "__main__":

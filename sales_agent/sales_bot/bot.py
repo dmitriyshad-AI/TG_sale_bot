@@ -9,6 +9,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    BusinessConnectionHandler,
+    BusinessMessagesDeletedHandler,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -297,6 +299,12 @@ SUBJECT_HINTS = {
 }
 
 GRADE_PATTERN = re.compile(r"\b(1[01]|[1-9])\s*[- ]?класс", flags=re.IGNORECASE)
+
+BUSINESS_DRAFT_MODEL = "business_placeholder_v1"
+
+
+def _business_inbox_enabled() -> bool:
+    return bool(getattr(settings, "enable_business_inbox", False))
 
 
 def _user_meta(update: Update) -> Dict[str, Optional[str]]:
@@ -1019,6 +1027,71 @@ def _target_message(update: Update) -> Optional[Message]:
     if update.callback_query and update.callback_query.message:
         return update.callback_query.message
     return update.message
+
+
+def _to_iso_datetime(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            return None
+    return None
+
+
+def _business_connection_owner_user_id(
+    conn,
+    *,
+    business_connection_id: str,
+) -> Optional[int]:
+    item = db_module.get_business_connection(conn, business_connection_id=business_connection_id)
+    if not item:
+        return None
+    owner = item.get("telegram_user_id")
+    return int(owner) if isinstance(owner, int) else None
+
+
+def _get_or_create_business_user_id(message: Message, conn) -> Optional[int]:
+    from_user = getattr(message, "from_user", None)
+    if from_user and getattr(from_user, "id", None) is not None:
+        return db_module.get_or_create_user(
+            conn=conn,
+            channel="telegram_business",
+            external_id=str(from_user.id),
+            username=getattr(from_user, "username", None),
+            first_name=getattr(from_user, "first_name", None),
+            last_name=getattr(from_user, "last_name", None),
+        )
+
+    chat = getattr(message, "chat", None)
+    chat_id = getattr(chat, "id", None)
+    if chat_id is None:
+        return None
+    return db_module.get_or_create_user(
+        conn=conn,
+        channel="telegram_business_chat",
+        external_id=str(chat_id),
+    )
+
+
+def _business_message_direction(message: Message, owner_user_id: Optional[int]) -> str:
+    sender = getattr(message, "from_user", None)
+    sender_id = getattr(sender, "id", None)
+    if owner_user_id is not None and sender_id == owner_user_id:
+        return "outbound"
+    return "inbound"
+
+
+def _business_placeholder_draft_text(message_text: str) -> str:
+    cleaned = _shorten_text((message_text or "").strip(), max_len=240)
+    if not cleaned:
+        cleaned = "Клиент написал без текстового сообщения."
+    return (
+        "Спасибо за сообщение. Я зафиксировал ваш запрос и подготовлю конкретные варианты под вашу задачу. "
+        "Уточню пару деталей и вернусь с кратким планом.\n\n"
+        f"Контекст клиента: {cleaned}"
+    )
 
 
 def _shorten_text(value: str, max_len: int = 500) -> str:
@@ -2150,6 +2223,196 @@ async def adminapp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         conn.close()
 
 
+async def on_business_connection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not _business_inbox_enabled():
+        return
+    connection = getattr(update, "business_connection", None)
+    if connection is None:
+        return
+
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        user = getattr(connection, "user", None)
+        user_meta = {
+            "user_username": getattr(user, "username", None),
+            "user_first_name": getattr(user, "first_name", None),
+            "user_last_name": getattr(user, "last_name", None),
+        }
+        db_module.upsert_business_connection(
+            conn,
+            business_connection_id=str(connection.id),
+            telegram_user_id=getattr(user, "id", None),
+            user_chat_id=getattr(connection, "user_chat_id", None),
+            can_reply=bool(getattr(connection, "can_reply", False)),
+            is_enabled=bool(getattr(connection, "is_enabled", True)),
+            connected_at=_to_iso_datetime(getattr(connection, "date", None)),
+            meta=user_meta,
+        )
+    finally:
+        conn.close()
+
+
+async def _ingest_business_message(
+    *,
+    message: Optional[Message],
+    event_type: str,
+    create_draft: bool,
+) -> None:
+    if message is None:
+        return
+    connection_id = str(getattr(message, "business_connection_id", "") or "").strip()
+    chat = getattr(message, "chat", None)
+    chat_id = getattr(chat, "id", None)
+    if not connection_id or chat_id is None:
+        return
+
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        db_module.upsert_business_connection(conn, business_connection_id=connection_id)
+
+        user_id = _get_or_create_business_user_id(message, conn)
+        owner_user_id = _business_connection_owner_user_id(conn, business_connection_id=connection_id)
+        direction = _business_message_direction(message, owner_user_id)
+        text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+        message_id = getattr(message, "message_id", None)
+        created_at = _to_iso_datetime(getattr(message, "date", None))
+        payload = {
+            "event_type": event_type,
+            "chat_id": chat_id,
+            "from_user_id": getattr(getattr(message, "from_user", None), "id", None),
+        }
+
+        db_module.log_business_message(
+            conn,
+            business_connection_id=connection_id,
+            chat_id=int(chat_id),
+            telegram_message_id=message_id if isinstance(message_id, int) else None,
+            user_id=user_id,
+            direction=direction,
+            text=text,
+            payload=payload,
+            created_at=created_at,
+        )
+
+        if create_draft and direction == "inbound" and user_id is not None:
+            thread_id = db_module.build_business_thread_key(
+                business_connection_id=connection_id,
+                chat_id=int(chat_id),
+            )
+            draft_id = db_module.create_reply_draft(
+                conn,
+                user_id=int(user_id),
+                thread_id=thread_id,
+                source_message_id=message_id if isinstance(message_id, int) else None,
+                draft_text=_business_placeholder_draft_text(text),
+                model_name=BUSINESS_DRAFT_MODEL,
+                quality={
+                    "source": "business_message",
+                    "event_type": event_type,
+                },
+                created_by="business_inbox:auto",
+                status="created",
+                idempotency_key=(
+                    f"biz-draft:{connection_id}:{message_id}"
+                    if isinstance(message_id, int)
+                    else None
+                ),
+            )
+            db_module.create_approval_action(
+                conn,
+                draft_id=draft_id,
+                user_id=int(user_id),
+                thread_id=thread_id,
+                action="draft_created",
+                actor="business_inbox:auto",
+                payload={
+                    "source": "business_message",
+                    "event_type": event_type,
+                    "business_connection_id": connection_id,
+                    "telegram_message_id": message_id,
+                },
+            )
+    finally:
+        conn.close()
+
+
+async def on_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not _business_inbox_enabled():
+        return
+    await _ingest_business_message(
+        message=getattr(update, "business_message", None),
+        event_type="business_message",
+        create_draft=True,
+    )
+
+
+async def on_edited_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not _business_inbox_enabled():
+        return
+    await _ingest_business_message(
+        message=getattr(update, "edited_business_message", None),
+        event_type="edited_business_message",
+        create_draft=False,
+    )
+
+
+async def on_business_messages_deleted(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    if not _business_inbox_enabled():
+        return
+    deleted = getattr(update, "deleted_business_messages", None)
+    if deleted is None:
+        return
+
+    connection_id = str(getattr(deleted, "business_connection_id", "") or "").strip()
+    chat = getattr(deleted, "chat", None)
+    chat_id = getattr(chat, "id", None)
+    message_ids = [int(item) for item in list(getattr(deleted, "message_ids", []) or []) if isinstance(item, int)]
+    if not connection_id or chat_id is None or not message_ids:
+        return
+
+    conn = db_module.get_connection(settings.database_path)
+    try:
+        updated = db_module.mark_business_messages_deleted(
+            conn,
+            business_connection_id=connection_id,
+            chat_id=int(chat_id),
+            message_ids=message_ids,
+        )
+        thread_id = db_module.build_business_thread_key(
+            business_connection_id=connection_id,
+            chat_id=int(chat_id),
+        )
+        thread_user_id_row = conn.execute(
+            "SELECT user_id FROM business_threads WHERE thread_key = ? LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        user_id = (
+            int(thread_user_id_row["user_id"])
+            if thread_user_id_row and isinstance(thread_user_id_row["user_id"], int)
+            else None
+        )
+        if user_id is not None:
+            db_module.create_approval_action(
+                conn,
+                draft_id=None,
+                user_id=user_id,
+                thread_id=thread_id,
+                action="manual_action",
+                actor="business_inbox:auto",
+                payload={
+                    "event_type": "deleted_business_messages",
+                    "deleted_count": updated,
+                    "message_ids": message_ids,
+                },
+            )
+    finally:
+        conn.close()
+
+
 async def on_web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     if not update.message or not getattr(update.message, "web_app_data", None):
@@ -2384,6 +2647,13 @@ def _configure_handlers(application: Application) -> None:
     application.add_handler(CallbackQueryHandler(on_callback_query))
     application.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, on_web_app_data))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
+    if _business_inbox_enabled():
+        application.add_handler(BusinessConnectionHandler(on_business_connection))
+        application.add_handler(BusinessMessagesDeletedHandler(on_business_messages_deleted))
+        application.add_handler(MessageHandler(filters.UpdateType.BUSINESS_MESSAGE, on_business_message))
+        application.add_handler(
+            MessageHandler(filters.UpdateType.EDITED_BUSINESS_MESSAGE, on_edited_business_message)
+        )
 
 
 def build_application(token: str) -> Application:

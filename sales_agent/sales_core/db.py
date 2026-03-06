@@ -163,6 +163,54 @@ CREATE_TABLE_STATEMENTS = [
         FOREIGN KEY(user_id) REFERENCES users(id)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS business_connections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_connection_id TEXT NOT NULL UNIQUE,
+        telegram_user_id INTEGER,
+        user_chat_id INTEGER,
+        can_reply INTEGER NOT NULL DEFAULT 0,
+        is_enabled INTEGER NOT NULL DEFAULT 1,
+        connected_at TEXT,
+        meta_json TEXT,
+        last_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS business_threads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_key TEXT NOT NULL UNIQUE,
+        business_connection_id TEXT NOT NULL,
+        chat_id INTEGER NOT NULL,
+        user_id INTEGER,
+        last_message_at TEXT,
+        last_inbound_at TEXT,
+        last_outbound_at TEXT,
+        meta_json TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS business_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_connection_id TEXT NOT NULL,
+        thread_key TEXT NOT NULL,
+        telegram_message_id INTEGER,
+        user_id INTEGER,
+        direction TEXT NOT NULL,
+        text TEXT,
+        payload_json TEXT,
+        is_deleted INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES users(id),
+        UNIQUE(business_connection_id, telegram_message_id, direction)
+    );
+    """,
 ]
 
 CREATE_INDEX_STATEMENTS = [
@@ -191,6 +239,14 @@ CREATE_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_lead_scores_thread_created ON lead_scores(thread_id, created_at);",
     "CREATE INDEX IF NOT EXISTS idx_lead_scores_user_created ON lead_scores(user_id, created_at);",
     "CREATE INDEX IF NOT EXISTS idx_lead_scores_temperature_created ON lead_scores(temperature, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_business_connections_last_seen ON business_connections(last_seen_at);",
+    "CREATE INDEX IF NOT EXISTS idx_business_connections_enabled ON business_connections(is_enabled, updated_at);",
+    "CREATE INDEX IF NOT EXISTS idx_business_threads_connection_chat ON business_threads(business_connection_id, chat_id);",
+    "CREATE INDEX IF NOT EXISTS idx_business_threads_last_message ON business_threads(last_message_at);",
+    "CREATE INDEX IF NOT EXISTS idx_business_messages_thread_created ON business_messages(thread_key, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_business_messages_connection_created ON business_messages(business_connection_id, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_business_messages_user_created ON business_messages(user_id, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_business_messages_deleted_created ON business_messages(is_deleted, created_at);",
 ]
 
 
@@ -1270,3 +1326,333 @@ def get_revenue_metrics_snapshot(conn: sqlite3.Connection) -> Dict[str, Any]:
         "followups_pending": followups_pending,
         "lead_temperature": lead_counts,
     }
+
+
+def build_business_thread_key(*, business_connection_id: str, chat_id: int) -> str:
+    return f"biz:{business_connection_id}:{int(chat_id)}"
+
+
+def upsert_business_connection(
+    conn: sqlite3.Connection,
+    *,
+    business_connection_id: str,
+    telegram_user_id: Optional[int] = None,
+    user_chat_id: Optional[int] = None,
+    can_reply: Optional[bool] = None,
+    is_enabled: Optional[bool] = None,
+    connected_at: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> int:
+    connection_id = (business_connection_id or "").strip()
+    if not connection_id:
+        raise ValueError("business_connection_id is required")
+
+    meta_json = json.dumps(meta or {}, ensure_ascii=False)
+    can_reply_value = None if can_reply is None else (1 if bool(can_reply) else 0)
+    is_enabled_value = None if is_enabled is None else (1 if bool(is_enabled) else 0)
+    conn.execute(
+        """
+        INSERT INTO business_connections (
+            business_connection_id,
+            telegram_user_id,
+            user_chat_id,
+            can_reply,
+            is_enabled,
+            connected_at,
+            meta_json,
+            last_seen_at
+        )
+        VALUES (?, ?, ?, COALESCE(?, 0), COALESCE(?, 1), ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(business_connection_id) DO UPDATE SET
+            telegram_user_id = COALESCE(excluded.telegram_user_id, business_connections.telegram_user_id),
+            user_chat_id = COALESCE(excluded.user_chat_id, business_connections.user_chat_id),
+            can_reply = COALESCE(excluded.can_reply, business_connections.can_reply),
+            is_enabled = COALESCE(excluded.is_enabled, business_connections.is_enabled),
+            connected_at = COALESCE(excluded.connected_at, business_connections.connected_at),
+            meta_json = excluded.meta_json,
+            last_seen_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            connection_id,
+            telegram_user_id,
+            user_chat_id,
+            can_reply_value,
+            is_enabled_value,
+            connected_at,
+            meta_json,
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id FROM business_connections WHERE business_connection_id = ? LIMIT 1",
+        (connection_id,),
+    ).fetchone()
+    return int(row["id"]) if row else 0
+
+
+def get_business_connection(
+    conn: sqlite3.Connection,
+    *,
+    business_connection_id: str,
+) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT
+            id,
+            business_connection_id,
+            telegram_user_id,
+            user_chat_id,
+            can_reply,
+            is_enabled,
+            connected_at,
+            meta_json,
+            last_seen_at,
+            created_at,
+            updated_at
+        FROM business_connections
+        WHERE business_connection_id = ?
+        LIMIT 1
+        """,
+        (business_connection_id.strip(),),
+    ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["meta"] = _safe_json_loads(item.pop("meta_json"))
+    item["can_reply"] = bool(item.get("can_reply"))
+    item["is_enabled"] = bool(item.get("is_enabled"))
+    return item
+
+
+def upsert_business_thread(
+    conn: sqlite3.Connection,
+    *,
+    business_connection_id: str,
+    chat_id: int,
+    user_id: Optional[int] = None,
+    direction: Optional[str] = None,
+    occurred_at: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> str:
+    connection_id = (business_connection_id or "").strip()
+    if not connection_id:
+        raise ValueError("business_connection_id is required")
+    thread_key = build_business_thread_key(
+        business_connection_id=connection_id,
+        chat_id=int(chat_id),
+    )
+    direction_normalized = (direction or "").strip().lower()
+    if direction_normalized not in {"inbound", "outbound"}:
+        direction_normalized = ""
+
+    message_at = (occurred_at or "").strip() or None
+    last_inbound_at = message_at if direction_normalized == "inbound" else None
+    last_outbound_at = message_at if direction_normalized == "outbound" else None
+    meta_json = json.dumps(meta or {}, ensure_ascii=False)
+
+    conn.execute(
+        """
+        INSERT INTO business_threads (
+            thread_key,
+            business_connection_id,
+            chat_id,
+            user_id,
+            last_message_at,
+            last_inbound_at,
+            last_outbound_at,
+            meta_json
+        )
+        VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?)
+        ON CONFLICT(thread_key) DO UPDATE SET
+            user_id = COALESCE(excluded.user_id, business_threads.user_id),
+            last_message_at = COALESCE(excluded.last_message_at, CURRENT_TIMESTAMP),
+            last_inbound_at = COALESCE(excluded.last_inbound_at, business_threads.last_inbound_at),
+            last_outbound_at = COALESCE(excluded.last_outbound_at, business_threads.last_outbound_at),
+            meta_json = excluded.meta_json,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            thread_key,
+            connection_id,
+            int(chat_id),
+            user_id,
+            message_at,
+            last_inbound_at,
+            last_outbound_at,
+            meta_json,
+        ),
+    )
+    conn.commit()
+    return thread_key
+
+
+def log_business_message(
+    conn: sqlite3.Connection,
+    *,
+    business_connection_id: str,
+    chat_id: int,
+    telegram_message_id: Optional[int],
+    direction: str,
+    text: Optional[str],
+    user_id: Optional[int] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    created_at: Optional[str] = None,
+) -> int:
+    thread_key = upsert_business_thread(
+        conn,
+        business_connection_id=business_connection_id,
+        chat_id=chat_id,
+        user_id=user_id,
+        direction=direction,
+        occurred_at=created_at,
+    )
+    payload_json = json.dumps(payload or {}, ensure_ascii=False)
+    message_direction = (direction or "").strip().lower() or "inbound"
+    message_id = telegram_message_id if isinstance(telegram_message_id, int) else None
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO business_messages (
+                business_connection_id,
+                thread_key,
+                telegram_message_id,
+                user_id,
+                direction,
+                text,
+                payload_json,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+            """,
+            (
+                business_connection_id.strip(),
+                thread_key,
+                message_id,
+                user_id,
+                message_direction,
+                text,
+                payload_json,
+                (created_at or "").strip() or None,
+            ),
+        )
+    except sqlite3.IntegrityError:
+        if message_id is None:
+            raise
+        row = conn.execute(
+            """
+            SELECT id
+            FROM business_messages
+            WHERE business_connection_id = ?
+              AND telegram_message_id = ?
+              AND direction = ?
+            LIMIT 1
+            """,
+            (business_connection_id.strip(), message_id, message_direction),
+        ).fetchone()
+        if not row:
+            raise
+        return int(row["id"])
+
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def mark_business_messages_deleted(
+    conn: sqlite3.Connection,
+    *,
+    business_connection_id: str,
+    chat_id: int,
+    message_ids: list[int],
+) -> int:
+    if not message_ids:
+        return 0
+    thread_key = build_business_thread_key(
+        business_connection_id=business_connection_id.strip(),
+        chat_id=int(chat_id),
+    )
+    placeholders = ",".join("?" for _ in message_ids)
+    params: list[Any] = [business_connection_id.strip(), thread_key, *[int(mid) for mid in message_ids]]
+    cursor = conn.execute(
+        f"""
+        UPDATE business_messages
+        SET
+            is_deleted = 1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE business_connection_id = ?
+          AND thread_key = ?
+          AND telegram_message_id IN ({placeholders})
+        """,
+        tuple(params),
+    )
+    conn.commit()
+    return int(cursor.rowcount)
+
+
+def list_recent_business_threads(conn: sqlite3.Connection, *, limit: int = 100) -> list[Dict[str, Any]]:
+    cursor = conn.execute(
+        """
+        SELECT
+            t.thread_key,
+            t.business_connection_id,
+            t.chat_id,
+            t.user_id,
+            t.last_message_at,
+            t.last_inbound_at,
+            t.last_outbound_at,
+            t.updated_at,
+            u.external_id AS user_external_id,
+            u.username,
+            u.first_name,
+            u.last_name,
+            (
+                SELECT COUNT(*)
+                FROM business_messages bm
+                WHERE bm.thread_key = t.thread_key
+            ) AS messages_count
+        FROM business_threads t
+        LEFT JOIN users u ON u.id = t.user_id
+        ORDER BY COALESCE(t.last_message_at, t.updated_at) DESC, t.id DESC
+        LIMIT ?
+        """,
+        (max(1, int(limit)),),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def list_business_messages(
+    conn: sqlite3.Connection,
+    *,
+    thread_key: str,
+    limit: int = 200,
+) -> list[Dict[str, Any]]:
+    cursor = conn.execute(
+        """
+        SELECT
+            id,
+            business_connection_id,
+            thread_key,
+            telegram_message_id,
+            user_id,
+            direction,
+            text,
+            payload_json,
+            is_deleted,
+            created_at,
+            updated_at
+        FROM business_messages
+        WHERE thread_key = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (thread_key, max(1, int(limit))),
+    )
+    rows: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["payload"] = _safe_json_loads(item.pop("payload_json"))
+        item["is_deleted"] = bool(item.get("is_deleted"))
+        rows.append(item)
+    rows.reverse()
+    return rows

@@ -32,6 +32,7 @@ from sales_agent.sales_core.db import (
     create_lead_score,
     create_reply_draft,
     enqueue_webhook_update,
+    get_business_connection,
     get_conversation_outcome,
     get_conversation_context,
     get_connection,
@@ -42,8 +43,11 @@ from sales_agent.sales_core.db import (
     get_reply_draft,
     get_latest_lead_score,
     init_db,
+    list_approval_actions_for_thread,
+    list_business_messages,
     list_followup_tasks,
     list_inbox_threads,
+    list_recent_business_threads,
     list_conversation_messages,
     list_recent_conversations,
     list_recent_leads,
@@ -1015,6 +1019,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
   <nav>
     <a href="/admin">Dashboard</a>
     <a href="/admin/ui/inbox">Inbox</a>
+    <a href="/admin/ui/business-inbox">Business Inbox</a>
     <a href="/admin/ui/revenue-metrics">Revenue Metrics</a>
     <a href="/admin/ui/leads">Leads</a>
     <a href="/admin/ui/conversations">Conversations</a>
@@ -1124,6 +1129,82 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             conn.close()
         return {"ok": True, "items": items}
+
+    @app.get("/admin/business/inbox")
+    async def admin_business_inbox(_: str = Depends(require_admin), limit: int = 100):
+        conn = get_connection(cfg.database_path)
+        try:
+            items = list_recent_business_threads(conn, limit=max(1, min(limit, 500)))
+        finally:
+            conn.close()
+        return {"ok": True, "items": items}
+
+    @app.get("/admin/business/inbox/thread")
+    async def admin_business_inbox_thread(
+        thread_key: str = Query(..., min_length=5),
+        _: str = Depends(require_admin),
+    ):
+        normalized_thread_key = thread_key.strip()
+        conn = get_connection(cfg.database_path)
+        try:
+            thread_row = conn.execute(
+                """
+                SELECT
+                    thread_key,
+                    business_connection_id,
+                    chat_id,
+                    user_id,
+                    last_message_at,
+                    last_inbound_at,
+                    last_outbound_at,
+                    updated_at
+                FROM business_threads
+                WHERE thread_key = ?
+                LIMIT 1
+                """,
+                (normalized_thread_key,),
+            ).fetchone()
+            if not thread_row:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Business thread not found: {normalized_thread_key}",
+                )
+
+            thread = dict(thread_row)
+            business_connection = get_business_connection(
+                conn,
+                business_connection_id=str(thread.get("business_connection_id") or ""),
+            )
+            messages = list_business_messages(conn, thread_key=normalized_thread_key, limit=500)
+            drafts = list_reply_drafts_for_thread(conn, thread_id=normalized_thread_key, limit=100)
+            approval_actions = list_approval_actions_for_thread(conn, thread_id=normalized_thread_key, limit=200)
+
+            user = None
+            user_id_value = thread.get("user_id")
+            if isinstance(user_id_value, int):
+                user_row = conn.execute(
+                    """
+                    SELECT id, channel, external_id, username, first_name, last_name, created_at
+                    FROM users
+                    WHERE id = ?
+                    LIMIT 1
+                    """,
+                    (user_id_value,),
+                ).fetchone()
+                if user_row:
+                    user = dict(user_row)
+        finally:
+            conn.close()
+
+        return {
+            "ok": True,
+            "thread": thread,
+            "business_connection": business_connection,
+            "user": user,
+            "messages": messages,
+            "drafts": drafts,
+            "approval_actions": approval_actions,
+        }
 
     @app.get("/admin/inbox/{user_id}")
     async def admin_inbox_detail(user_id: int, _: str = Depends(require_admin)):
@@ -1484,6 +1565,159 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "</table>"
         )
         return render_page("Inbox", body)
+
+    @app.get("/admin/ui/business-inbox", response_class=HTMLResponse)
+    async def admin_business_inbox_ui(_: str = Depends(require_admin), limit: int = 100):
+        conn = get_connection(cfg.database_path)
+        try:
+            items = list_recent_business_threads(conn, limit=max(1, min(limit, 500)))
+        finally:
+            conn.close()
+
+        rows: list[str] = []
+        for item in items:
+            thread_key = html.escape(str(item.get("thread_key") or ""))
+            display_name = html.escape(_format_thread_display_name(item))
+            last_message = html.escape(str(item.get("last_message_at") or "-"))
+            messages_count = int(item.get("messages_count") or 0)
+            status_value = "active"
+            rows.append(
+                "<tr>"
+                f"<td>{thread_key}</td>"
+                f"<td>{display_name}</td>"
+                f"<td><span class='badge'>{status_value}</span></td>"
+                f"<td>{messages_count}</td>"
+                f"<td>{last_message}</td>"
+                f"<td><a href='/admin/ui/business-inbox/thread?thread_key={quote_plus(str(item.get('thread_key') or ''))}'>Открыть тред</a></td>"
+                "</tr>"
+            )
+
+        body = (
+            "<h1>Business Inbox</h1>"
+            "<p class='muted'>Telegram Business диалоги и события.</p>"
+            "<table>"
+            "<thead><tr><th>Thread Key</th><th>Клиент</th><th>Статус</th><th>Messages</th><th>Last Message</th><th></th></tr></thead>"
+            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=6>Нет business тредов</td></tr>'}</tbody>"
+            "</table>"
+        )
+        return render_page("Business Inbox", body)
+
+    @app.get("/admin/ui/business-inbox/thread", response_class=HTMLResponse)
+    async def admin_business_inbox_thread_ui(
+        thread_key: str = Query(..., min_length=5),
+        _: str = Depends(require_admin),
+    ):
+        normalized_thread_key = thread_key.strip()
+        conn = get_connection(cfg.database_path)
+        try:
+            thread_row = conn.execute(
+                """
+                SELECT
+                    thread_key,
+                    business_connection_id,
+                    chat_id,
+                    user_id,
+                    last_message_at,
+                    last_inbound_at,
+                    last_outbound_at,
+                    updated_at
+                FROM business_threads
+                WHERE thread_key = ?
+                LIMIT 1
+                """,
+                (normalized_thread_key,),
+            ).fetchone()
+            if not thread_row:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Business thread not found: {normalized_thread_key}",
+                )
+            thread = dict(thread_row)
+            business_connection = get_business_connection(
+                conn,
+                business_connection_id=str(thread.get("business_connection_id") or ""),
+            )
+            messages = list_business_messages(conn, thread_key=normalized_thread_key, limit=300)
+            drafts = list_reply_drafts_for_thread(conn, thread_id=normalized_thread_key, limit=80)
+            actions = list_approval_actions_for_thread(conn, thread_id=normalized_thread_key, limit=120)
+        finally:
+            conn.close()
+
+        message_rows: list[str] = []
+        for item in messages[-120:]:
+            message_rows.append(
+                "<tr>"
+                f"<td><span class='badge'>{html.escape(str(item.get('direction') or ''))}</span></td>"
+                f"<td>{html.escape(str(item.get('created_at') or '-'))}</td>"
+                f"<td>{html.escape(str(item.get('telegram_message_id') or '-'))}</td>"
+                f"<td>{'yes' if bool(item.get('is_deleted')) else 'no'}</td>"
+                f"<td><pre>{html.escape(str(item.get('text') or ''))}</pre></td>"
+                "</tr>"
+            )
+
+        draft_rows: list[str] = []
+        for draft in drafts:
+            draft_rows.append(
+                "<tr>"
+                f"<td>{int(draft.get('id') or 0)}</td>"
+                f"<td><span class='badge'>{html.escape(str(draft.get('status') or ''))}</span></td>"
+                f"<td>{html.escape(str(draft.get('created_at') or '-'))}</td>"
+                f"<td><pre>{html.escape(str(draft.get('draft_text') or ''))}</pre></td>"
+                "</tr>"
+            )
+
+        action_rows: list[str] = []
+        for item in actions[:100]:
+            action_rows.append(
+                "<tr>"
+                f"<td>{int(item.get('id') or 0)}</td>"
+                f"<td>{html.escape(str(item.get('action') or ''))}</td>"
+                f"<td>{html.escape(str(item.get('actor') or ''))}</td>"
+                f"<td>{html.escape(str(item.get('created_at') or '-'))}</td>"
+                "</tr>"
+            )
+
+        business_card = (
+            "<div class='card'>"
+            f"<b>Thread:</b> {html.escape(str(thread.get('thread_key') or ''))}<br/>"
+            f"<b>Business Connection:</b> {html.escape(str(thread.get('business_connection_id') or ''))}<br/>"
+            f"<b>Chat ID:</b> {html.escape(str(thread.get('chat_id') or '-'))}<br/>"
+            f"<b>Last Message:</b> {html.escape(str(thread.get('last_message_at') or '-'))}"
+            "</div>"
+        )
+        if isinstance(business_connection, dict):
+            business_card += (
+                "<div class='card'>"
+                "<b>Business Connection Meta</b><br/>"
+                f"owner_telegram_user_id={html.escape(str(business_connection.get('telegram_user_id') or '-'))}<br/>"
+                f"user_chat_id={html.escape(str(business_connection.get('user_chat_id') or '-'))}<br/>"
+                f"can_reply={html.escape(str(bool(business_connection.get('can_reply'))))}<br/>"
+                f"is_enabled={html.escape(str(bool(business_connection.get('is_enabled'))))}"
+                "</div>"
+            )
+
+        body = (
+            "<h1>Business Thread</h1>"
+            "<p class='muted'>Сообщения, драфты и approval actions по Telegram Business треду.</p>"
+            f"{business_card}"
+            "<h2>Messages</h2>"
+            "<table>"
+            "<thead><tr><th>Direction</th><th>Created At</th><th>Message ID</th><th>Deleted</th><th>Text</th></tr></thead>"
+            f"<tbody>{''.join(message_rows) if message_rows else '<tr><td colspan=5>Нет сообщений</td></tr>'}</tbody>"
+            "</table>"
+            "<h2>Drafts</h2>"
+            "<table>"
+            "<thead><tr><th>ID</th><th>Status</th><th>Created At</th><th>Text</th></tr></thead>"
+            f"<tbody>{''.join(draft_rows) if draft_rows else '<tr><td colspan=4>Нет драфтов</td></tr>'}</tbody>"
+            "</table>"
+            "<h2>Approval Actions</h2>"
+            "<table>"
+            "<thead><tr><th>ID</th><th>Action</th><th>Actor</th><th>Created At</th></tr></thead>"
+            f"<tbody>{''.join(action_rows) if action_rows else '<tr><td colspan=4>Нет действий</td></tr>'}</tbody>"
+            "</table>"
+            "<p><a href='/admin/ui/business-inbox'>← Назад к business inbox</a></p>"
+        )
+        return render_page("Business Thread", body)
 
     @app.get("/admin/ui/inbox/{user_id}", response_class=HTMLResponse)
     async def admin_inbox_thread_ui(user_id: int, _: str = Depends(require_admin)):

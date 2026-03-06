@@ -35,6 +35,9 @@ class DatabaseTests(unittest.TestCase):
                 "approval_actions",
                 "followup_tasks",
                 "lead_scores",
+                "business_connections",
+                "business_threads",
+                "business_messages",
             }.issubset(table_names)
         )
 
@@ -535,6 +538,86 @@ class DatabaseTests(unittest.TestCase):
         drafts = db.list_reply_drafts_for_thread(self.conn, thread_id=thread_id, limit=10)
         self.assertEqual(len(drafts), 1)
         self.assertEqual(drafts[0]["draft_text"], "Первый вариант")
+
+    def test_business_tables_roundtrip_with_delete_marker(self) -> None:
+        owner_id = db.get_or_create_user(self.conn, channel="telegram", external_id="owner-1")
+        lead_user_id = db.get_or_create_user(
+            self.conn,
+            channel="telegram_business",
+            external_id="client-1",
+            username="client",
+            first_name="Client",
+        )
+        connection_row_id = db.upsert_business_connection(
+            self.conn,
+            business_connection_id="bc-1",
+            telegram_user_id=owner_id,
+            user_chat_id=90001,
+            can_reply=True,
+            is_enabled=True,
+            connected_at="2026-03-06T10:00:00+00:00",
+            meta={"source": "test"},
+        )
+        self.assertGreater(connection_row_id, 0)
+
+        thread_key = db.upsert_business_thread(
+            self.conn,
+            business_connection_id="bc-1",
+            chat_id=70001,
+            user_id=lead_user_id,
+            direction="inbound",
+            occurred_at="2026-03-06T10:05:00+00:00",
+            meta={"topic": "math"},
+        )
+        self.assertEqual(thread_key, "biz:bc-1:70001")
+
+        first_message_id = db.log_business_message(
+            self.conn,
+            business_connection_id="bc-1",
+            chat_id=70001,
+            telegram_message_id=501,
+            user_id=lead_user_id,
+            direction="inbound",
+            text="Здравствуйте, нужен план подготовки",
+            payload={"event_type": "business_message"},
+            created_at="2026-03-06T10:05:00+00:00",
+        )
+        self.assertGreater(first_message_id, 0)
+
+        duplicate_message_id = db.log_business_message(
+            self.conn,
+            business_connection_id="bc-1",
+            chat_id=70001,
+            telegram_message_id=501,
+            user_id=lead_user_id,
+            direction="inbound",
+            text="dup",
+            payload={"event_type": "business_message"},
+        )
+        self.assertEqual(first_message_id, duplicate_message_id)
+
+        connection = db.get_business_connection(self.conn, business_connection_id="bc-1")
+        self.assertIsNotNone(connection)
+        self.assertTrue(connection["can_reply"])
+        self.assertTrue(connection["is_enabled"])
+
+        threads = db.list_recent_business_threads(self.conn, limit=10)
+        self.assertEqual(len(threads), 1)
+        self.assertEqual(threads[0]["thread_key"], thread_key)
+        self.assertEqual(threads[0]["messages_count"], 1)
+
+        deleted_count = db.mark_business_messages_deleted(
+            self.conn,
+            business_connection_id="bc-1",
+            chat_id=70001,
+            message_ids=[501],
+        )
+        self.assertEqual(deleted_count, 1)
+
+        messages = db.list_business_messages(self.conn, thread_key=thread_key, limit=10)
+        self.assertEqual(len(messages), 1)
+        self.assertTrue(messages[0]["is_deleted"])
+        self.assertEqual(messages[0]["payload"]["event_type"], "business_message")
 
 
 if __name__ == "__main__":
