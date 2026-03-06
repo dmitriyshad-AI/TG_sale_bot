@@ -58,12 +58,22 @@ class Settings:
     enable_tallanto_enrichment: bool = False
     enable_director_agent: bool = False
     enable_lead_radar: bool = False
+    enable_mango_auto_ingest: bool = False
     lead_radar_scheduler_enabled: bool = True
     lead_radar_interval_seconds: int = 3600
     lead_radar_no_reply_hours: int = 6
     lead_radar_call_no_next_step_hours: int = 24
     lead_radar_stale_warm_days: int = 7
     lead_radar_max_items_per_run: int = 50
+    mango_api_base_url: str = ""
+    mango_api_token: str = ""
+    mango_calls_path: str = "/calls"
+    mango_webhook_path: str = "/integrations/mango/webhook"
+    mango_webhook_secret: str = ""
+    mango_polling_enabled: bool = False
+    mango_poll_interval_seconds: int = 300
+    mango_call_recording_ttl_hours: int = 48
+    mango_poll_limit_per_run: int = 50
 
 
 def project_root() -> Path:
@@ -215,6 +225,34 @@ def get_settings() -> Settings:
         min_value=1,
         max_value=500,
     )
+    mango_poll_interval_seconds = _parse_int_env(
+        "MANGO_POLL_INTERVAL_SECONDS",
+        300,
+        min_value=30,
+        max_value=3600,
+    )
+    mango_call_recording_ttl_hours = _parse_int_env(
+        "MANGO_CALL_RECORDING_TTL_HOURS",
+        48,
+        min_value=1,
+        max_value=24 * 90,
+    )
+    mango_poll_limit_per_run = _parse_int_env(
+        "MANGO_POLL_LIMIT_PER_RUN",
+        50,
+        min_value=1,
+        max_value=500,
+    )
+    mango_webhook_path = os.getenv("MANGO_WEBHOOK_PATH", "/integrations/mango/webhook").strip()
+    if not mango_webhook_path:
+        mango_webhook_path = "/integrations/mango/webhook"
+    if not mango_webhook_path.startswith("/"):
+        mango_webhook_path = f"/{mango_webhook_path}"
+    mango_calls_path = os.getenv("MANGO_CALLS_PATH", "/calls").strip()
+    if not mango_calls_path:
+        mango_calls_path = "/calls"
+    if not mango_calls_path.startswith("/"):
+        mango_calls_path = f"/{mango_calls_path}"
     tallanto_api_key = os.getenv("TALLANTO_API_KEY", "").strip()
     tallanto_api_token = os.getenv("TALLANTO_API_TOKEN", "").strip() or tallanto_api_key
     tallanto_read_only = os.getenv("TALLANTO_READ_ONLY", "").strip() == "1"
@@ -280,10 +318,20 @@ def get_settings() -> Settings:
         enable_tallanto_enrichment=_parse_bool_env("ENABLE_TALLANTO_ENRICHMENT", default=False),
         enable_director_agent=_parse_bool_env("ENABLE_DIRECTOR_AGENT", default=False),
         enable_lead_radar=_parse_bool_env("ENABLE_LEAD_RADAR", default=False),
+        enable_mango_auto_ingest=_parse_bool_env("ENABLE_MANGO_AUTO_INGEST", default=False),
         lead_radar_scheduler_enabled=_parse_bool_env("LEAD_RADAR_SCHEDULER_ENABLED", default=True),
         lead_radar_interval_seconds=lead_radar_interval_seconds,
         lead_radar_no_reply_hours=lead_radar_no_reply_hours,
         lead_radar_call_no_next_step_hours=lead_radar_call_no_next_step_hours,
         lead_radar_stale_warm_days=lead_radar_stale_warm_days,
         lead_radar_max_items_per_run=lead_radar_max_items_per_run,
+        mango_api_base_url=os.getenv("MANGO_API_BASE_URL", "").strip(),
+        mango_api_token=os.getenv("MANGO_API_TOKEN", "").strip(),
+        mango_calls_path=mango_calls_path,
+        mango_webhook_path=mango_webhook_path,
+        mango_webhook_secret=os.getenv("MANGO_WEBHOOK_SECRET", "").strip(),
+        mango_polling_enabled=_parse_bool_env("MANGO_POLLING_ENABLED", default=False),
+        mango_poll_interval_seconds=mango_poll_interval_seconds,
+        mango_call_recording_ttl_hours=mango_call_recording_ttl_hours,
+        mango_poll_limit_per_run=mango_poll_limit_per_run,
     )

@@ -30,15 +30,19 @@ from sales_agent.sales_core.config import Settings, get_settings, project_root
 from sales_agent.sales_core.copilot import run_copilot_from_file
 from sales_agent.sales_core.crm import build_crm_client
 from sales_agent.sales_core.db import (
+    clear_call_record_file_path,
     claim_webhook_update,
     count_webhook_updates_by_status,
     create_approval_action,
     create_call_record,
+    create_or_get_mango_event,
     create_followup_task,
     create_lead_score,
     create_reply_draft,
     enqueue_webhook_update,
+    find_user_by_phone,
     get_business_connection,
+    get_latest_mango_event_created_at,
     get_conversation_outcome,
     get_conversation_context,
     get_connection,
@@ -54,8 +58,10 @@ from sales_agent.sales_core.db import (
     list_approval_actions_for_thread,
     list_business_messages,
     list_call_records,
+    list_call_records_with_files_for_cleanup,
     list_followup_tasks,
     list_inbox_threads,
+    list_mango_events,
     list_recent_business_threads,
     list_conversation_messages,
     list_recent_conversations,
@@ -64,7 +70,9 @@ from sales_agent.sales_core.db import (
     mark_webhook_update_done,
     mark_webhook_update_retry,
     requeue_stuck_webhook_updates,
+    resolve_preferred_thread_for_user,
     update_call_record_status,
+    update_mango_event_status,
     update_reply_draft_status,
     update_reply_draft_text,
     upsert_call_summary,
@@ -81,6 +89,7 @@ from sales_agent.sales_core.tallanto_readonly import (
     normalize_tallanto_modules,
     sanitize_tallanto_lookup_context,
 )
+from sales_agent.sales_core.mango_client import MangoCallEvent, MangoClient, MangoClientError
 from sales_agent.sales_core.telegram_webapp import verify_telegram_webapp_init_data
 from sales_agent.sales_core.llm_client import LLMClient
 from sales_agent.sales_core.vector_store import load_vector_store_id
@@ -106,6 +115,7 @@ LEAD_RADAR_RULE_CALL_NO_NEXT_STEP = "radar:call_no_next_step"
 LEAD_RADAR_RULE_STALE_WARM = "radar:stale_warm"
 LEAD_RADAR_MODEL_NAME = "lead_radar_v1"
 CALL_COPILOT_MODEL_NAME = "call_copilot_v1"
+MANGO_CLEANUP_BATCH_SIZE = 200
 ASSISTANT_KNOWLEDGE_HINTS = {
     "договор",
     "документ",
@@ -645,6 +655,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or get_settings()
     init_db(cfg.database_path)
     webhook_path = cfg.telegram_webhook_path if cfg.telegram_webhook_path.startswith("/") else f"/{cfg.telegram_webhook_path}"
+    mango_webhook_path = cfg.mango_webhook_path if cfg.mango_webhook_path.startswith("/") else f"/{cfg.mango_webhook_path}"
     telegram_application = None
     assistant_rate_limiter = InMemoryRateLimiter(
         window_seconds=cfg.assistant_rate_limit_window_seconds,
@@ -765,7 +776,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 cfg.lead_radar_call_no_next_step_hours,
                 cfg.lead_radar_stale_warm_days,
             )
+        if _mango_ingest_enabled() and cfg.mango_polling_enabled:
+            app_instance.state.mango_poll_event = asyncio.Event()
+            app_instance.state.mango_poll_task = asyncio.create_task(mango_poll_loop(app_instance))
+            app_instance.state.mango_poll_event.set()
+            logger.info(
+                "Mango poll scheduler started (interval=%ss, limit=%s, ttl=%sh)",
+                cfg.mango_poll_interval_seconds,
+                cfg.mango_poll_limit_per_run,
+                cfg.mango_call_recording_ttl_hours,
+            )
         yield
+        if _mango_ingest_enabled() and cfg.mango_polling_enabled:
+            mango_task = getattr(app_instance.state, "mango_poll_task", None)
+            if mango_task is not None:
+                mango_task.cancel()
+                try:
+                    await mango_task
+                except asyncio.CancelledError:
+                    pass
+            logger.info("Mango poll scheduler stopped")
         if cfg.enable_lead_radar and cfg.lead_radar_scheduler_enabled:
             radar_task = getattr(app_instance.state, "lead_radar_task", None)
             if radar_task is not None:
@@ -1095,6 +1125,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if normalized in {"hot", "warm", "cold"}:
             return normalized
         return "warm"
+
+    def _mango_ingest_enabled() -> bool:
+        return bool(cfg.enable_mango_auto_ingest and cfg.enable_call_copilot)
+
+    def _build_mango_client() -> MangoClient:
+        if not cfg.mango_api_base_url or not cfg.mango_api_token:
+            raise MangoClientError(
+                "Mango API is not configured. Fill MANGO_API_BASE_URL and MANGO_API_TOKEN."
+            )
+        return MangoClient(
+            base_url=cfg.mango_api_base_url,
+            token=cfg.mango_api_token,
+            calls_path=cfg.mango_calls_path,
+            timeout_seconds=12.0,
+            webhook_secret=cfg.mango_webhook_secret,
+        )
+
+    def _cleanup_old_call_files() -> Dict[str, Any]:
+        conn = get_connection(cfg.database_path)
+        cleaned = 0
+        missing = 0
+        errors = 0
+        try:
+            rows = list_call_records_with_files_for_cleanup(
+                conn,
+                older_than_hours=max(1, int(cfg.mango_call_recording_ttl_hours)),
+                limit=MANGO_CLEANUP_BATCH_SIZE,
+            )
+            for row in rows:
+                call_id = int(row.get("id") or 0)
+                raw_path = str(row.get("file_path") or "").strip()
+                if not call_id or not raw_path:
+                    continue
+                file_path = Path(raw_path)
+                try:
+                    if file_path.exists():
+                        file_path.unlink()
+                        cleaned += 1
+                    else:
+                        missing += 1
+                    clear_call_record_file_path(conn, call_id=call_id)
+                except Exception:
+                    errors += 1
+            return {"ok": True, "checked": len(rows), "cleaned": cleaned, "missing": missing, "errors": errors}
+        finally:
+            conn.close()
 
     def _format_thread_display_name(item: Dict[str, Any]) -> str:
         first_name = str(item.get("first_name") or "").strip()
@@ -1523,6 +1599,232 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             finally:
                 event.clear()
 
+    def _extract_mango_user_and_thread(
+        conn: Any,
+        *,
+        event: MangoCallEvent,
+    ) -> tuple[Optional[int], Optional[str]]:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        user_id: Optional[int] = None
+        thread_id: Optional[str] = None
+
+        payload_user = payload.get("user_id")
+        if isinstance(payload_user, int) and payload_user > 0:
+            row = conn.execute("SELECT id FROM users WHERE id = ? LIMIT 1", (payload_user,)).fetchone()
+            if row is not None:
+                user_id = int(payload_user)
+
+        payload_thread = str(payload.get("thread_id") or "").strip()
+        if payload_thread:
+            thread_id = payload_thread
+            if thread_id.startswith("tg:"):
+                token = thread_id[3:]
+                if token.isdigit():
+                    user_id = int(token)
+            elif thread_id.startswith("biz:") and user_id is None:
+                row = conn.execute(
+                    "SELECT user_id FROM business_threads WHERE thread_key = ? LIMIT 1",
+                    (thread_id,),
+                ).fetchone()
+                if row and row["user_id"] is not None:
+                    user_id = int(row["user_id"])
+
+        if user_id is None and event.phone:
+            user_id = find_user_by_phone(conn, phone=event.phone)
+
+        if user_id is not None and thread_id is None:
+            thread_id = resolve_preferred_thread_for_user(conn, user_id=user_id)
+        return user_id, thread_id
+
+    mango_ingest_lock: Optional[asyncio.Lock] = None
+
+    async def ingest_mango_event(
+        *,
+        event: MangoCallEvent,
+        source: str,
+    ) -> Dict[str, Any]:
+        nonlocal mango_ingest_lock
+        if mango_ingest_lock is None:
+            mango_ingest_lock = asyncio.Lock()
+
+        async with mango_ingest_lock:
+            conn = get_connection(cfg.database_path)
+            try:
+                state = create_or_get_mango_event(
+                    conn,
+                    event_id=event.event_id,
+                    call_external_id=event.call_id,
+                    source=source,
+                    payload=event.payload,
+                )
+                event_row_id = int(state.get("id") or 0)
+                if not bool(state.get("is_new")):
+                    return {
+                        "ok": True,
+                        "duplicate": True,
+                        "event_row_id": event_row_id,
+                        "event_id": event.event_id,
+                        "call_external_id": event.call_id,
+                    }
+                update_mango_event_status(conn, event_row_id=event_row_id, status="processing")
+                user_id, thread_id = _extract_mango_user_and_thread(conn, event=event)
+            finally:
+                conn.close()
+
+            try:
+                recording_url = event.recording_url or ""
+                transcript_hint = event.transcript_hint or ""
+                if not recording_url and not transcript_hint:
+                    transcript_hint = (
+                        "Звонок импортирован из Mango. Нет ссылки на запись, нужен ручной конспект менеджера."
+                    )
+                process_result = await _process_manual_call_upload(
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    recording_url=recording_url,
+                    transcript_hint=transcript_hint,
+                    audio_file=None,
+                    source_type_override="mango",
+                    source_ref_override=event.call_id or event.event_id,
+                    created_by="mango:auto",
+                    action_source="mango_auto_ingest",
+                    assigned_to="mango:auto",
+                )
+                conn_done = get_connection(cfg.database_path)
+                try:
+                    update_mango_event_status(conn_done, event_row_id=event_row_id, status="done")
+                finally:
+                    conn_done.close()
+                return {
+                    "ok": True,
+                    "duplicate": False,
+                    "event_row_id": event_row_id,
+                    "event_id": event.event_id,
+                    "call_external_id": event.call_id,
+                    "call": process_result.get("item"),
+                }
+            except Exception as exc:
+                conn_failed = get_connection(cfg.database_path)
+                try:
+                    update_mango_event_status(
+                        conn_failed,
+                        event_row_id=event_row_id,
+                        status="failed",
+                        error_text=str(exc),
+                    )
+                finally:
+                    conn_failed.close()
+                raise
+
+    async def run_mango_poll_once(*, trigger: str, limit_override: Optional[int] = None) -> Dict[str, Any]:
+        if not _mango_ingest_enabled():
+            return {
+                "ok": False,
+                "enabled": False,
+                "trigger": trigger,
+                "processed": 0,
+                "created": 0,
+                "duplicates": 0,
+                "failed": 0,
+                "cleanup": _cleanup_old_call_files(),
+            }
+
+        try:
+            client = _build_mango_client()
+        except MangoClientError as exc:
+            return {
+                "ok": False,
+                "enabled": True,
+                "trigger": trigger,
+                "error": str(exc),
+                "processed": 0,
+                "created": 0,
+                "duplicates": 0,
+                "failed": 0,
+                "cleanup": _cleanup_old_call_files(),
+            }
+
+        conn = get_connection(cfg.database_path)
+        try:
+            since = get_latest_mango_event_created_at(conn)
+        finally:
+            conn.close()
+
+        effective_limit = max(1, min(int(limit_override or cfg.mango_poll_limit_per_run), 500))
+        try:
+            events = client.list_recent_calls(since_iso=since, limit=effective_limit)
+        except MangoClientError as exc:
+            return {
+                "ok": False,
+                "enabled": True,
+                "trigger": trigger,
+                "error": str(exc),
+                "processed": 0,
+                "created": 0,
+                "duplicates": 0,
+                "failed": 0,
+                "cleanup": _cleanup_old_call_files(),
+            }
+
+        processed = 0
+        created = 0
+        duplicates = 0
+        failed = 0
+        for event in events:
+            processed += 1
+            try:
+                result = await ingest_mango_event(event=event, source=f"poll:{trigger}")
+                if result.get("duplicate"):
+                    duplicates += 1
+                else:
+                    created += 1
+            except Exception:
+                failed += 1
+                logger.exception("Mango poll event processing failed (event_id=%s)", event.event_id)
+
+        cleanup_result = _cleanup_old_call_files()
+        return {
+            "ok": failed == 0,
+            "enabled": True,
+            "trigger": trigger,
+            "since": since,
+            "limit": effective_limit,
+            "fetched": len(events),
+            "processed": processed,
+            "created": created,
+            "duplicates": duplicates,
+            "failed": failed,
+            "cleanup": cleanup_result,
+        }
+
+    async def mango_poll_loop(app_instance: FastAPI) -> None:
+        event = getattr(app_instance.state, "mango_poll_event", None)
+        if event is None:
+            return
+        interval = max(30, int(cfg.mango_poll_interval_seconds))
+        while True:
+            try:
+                summary = await run_mango_poll_once(trigger="scheduler")
+                if summary.get("processed"):
+                    logger.info(
+                        "Mango poll processed=%s created=%s duplicates=%s failed=%s",
+                        summary.get("processed"),
+                        summary.get("created"),
+                        summary.get("duplicates"),
+                        summary.get("failed"),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Mango poll scheduler iteration failed")
+
+            try:
+                await asyncio.wait_for(event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            finally:
+                event.clear()
+
     def render_page(title: str, body_html: str) -> HTMLResponse:
         page = f"""
 <!doctype html>
@@ -1622,6 +1924,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "enable_tallanto_enrichment": cfg.enable_tallanto_enrichment,
                 "enable_director_agent": cfg.enable_director_agent,
                 "enable_lead_radar": cfg.enable_lead_radar,
+                "enable_mango_auto_ingest": cfg.enable_mango_auto_ingest,
                 "lead_radar_scheduler_enabled": cfg.lead_radar_scheduler_enabled,
             },
             "lead_radar": {
@@ -1630,6 +1933,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "call_no_next_step_hours": cfg.lead_radar_call_no_next_step_hours,
                 "stale_warm_days": cfg.lead_radar_stale_warm_days,
                 "max_items_per_run": cfg.lead_radar_max_items_per_run,
+            },
+            "mango": {
+                "webhook_path": mango_webhook_path,
+                "polling_enabled": cfg.mango_polling_enabled,
+                "poll_interval_seconds": cfg.mango_poll_interval_seconds,
+                "poll_limit_per_run": cfg.mango_poll_limit_per_run,
+                "recording_ttl_hours": cfg.mango_call_recording_ttl_hours,
+                "calls_path": cfg.mango_calls_path,
             },
         }
 
@@ -1661,12 +1972,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             f"ENABLE_TALLANTO_ENRICHMENT={cfg.enable_tallanto_enrichment}<br/>"
             f"ENABLE_DIRECTOR_AGENT={cfg.enable_director_agent}<br/>"
             f"ENABLE_LEAD_RADAR={cfg.enable_lead_radar}<br/>"
+            f"ENABLE_MANGO_AUTO_INGEST={cfg.enable_mango_auto_ingest}<br/>"
             f"LEAD_RADAR_SCHEDULER_ENABLED={cfg.lead_radar_scheduler_enabled}<br/>"
             f"LEAD_RADAR_INTERVAL_SECONDS={cfg.lead_radar_interval_seconds}<br/>"
             f"LEAD_RADAR_NO_REPLY_HOURS={cfg.lead_radar_no_reply_hours}<br/>"
             f"LEAD_RADAR_CALL_NO_NEXT_STEP_HOURS={cfg.lead_radar_call_no_next_step_hours}<br/>"
             f"LEAD_RADAR_STALE_WARM_DAYS={cfg.lead_radar_stale_warm_days}<br/>"
-            f"LEAD_RADAR_MAX_ITEMS_PER_RUN={cfg.lead_radar_max_items_per_run}"
+            f"LEAD_RADAR_MAX_ITEMS_PER_RUN={cfg.lead_radar_max_items_per_run}<br/>"
+            f"MANGO_WEBHOOK_PATH={html.escape(mango_webhook_path)}<br/>"
+            f"MANGO_POLLING_ENABLED={cfg.mango_polling_enabled}<br/>"
+            f"MANGO_POLL_INTERVAL_SECONDS={cfg.mango_poll_interval_seconds}<br/>"
+            f"MANGO_POLL_LIMIT_PER_RUN={cfg.mango_poll_limit_per_run}<br/>"
+            f"MANGO_CALL_RECORDING_TTL_HOURS={cfg.mango_call_recording_ttl_hours}<br/>"
+            f"MANGO_CALLS_PATH={html.escape(cfg.mango_calls_path)}"
             "</div>"
         )
         return render_page("Revenue Metrics", body)
@@ -1734,19 +2052,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         recording_url: Optional[str],
         transcript_hint: Optional[str],
         audio_file: Optional[UploadFile],
+        source_type_override: Optional[str] = None,
+        source_ref_override: Optional[str] = None,
+        created_by: str = "admin:manual",
+        action_source: str = "call_copilot",
+        assigned_to: str = "sales:manual",
     ) -> Dict[str, Any]:
         has_file = audio_file is not None and bool((audio_file.filename or "").strip())
         has_url = bool((recording_url or "").strip())
-        if not has_file and not has_url:
+        has_hint = bool((transcript_hint or "").strip())
+        if not has_file and not has_url and not has_hint:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Provide audio_file or recording_url.",
+                detail="Provide audio_file, recording_url or transcript_hint.",
             )
 
         stored_file_path: Optional[Path] = None
         transcript_text = ""
-        source_type = "url" if has_url and not has_file else "upload"
-        source_ref = (recording_url or "").strip() or None
+        source_type = (source_type_override or "").strip() or ("url" if has_url and not has_file else "upload")
+        source_ref = (source_ref_override or "").strip() or (recording_url or "").strip() or None
         if has_file and audio_file is not None:
             stored_file_path = await _store_call_upload_file(audio_file)
             if stored_file_path is None:
@@ -1760,6 +2084,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         conn = get_connection(cfg.database_path)
         try:
+            actor_name = f"{(action_source or 'call_copilot').strip()}:auto"
             resolved_user_id, resolved_thread_id = _resolve_call_thread_and_user(
                 conn,
                 user_id_input=user_id,
@@ -1773,7 +2098,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 source_ref=source_ref,
                 file_path=str(stored_file_path) if stored_file_path else None,
                 status="queued",
-                created_by="admin:manual",
+                created_by=created_by,
             )
             update_call_record_status(conn, call_id=call_id, status="processing")
 
@@ -1812,7 +2137,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 temperature=insights.warmth,
                 confidence=insights.confidence,
                 factors={
-                    "source": "call_copilot",
+                    "source": action_source,
                     "interests": insights.interests,
                     "objections": insights.objections,
                 },
@@ -1822,10 +2147,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 user_id=resolved_user_id,
                 thread_id=resolved_thread_id,
                 priority=_priority_from_warmth(insights.warmth),
-                reason=f"call_copilot: {insights.next_best_action}",
+                reason=f"{action_source}: {insights.next_best_action}",
                 status="pending",
                 due_at=None,
-                assigned_to="sales:manual",
+                assigned_to=assigned_to,
                 related_draft_id=None,
             )
             create_approval_action(
@@ -1834,9 +2159,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 user_id=resolved_user_id,
                 thread_id=resolved_thread_id,
                 action="manual_action",
-                actor="call_copilot:auto",
+                actor=actor_name,
                 payload={
-                    "source": "call_copilot",
+                    "source": action_source,
                     "call_id": call_id,
                     "followup_task_id": followup_id,
                     "lead_score_id": lead_score_id,
@@ -1849,9 +2174,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 user_id=resolved_user_id,
                 thread_id=resolved_thread_id,
                 action="followup_created",
-                actor="call_copilot:auto",
+                actor=actor_name,
                 payload={
-                    "source": "call_copilot",
+                    "source": action_source,
                     "call_id": call_id,
                     "followup_task_id": followup_id,
                 },
@@ -1862,9 +2187,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 user_id=resolved_user_id,
                 thread_id=resolved_thread_id,
                 action="lead_scored",
-                actor="call_copilot:auto",
+                actor=actor_name,
                 payload={
-                    "source": "call_copilot",
+                    "source": action_source,
                     "call_id": call_id,
                     "lead_score_id": lead_score_id,
                     "temperature": insights.warmth,
@@ -1954,6 +2279,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             transcript_hint=transcript_hint,
             audio_file=audio_file,
         )
+
+    @app.post("/admin/calls/mango/poll")
+    async def admin_calls_mango_poll(
+        _: str = Depends(require_admin),
+        limit: Optional[int] = Query(default=None, ge=1, le=500),
+    ):
+        if not _mango_ingest_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Mango auto-ingest is disabled. Set ENABLE_MANGO_AUTO_INGEST=true and ENABLE_CALL_COPILOT=true.",
+            )
+        result = await run_mango_poll_once(trigger="manual", limit_override=limit)
+        return result
+
+    @app.get("/admin/calls/mango/events")
+    async def admin_calls_mango_events(
+        _: str = Depends(require_admin),
+        status_filter: Optional[str] = Query(default=None, alias="status"),
+        limit: int = 100,
+    ):
+        conn = get_connection(cfg.database_path)
+        try:
+            items = list_mango_events(
+                conn,
+                status=(status_filter or "").strip() or None,
+                limit=max(1, min(limit, 500)),
+            )
+        finally:
+            conn.close()
+        return {"ok": True, "items": items}
 
     @app.get("/admin/business/inbox")
     async def admin_business_inbox(_: str = Depends(require_admin), limit: int = 100):
@@ -2510,6 +2865,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "<h1>Calls</h1>"
             "<p class='muted'>Ручная загрузка звонков, автоконспект и next best action.</p>"
             "<div class='card'>"
+            f"<b>Mango Auto-Ingest:</b> enabled={_mango_ingest_enabled()} | "
+            f"polling={cfg.mango_polling_enabled} | interval={cfg.mango_poll_interval_seconds}s | "
+            f"ttl={cfg.mango_call_recording_ttl_hours}h<br/>"
+            "<form method='post' action='/admin/ui/calls/mango/poll'>"
+            "<p><label>Manual poll limit: <input type='number' name='limit' min='1' max='500' value='50' /></label></p>"
+            "<p><button type='submit'>Запустить Mango poll сейчас</button></p>"
+            "</form>"
+            "<p><a href='/admin/calls/mango/events'>Открыть Mango events (JSON)</a></p>"
+            "</div>"
+            "<div class='card'>"
             "<form method='post' action='/admin/ui/calls/upload' enctype='multipart/form-data'>"
             "<p><label>User ID (optional): <input type='number' name='user_id' min='1' /></label></p>"
             "<p><label>Thread ID (optional): <input name='thread_id' placeholder='tg:123 or biz:...' style='width:320px;' /></label></p>"
@@ -2525,6 +2890,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "</table>"
         )
         return render_page("Calls", body)
+
+    @app.post("/admin/ui/calls/mango/poll")
+    async def admin_calls_ui_mango_poll(
+        _: str = Depends(require_admin),
+        limit: int = Form(50),
+    ):
+        if not _mango_ingest_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Mango auto-ingest is disabled. Set ENABLE_MANGO_AUTO_INGEST=true and ENABLE_CALL_COPILOT=true.",
+            )
+        await run_mango_poll_once(trigger="manual_ui", limit_override=limit)
+        return RedirectResponse(url="/admin/ui/calls", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.post("/admin/ui/calls/upload")
     async def admin_calls_ui_upload(
@@ -2916,7 +3294,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def admin_inbox_create_draft_ui(
         user_id: int,
         draft_text: str = Form(...),
-        model_name: str = Form(""),
+        draft_model: str = Form("", alias="model_name"),
         admin_username: str = Depends(require_admin),
     ):
         conn = get_connection(cfg.database_path)
@@ -2928,7 +3306,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 user_id=user_id,
                 thread_id=thread_id,
                 draft_text=draft_text.strip(),
-                model_name=model_name.strip() or None,
+                model_name=draft_model.strip() or None,
                 quality={},
                 created_by=admin_username,
                 status="created",
@@ -2950,7 +3328,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def admin_inbox_edit_draft_ui(
         draft_id: int,
         draft_text: str = Form(...),
-        model_name: str = Form(""),
+        draft_model: str = Form("", alias="model_name"),
         admin_username: str = Depends(require_admin),
     ):
         conn = get_connection(cfg.database_path)
@@ -2962,7 +3340,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 conn,
                 draft_id=draft_id,
                 draft_text=draft_text.strip(),
-                model_name=model_name.strip() or None,
+                model_name=draft_model.strip() or None,
                 quality={},
                 actor=admin_username,
             )
@@ -3582,6 +3960,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "processing": count_webhook_updates_by_status(conn, "processing"),
                 "failed": count_webhook_updates_by_status(conn, "failed"),
             }
+            payload["runtime"]["mango"] = {
+                "enabled": _mango_ingest_enabled(),
+                "webhook_path": mango_webhook_path,
+                "polling_enabled": cfg.mango_polling_enabled,
+                "poll_interval_seconds": cfg.mango_poll_interval_seconds,
+                "poll_limit_per_run": cfg.mango_poll_limit_per_run,
+                "recording_ttl_hours": cfg.mango_call_recording_ttl_hours,
+                "calls_path": cfg.mango_calls_path,
+                "events_queued": len(list_mango_events(conn, status="queued", limit=500)),
+                "events_failed": len(list_mango_events(conn, status="failed", limit=500)),
+            }
         finally:
             conn.close()
         return payload
@@ -3683,6 +4072,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "requested_by": auth_user["user_id"],
             "user_id": user_id,
             "messages": messages,
+        }
+
+    @app.post(mango_webhook_path)
+    async def mango_webhook(request: Request):
+        if not _mango_ingest_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Mango auto-ingest is disabled.",
+            )
+
+        raw_body = await request.body()
+        try:
+            payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid Mango payload.") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid Mango payload.")
+
+        try:
+            client = _build_mango_client()
+        except MangoClientError as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+        signature = request.headers.get("X-Mango-Signature", "").strip()
+        if not client.verify_webhook_signature(raw_body=raw_body, signature=signature):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Mango webhook signature.")
+
+        event = client.parse_call_event(payload)
+        if event is None:
+            return {"ok": True, "ignored": True, "reason": "not_call_event"}
+
+        try:
+            result = await ingest_mango_event(event=event, source="webhook")
+        except Exception as exc:
+            logger.exception("Mango webhook event processing failed")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Mango ingest failed: {exc}",
+            ) from exc
+
+        cleanup_result = _cleanup_old_call_files()
+        return {
+            "ok": True,
+            "result": result,
+            "cleanup": cleanup_result,
         }
 
     @app.post(webhook_path)

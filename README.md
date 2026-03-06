@@ -192,6 +192,35 @@ SALES_TONE_PATH=
 - В webhook-режиме endpoint создается по пути `TELEGRAM_WEBHOOK_PATH` (по умолчанию `/telegram/webhook`).
 - Webhook endpoint отвечает быстро (`{"ok":true,"queued":true}`), а обработка апдейта идёт через durable SQLite-очередь с retry.
 
+## Mango auto-ingest (Step 8)
+
+Назначение: автоматически подтягивать звонки/записи из Mango, запускать Call Copilot и создавать follow-up задачи без автоотправки клиенту.
+
+Минимальные env:
+- `ENABLE_CALL_COPILOT=true`
+- `ENABLE_MANGO_AUTO_INGEST=true`
+- `MANGO_API_BASE_URL=...`
+- `MANGO_API_TOKEN=...`
+- `MANGO_CALLS_PATH=/calls` (если у провайдера другой endpoint — настраивается здесь)
+- `MANGO_WEBHOOK_PATH=/integrations/mango/webhook`
+- `MANGO_WEBHOOK_SECRET=<случайный_секрет>` (рекомендуется обязательно)
+
+Опционально:
+- `MANGO_POLLING_ENABLED=true` (если хотите регулярный pull по API)
+- `MANGO_POLL_INTERVAL_SECONDS=300`
+- `MANGO_POLL_LIMIT_PER_RUN=50`
+- `MANGO_CALL_RECORDING_TTL_HOURS=48` (через этот срок локальные аудиофайлы удаляются, summary/transcript сохраняются)
+
+Проверка:
+1. Webhook из Mango должен бить в `https://<your-domain>${MANGO_WEBHOOK_PATH}`.
+2. Подпись проверяется по `X-Mango-Signature` и `MANGO_WEBHOOK_SECRET`.
+3. События доступны в админ API:
+   - `GET /admin/calls/mango/events`
+   - `POST /admin/calls/mango/poll` (ручной запуск poll, Basic Auth admin)
+4. Статус и конфиг видны в:
+   - `GET /api/runtime/diagnostics`
+   - `GET /admin/revenue-metrics`
+
 ## Команды обслуживания
 
 - Инициализация/создание БД выполняется автоматически при старте API или бота.

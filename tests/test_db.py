@@ -41,6 +41,7 @@ class DatabaseTests(unittest.TestCase):
                 "call_records",
                 "call_transcripts",
                 "call_summaries",
+                "mango_events",
             }.issubset(table_names)
         )
 
@@ -312,6 +313,76 @@ class DatabaseTests(unittest.TestCase):
     def test_update_call_record_status_returns_false_for_missing_call(self) -> None:
         updated = db.update_call_record_status(self.conn, call_id=99999, status="done")
         self.assertFalse(updated)
+
+    def test_mango_events_and_phone_lookup_and_cleanup(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="mango-user-1")
+        db.create_lead_record(
+            conn=self.conn,
+            user_id=user_id,
+            status="created",
+            contact={"phone": "+7 (999) 111-22-33"},
+            tallanto_entry_id=None,
+        )
+        matched_user = db.find_user_by_phone(self.conn, phone="89991112233")
+        self.assertEqual(matched_user, user_id)
+
+        event_state = db.create_or_get_mango_event(
+            self.conn,
+            event_id="evt-1",
+            call_external_id="call-1",
+            source="webhook",
+            payload={"event_id": "evt-1"},
+        )
+        self.assertTrue(event_state["is_new"])
+        duplicate = db.create_or_get_mango_event(
+            self.conn,
+            event_id="evt-1",
+            call_external_id="call-1",
+            source="webhook",
+            payload={"event_id": "evt-1"},
+        )
+        self.assertFalse(duplicate["is_new"])
+
+        updated = db.update_mango_event_status(
+            self.conn,
+            event_row_id=int(event_state["id"]),
+            status="done",
+        )
+        self.assertTrue(updated)
+        events = db.list_mango_events(self.conn, status="done", limit=10)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_id"], "evt-1")
+        self.assertTrue(db.get_latest_mango_event_created_at(self.conn))
+
+        call_id = db.create_call_record(
+            self.conn,
+            user_id=user_id,
+            thread_id=f"tg:{user_id}",
+            source_type="upload",
+            source_ref="tmp-file",
+            file_path="/tmp/fake-call-audio.raw",
+            status="done",
+            created_by="test",
+        )
+        self.conn.execute(
+            "UPDATE call_records SET created_at = datetime('now', '-5 hours') WHERE id = ?",
+            (call_id,),
+        )
+        self.conn.commit()
+
+        cleanup_rows = db.list_call_records_with_files_for_cleanup(
+            self.conn,
+            older_than_hours=2,
+            limit=10,
+        )
+        self.assertEqual(len(cleanup_rows), 1)
+        self.assertEqual(int(cleanup_rows[0]["id"]), call_id)
+
+        self.assertTrue(db.clear_call_record_file_path(self.conn, call_id=call_id))
+        item = db.get_call_record(self.conn, call_id=call_id)
+        self.assertIsNotNone(item)
+        assert item is not None
+        self.assertIsNone(item["file_path"])
 
     def test_get_and_upsert_conversation_context(self) -> None:
         user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="704")

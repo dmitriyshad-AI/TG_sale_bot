@@ -179,6 +179,40 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
             )
         )
 
+    if settings.enable_mango_auto_ingest and not settings.enable_call_copilot:
+        issues.append(
+            DiagnosticIssue(
+                severity="warning",
+                code="mango_requires_call_copilot",
+                message="ENABLE_MANGO_AUTO_INGEST=true requires ENABLE_CALL_COPILOT=true.",
+            )
+        )
+    if settings.enable_mango_auto_ingest:
+        if not settings.mango_api_base_url or not settings.mango_api_token:
+            issues.append(
+                DiagnosticIssue(
+                    severity="warning",
+                    code="mango_config_incomplete",
+                    message="Mango auto-ingest is enabled but MANGO_API_BASE_URL or MANGO_API_TOKEN is missing.",
+                )
+            )
+        if not settings.mango_webhook_secret:
+            issues.append(
+                DiagnosticIssue(
+                    severity="warning",
+                    code="mango_webhook_secret_missing",
+                    message="Mango webhook is enabled without MANGO_WEBHOOK_SECRET. Signature validation is effectively disabled.",
+                )
+            )
+        if settings.mango_polling_enabled and settings.mango_poll_interval_seconds < 60:
+            issues.append(
+                DiagnosticIssue(
+                    severity="warning",
+                    code="mango_poll_interval_low",
+                    message="Mango poll interval is too low (<60s) and may cause unnecessary load.",
+                )
+            )
+
     tallanto_token_present = bool((settings.tallanto_api_token or settings.tallanto_api_key).strip())
     if settings.tallanto_read_only and (not settings.tallanto_api_url or not tallanto_token_present):
         issues.append(
@@ -336,6 +370,17 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
             "tallanto_read_only": settings.tallanto_read_only,
             "tallanto_token_set": tallanto_token_present,
             "tallanto_default_contact_module": settings.tallanto_default_contact_module,
+            "enable_call_copilot": settings.enable_call_copilot,
+            "enable_mango_auto_ingest": settings.enable_mango_auto_ingest,
+            "mango_api_base_url_set": bool(settings.mango_api_base_url),
+            "mango_api_token_set": bool(settings.mango_api_token),
+            "mango_calls_path": settings.mango_calls_path,
+            "mango_webhook_path": settings.mango_webhook_path,
+            "mango_webhook_secret_set": bool(settings.mango_webhook_secret),
+            "mango_polling_enabled": settings.mango_polling_enabled,
+            "mango_poll_interval_seconds": settings.mango_poll_interval_seconds,
+            "mango_call_recording_ttl_hours": settings.mango_call_recording_ttl_hours,
+            "mango_poll_limit_per_run": settings.mango_poll_limit_per_run,
             "database_path": str(settings.database_path),
             "database_parent_writable": database_parent_writable,
             "running_on_render": settings.running_on_render,

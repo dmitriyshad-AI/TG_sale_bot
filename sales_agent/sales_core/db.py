@@ -257,6 +257,19 @@ CREATE_TABLE_STATEMENTS = [
         FOREIGN KEY(call_id) REFERENCES call_records(id)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS mango_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        call_external_id TEXT,
+        source TEXT NOT NULL DEFAULT 'webhook',
+        status TEXT NOT NULL DEFAULT 'queued',
+        payload_json TEXT NOT NULL,
+        error_text TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
 ]
 
 CREATE_INDEX_STATEMENTS = [
@@ -299,6 +312,8 @@ CREATE_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_call_transcripts_call ON call_transcripts(call_id);",
     "CREATE INDEX IF NOT EXISTS idx_call_summaries_call ON call_summaries(call_id);",
     "CREATE INDEX IF NOT EXISTS idx_call_summaries_warmth_created ON call_summaries(warmth, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_mango_events_status_created ON mango_events(status, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_mango_events_call_external ON mango_events(call_external_id, created_at);",
 ]
 
 
@@ -811,6 +826,17 @@ def _safe_json_list(raw_value: Optional[str]) -> list[Any]:
     except json.JSONDecodeError:
         return []
     return payload if isinstance(payload, list) else []
+
+
+def normalize_phone(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if not digits:
+        return ""
+    if len(digits) == 11 and digits.startswith("8"):
+        digits = f"7{digits[1:]}"
+    return digits
 
 
 def create_reply_draft(
@@ -2015,3 +2041,196 @@ def get_latest_call_summary_for_thread(
     item["interests"] = _safe_json_list(item.pop("interests_json", None))
     item["objections"] = _safe_json_list(item.pop("objections_json", None))
     return item
+
+
+def create_or_get_mango_event(
+    conn: sqlite3.Connection,
+    *,
+    event_id: str,
+    call_external_id: Optional[str],
+    source: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    normalized_event_id = (event_id or "").strip()
+    if not normalized_event_id:
+        raise ValueError("event_id is required")
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO mango_events (event_id, call_external_id, source, status, payload_json)
+            VALUES (?, ?, ?, 'queued', ?)
+            """,
+            (
+                normalized_event_id,
+                (call_external_id or "").strip() or None,
+                (source or "").strip() or "webhook",
+                json.dumps(payload or {}, ensure_ascii=False),
+            ),
+        )
+        conn.commit()
+        return {"id": int(cursor.lastrowid), "is_new": True}
+    except sqlite3.IntegrityError:
+        row = conn.execute(
+            "SELECT id FROM mango_events WHERE event_id = ? LIMIT 1",
+            (normalized_event_id,),
+        ).fetchone()
+        return {"id": int(row["id"]) if row else 0, "is_new": False}
+
+
+def update_mango_event_status(
+    conn: sqlite3.Connection,
+    *,
+    event_row_id: int,
+    status: str,
+    error_text: Optional[str] = None,
+) -> bool:
+    row = conn.execute("SELECT id FROM mango_events WHERE id = ? LIMIT 1", (int(event_row_id),)).fetchone()
+    if not row:
+        return False
+    conn.execute(
+        """
+        UPDATE mango_events
+        SET
+            status = ?,
+            error_text = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (
+            (status or "").strip() or "queued",
+            (error_text or "").strip() or None,
+            int(event_row_id),
+        ),
+    )
+    conn.commit()
+    return True
+
+
+def list_mango_events(
+    conn: sqlite3.Connection,
+    *,
+    status: Optional[str] = None,
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    params: list[Any] = []
+    where_sql = ""
+    if isinstance(status, str) and status.strip():
+        where_sql = "WHERE status = ?"
+        params.append(status.strip())
+    params.append(max(1, int(limit)))
+    cursor = conn.execute(
+        f"""
+        SELECT id, event_id, call_external_id, source, status, payload_json, error_text, created_at, updated_at
+        FROM mango_events
+        {where_sql}
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    rows: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["payload"] = _safe_json_loads(item.pop("payload_json", None))
+        rows.append(item)
+    return rows
+
+
+def get_latest_mango_event_created_at(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        """
+        SELECT created_at
+        FROM mango_events
+        WHERE status = 'done'
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if not row:
+        return ""
+    return str(row["created_at"] or "").strip()
+
+
+def find_user_by_phone(conn: sqlite3.Connection, *, phone: str) -> Optional[int]:
+    normalized = normalize_phone(phone)
+    if not normalized:
+        return None
+    tails = {normalized}
+    if len(normalized) >= 10:
+        tails.add(normalized[-10:])
+
+    rows = conn.execute(
+        """
+        SELECT user_id, contact_json
+        FROM leads
+        ORDER BY lead_id DESC
+        LIMIT 1000
+        """
+    ).fetchall()
+    for row in rows:
+        contact = _safe_json_loads(row["contact_json"])
+        for value in contact.values():
+            candidate = normalize_phone(str(value))
+            if not candidate:
+                continue
+            candidate_tails = {candidate}
+            if len(candidate) >= 10:
+                candidate_tails.add(candidate[-10:])
+            if tails.intersection(candidate_tails):
+                return int(row["user_id"])
+    return None
+
+
+def resolve_preferred_thread_for_user(conn: sqlite3.Connection, *, user_id: int) -> str:
+    row = conn.execute(
+        """
+        SELECT thread_key
+        FROM business_threads
+        WHERE user_id = ?
+        ORDER BY COALESCE(last_message_at, updated_at) DESC, id DESC
+        LIMIT 1
+        """,
+        (int(user_id),),
+    ).fetchone()
+    if row and row["thread_key"]:
+        return str(row["thread_key"])
+    return f"tg:{int(user_id)}"
+
+
+def list_call_records_with_files_for_cleanup(
+    conn: sqlite3.Connection,
+    *,
+    older_than_hours: int,
+    limit: int = 200,
+) -> list[Dict[str, Any]]:
+    cursor = conn.execute(
+        """
+        SELECT id, file_path, created_at
+        FROM call_records
+        WHERE file_path IS NOT NULL
+          AND file_path <> ''
+          AND julianday(created_at) <= julianday('now') - (? / 24.0)
+        ORDER BY id ASC
+        LIMIT ?
+        """,
+        (max(1, int(older_than_hours)), max(1, int(limit))),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def clear_call_record_file_path(conn: sqlite3.Connection, *, call_id: int) -> bool:
+    row = conn.execute("SELECT id FROM call_records WHERE id = ? LIMIT 1", (int(call_id),)).fetchone()
+    if not row:
+        return False
+    conn.execute(
+        """
+        UPDATE call_records
+        SET
+            file_path = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (int(call_id),),
+    )
+    conn.commit()
+    return True
