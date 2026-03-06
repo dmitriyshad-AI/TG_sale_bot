@@ -1,4 +1,5 @@
 import unittest
+from datetime import timedelta, timezone, datetime
 from io import StringIO
 from urllib.error import URLError
 from unittest.mock import patch
@@ -228,6 +229,72 @@ class ReleaseSmokeScriptTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("[FAIL] runtime_diagnostics", stdout.getvalue())
 
+    def test_main_fails_when_health_endpoint_unavailable(self) -> None:
+        def fake_fetch_json(_base_url: str, path: str, _timeout: float) -> dict:
+            if path == "/api/health":
+                raise URLError("health down")
+            if path == "/api/runtime/diagnostics":
+                return {"status": "ok", "runtime": {"telegram_mode": "polling"}}
+            if path == "/api/miniapp/meta":
+                return {"ok": True, "advisor_name": "Гид"}
+            if path == "/":
+                return {"status": "ok", "user_miniapp": {"status": "ready"}}
+            raise AssertionError(f"Unexpected path: {path}")
+
+        with patch.object(release_smoke, "_fetch_json", side_effect=fake_fetch_json), patch.object(
+            release_smoke, "_fetch_status", return_value=200
+        ), patch("sys.stdout", new_callable=StringIO) as stdout:
+            result = release_smoke.main([])
+        self.assertEqual(result, 1)
+        self.assertIn("[FAIL] health", stdout.getvalue())
+
+    def test_main_fails_when_meta_or_root_unavailable(self) -> None:
+        def fake_fetch_json(_base_url: str, path: str, _timeout: float) -> dict:
+            if path == "/api/health":
+                return {"status": "ok", "service": "sales-agent"}
+            if path == "/api/runtime/diagnostics":
+                return {"status": "ok", "runtime": {"telegram_mode": "polling"}}
+            if path == "/api/miniapp/meta":
+                raise RuntimeError("meta down")
+            if path == "/":
+                raise RuntimeError("root down")
+            raise AssertionError(f"Unexpected path: {path}")
+
+        with patch.object(release_smoke, "_fetch_json", side_effect=fake_fetch_json), patch.object(
+            release_smoke, "_fetch_status", return_value=200
+        ), patch("sys.stdout", new_callable=StringIO) as stdout:
+            result = release_smoke.main([])
+        self.assertEqual(result, 1)
+        text = stdout.getvalue()
+        self.assertIn("[FAIL] miniapp_meta", text)
+        self.assertIn("[FAIL] root_status", text)
+
+    def test_main_reports_app_endpoint_errors(self) -> None:
+        def fake_fetch_json(_base_url: str, path: str, _timeout: float) -> dict:
+            if path == "/api/health":
+                return {"status": "ok", "service": "sales-agent"}
+            if path == "/api/runtime/diagnostics":
+                return {"status": "ok", "runtime": {"telegram_mode": "polling"}}
+            if path == "/api/miniapp/meta":
+                return {"ok": True, "advisor_name": "Гид"}
+            if path == "/":
+                return {"status": "ok", "user_miniapp": {"status": "ready"}}
+            raise AssertionError(f"Unexpected path: {path}")
+
+        with patch.object(release_smoke, "_fetch_json", side_effect=fake_fetch_json), patch.object(
+            release_smoke, "_fetch_status", side_effect=URLError("app down")
+        ), patch("sys.stdout", new_callable=StringIO) as stdout:
+            result = release_smoke.main([])
+        self.assertEqual(result, 1)
+        self.assertIn("[FAIL] app_endpoint", stdout.getvalue())
+
+        with patch.object(release_smoke, "_fetch_json", side_effect=fake_fetch_json), patch.object(
+            release_smoke, "_fetch_status", side_effect=RuntimeError("unexpected")
+        ), patch("sys.stdout", new_callable=StringIO) as stdout:
+            result = release_smoke.main([])
+        self.assertEqual(result, 1)
+        self.assertIn("[FAIL] app_endpoint", stdout.getvalue())
+
     def test_main_fails_when_telegram_webhook_check_without_token(self) -> None:
         def fake_fetch_json(_base_url: str, path: str, _timeout: float) -> dict:
             if path == "/api/health":
@@ -275,6 +342,112 @@ class ReleaseSmokeScriptTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         self.assertIn("[FAIL] telegram_webhook_info: error: telegram api down", stdout.getvalue())
+
+    def test_parse_iso_datetime_handles_z_suffix(self) -> None:
+        parsed = release_smoke._parse_iso_datetime("2026-03-07T10:00:00Z")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertIsNotNone(parsed.tzinfo)
+        self.assertIsNone(release_smoke._parse_iso_datetime("broken-date"))
+
+    def test_main_checks_mango_runtime_block(self) -> None:
+        now = datetime.now(timezone.utc)
+        oldest_failed = (now - timedelta(hours=1)).isoformat()
+
+        def fake_fetch_json(_base_url: str, path: str, _timeout: float) -> dict:
+            if path == "/api/health":
+                return {"status": "ok", "service": "sales-agent"}
+            if path == "/api/runtime/diagnostics":
+                return {
+                    "status": "ok",
+                    "runtime": {
+                        "telegram_mode": "webhook",
+                        "telegram_webhook_secret_set": True,
+                        "mango": {
+                            "enabled": True,
+                            "events_failed": 1,
+                            "oldest_failed_created_at": oldest_failed,
+                        },
+                    },
+                }
+            if path == "/api/miniapp/meta":
+                return {"ok": True, "advisor_name": "Гид"}
+            if path == "/":
+                return {"status": "ok", "user_miniapp": {"status": "ready"}}
+            raise AssertionError(f"Unexpected path: {path}")
+
+        with patch.object(release_smoke, "_fetch_json", side_effect=fake_fetch_json), patch.object(
+            release_smoke, "_fetch_status", return_value=200
+        ), patch("sys.stdout", new_callable=StringIO) as stdout:
+            result = release_smoke.main(["--check-mango-runtime", "--mango-max-failed-events", "2"])
+
+        self.assertEqual(result, 0)
+        text = stdout.getvalue()
+        self.assertIn("[OK] mango_runtime_block", text)
+        self.assertIn("[OK] mango_failed_events", text)
+        self.assertIn("[OK] mango_oldest_failed_age", text)
+
+    def test_main_fails_when_mango_failed_events_exceed_limit(self) -> None:
+        def fake_fetch_json(_base_url: str, path: str, _timeout: float) -> dict:
+            if path == "/api/health":
+                return {"status": "ok", "service": "sales-agent"}
+            if path == "/api/runtime/diagnostics":
+                return {
+                    "status": "ok",
+                    "runtime": {
+                        "telegram_mode": "webhook",
+                        "telegram_webhook_secret_set": True,
+                        "mango": {
+                            "enabled": True,
+                            "events_failed": 15,
+                            "oldest_failed_created_at": "",
+                        },
+                    },
+                }
+            if path == "/api/miniapp/meta":
+                return {"ok": True, "advisor_name": "Гид"}
+            if path == "/":
+                return {"status": "ok", "user_miniapp": {"status": "ready"}}
+            raise AssertionError(f"Unexpected path: {path}")
+
+        with patch.object(release_smoke, "_fetch_json", side_effect=fake_fetch_json), patch.object(
+            release_smoke, "_fetch_status", return_value=200
+        ), patch("sys.stdout", new_callable=StringIO) as stdout:
+            result = release_smoke.main(["--check-mango-runtime", "--mango-max-failed-events", "3"])
+
+        self.assertEqual(result, 1)
+        self.assertIn("[FAIL] mango_failed_events", stdout.getvalue())
+
+    def test_main_fails_when_mango_oldest_failed_is_unparseable(self) -> None:
+        def fake_fetch_json(_base_url: str, path: str, _timeout: float) -> dict:
+            if path == "/api/health":
+                return {"status": "ok", "service": "sales-agent"}
+            if path == "/api/runtime/diagnostics":
+                return {
+                    "status": "ok",
+                    "runtime": {
+                        "telegram_mode": "webhook",
+                        "telegram_webhook_secret_set": True,
+                        "mango": {
+                            "enabled": True,
+                            "events_failed": 1,
+                            "oldest_failed_created_at": "bad-date",
+                        },
+                    },
+                }
+            if path == "/api/miniapp/meta":
+                return {"ok": True, "advisor_name": "Гид"}
+            if path == "/":
+                return {"status": "ok", "user_miniapp": {"status": "ready"}}
+            raise AssertionError(f"Unexpected path: {path}")
+
+        with patch.object(release_smoke, "_fetch_json", side_effect=fake_fetch_json), patch.object(
+            release_smoke, "_fetch_status", return_value=200
+        ), patch("sys.stdout", new_callable=StringIO) as stdout:
+            result = release_smoke.main(["--check-mango-runtime"])
+
+        self.assertEqual(result, 1)
+        self.assertIn("[FAIL] mango_oldest_failed_age", stdout.getvalue())
 
 
 if __name__ == "__main__":

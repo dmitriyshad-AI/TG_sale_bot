@@ -167,6 +167,31 @@ class CatalogFreshnessScriptTests(unittest.TestCase):
             self.assertIn("older than 30 days", result.stdout)
             self.assertIn("all sessions have empty price_rub", result.stdout)
 
+    def test_script_fails_for_invalid_today_argument(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "catalog.yaml"
+            path.write_text(
+                yaml.safe_dump({"products": []}, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
+            result = self._run(path, "--today", "not-a-date")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Invalid --today date", result.stderr)
+
+    def test_script_fails_when_catalog_file_missing(self) -> None:
+        missing = Path("/tmp/catalog-freshness-missing.yaml")
+        result = self._run(missing)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Catalog file not found", result.stderr)
+
+    def test_script_fails_when_catalog_schema_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "catalog_bad.yaml"
+            path.write_text("products:\n  - id: bad-only\n", encoding="utf-8")
+            result = self._run(path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("[ERROR]", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

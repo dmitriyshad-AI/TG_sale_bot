@@ -44,6 +44,25 @@ ADMIN_MINIAPP_ENABLED=false
 ADMIN_TELEGRAM_IDS=
 ADMIN_WEBAPP_URL=
 USER_WEBAPP_URL=
+ENABLE_MANGO_AUTO_INGEST=false
+ENABLE_FAQ_LAB=false
+FAQ_LAB_SCHEDULER_ENABLED=true
+FAQ_LAB_INTERVAL_SECONDS=21600
+FAQ_LAB_WINDOW_DAYS=90
+FAQ_LAB_MIN_QUESTION_COUNT=2
+FAQ_LAB_MAX_ITEMS_PER_RUN=120
+MANGO_API_BASE_URL=
+MANGO_API_TOKEN=
+MANGO_CALLS_PATH=/calls
+MANGO_WEBHOOK_PATH=/integrations/mango/webhook
+MANGO_WEBHOOK_SECRET=
+MANGO_POLLING_ENABLED=false
+MANGO_POLL_INTERVAL_SECONDS=300
+MANGO_POLL_LIMIT_PER_RUN=50
+MANGO_POLL_RETRY_ATTEMPTS=3
+MANGO_POLL_RETRY_BACKOFF_SECONDS=2
+MANGO_RETRY_FAILED_LIMIT_PER_RUN=25
+MANGO_CALL_RECORDING_TTL_HOURS=48
 SALES_TONE_PATH=
 WEBAPP_DIST_PATH=
 PERSISTENT_DATA_PATH=
@@ -143,6 +162,14 @@ docker compose -f docker-compose.prod.yml logs --tail=100 bot
 5. Проверить админ API:
    - `GET /admin/leads`
    - `GET /admin/conversations`
+6. Если включен Mango auto-ingest:
+   - `GET /admin/calls/mango/events`
+   - `POST /admin/calls/mango/poll`
+   - `POST /admin/calls/mango/retry-failed`
+7. Если включен FAQ Lab:
+   - `GET /admin/faq-lab`
+   - `POST /admin/faq-lab/run`
+   - `GET /admin/ui/faq-lab`
 
 ## 6) Обновление версии
 
@@ -264,17 +291,33 @@ docker compose -f docker-compose.prod.yml up -d --build
    ```
 5. После восстановления выполните smoke:
    ```bash
-   python3 scripts/release_smoke.py \
-     --base-url https://<your-render-domain> \
-     --strict-runtime \
-     --require-webhook-mode \
-     --require-render-persistent
+python3 scripts/release_smoke.py \
+  --base-url https://<your-render-domain> \
+  --strict-runtime \
+  --require-webhook-mode \
+  --require-render-persistent \
+  --check-mango-runtime
    ```
 
 Примечание: для регулярного контроля можно включить GitHub Actions workflow `Release Smoke`:
 - Secret `RELEASE_SMOKE_BASE_URL=https://<your-render-domain>`
 - Optional Secret `TELEGRAM_BOT_TOKEN` (для проверки `getWebhookInfo`)
 - cron каждые 30 минут + ручной запуск.
+
+### Offline Mango smoke (локально и в CI)
+
+Для проверки Mango контура без реального Mango API:
+
+```bash
+python3 scripts/mango_offline_smoke.py
+```
+
+Скрипт проверяет:
+1. webhook ingest + signature verify;
+2. дедупликацию webhook событий;
+3. ручной poll endpoint (`/admin/calls/mango/poll`);
+4. повторный прогон failed событий (`/admin/calls/mango/retry-failed`);
+5. Mango runtime-метрики в `/api/runtime/diagnostics`.
 
 ### Важно по эксплуатации
 

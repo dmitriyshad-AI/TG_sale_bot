@@ -10,7 +10,7 @@ try:
     from sales_agent.sales_api.main import create_app
     from sales_agent.sales_core import db
     from sales_agent.sales_core.config import Settings
-    from sales_agent.sales_core.mango_client import MangoCallEvent
+    from sales_agent.sales_core.mango_client import MangoCallEvent, MangoClientError
     from tests.test_client_compat import build_test_client
 
     HAS_API_DEPS = True
@@ -44,6 +44,9 @@ class ApiMangoIngestTests(unittest.TestCase):
             mango_poll_interval_seconds=120,
             mango_call_recording_ttl_hours=1,
             mango_poll_limit_per_run=50,
+            mango_poll_retry_attempts=3,
+            mango_poll_retry_backoff_seconds=0,
+            mango_retry_failed_limit_per_run=10,
         )
 
     def _settings_disabled(self, db_path: Path) -> Settings:
@@ -229,10 +232,119 @@ class ApiMangoIngestTests(unittest.TestCase):
             self.assertEqual(data["created"], 2)
             self.assertEqual(data["duplicates"], 0)
             self.assertEqual(data["failed"], 0)
+            self.assertEqual(data["attempts"], 1)
 
             calls = client.get("/admin/calls", auth=auth)
             self.assertEqual(calls.status_code, 200)
             self.assertEqual(len(calls.json()["items"]), 2)
+
+    @patch("sales_agent.sales_api.main.MangoClient.list_recent_calls")
+    def test_mango_poll_endpoint_retries_transient_api_error(self, mock_list_recent_calls) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "mango.db"
+            settings = self._settings(db_path)
+            settings.mango_poll_retry_attempts = 3
+            settings.mango_poll_retry_backoff_seconds = 0
+            app = create_app(settings)
+            mock_list_recent_calls.side_effect = [
+                MangoClientError("temporary network"),
+                MangoClientError("temporary network"),
+                [
+                    MangoCallEvent(
+                        event_id="evt-retry-1",
+                        call_id="call-retry-1",
+                        phone="",
+                        recording_url="https://cdn.example/retry.mp3",
+                        transcript_hint="",
+                        occurred_at="",
+                        payload={"event": "call_recording_ready"},
+                    )
+                ],
+            ]
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            response = client.post("/admin/calls/mango/poll?limit=1", auth=auth)
+            self.assertEqual(response.status_code, 200)
+            body = response.json()
+            self.assertTrue(body["ok"])
+            self.assertEqual(body["attempts"], 3)
+            self.assertEqual(body["processed"], 1)
+            self.assertEqual(body["created"], 1)
+
+    @patch("sales_agent.sales_api.main.MangoClient.list_recent_calls")
+    def test_mango_poll_endpoint_returns_error_after_retry_exhausted(self, mock_list_recent_calls) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "mango.db"
+            settings = self._settings(db_path)
+            settings.mango_poll_retry_attempts = 2
+            settings.mango_poll_retry_backoff_seconds = 0
+            app = create_app(settings)
+            mock_list_recent_calls.side_effect = MangoClientError("mango timeout")
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            response = client.post("/admin/calls/mango/poll", auth=auth)
+            self.assertEqual(response.status_code, 200)
+            body = response.json()
+            self.assertFalse(body["ok"])
+            self.assertEqual(body["attempts"], 2)
+            self.assertEqual(body["processed"], 0)
+            self.assertIn("mango timeout", body["error"].lower())
+
+    def test_mango_retry_failed_endpoint_reprocesses_failed_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "mango.db"
+            app = create_app(self._settings(db_path))
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(conn, channel="telegram", external_id="mango-user-retry")
+                db.create_lead_record(
+                    conn=conn,
+                    user_id=user_id,
+                    status="created",
+                    contact={"phone": "+79995550011"},
+                    tallanto_entry_id=None,
+                )
+                state = db.create_or_get_mango_event(
+                    conn,
+                    event_id="evt-failed-1",
+                    call_external_id="call-failed-1",
+                    source="webhook",
+                    payload={
+                        "event": "call_recording_ready",
+                        "event_id": "evt-failed-1",
+                        "data": {
+                            "call_id": "call-failed-1",
+                            "phone": "+79995550011",
+                            "recording_url": "https://cdn.example/retry-failed.mp3",
+                        },
+                    },
+                )
+                db.update_mango_event_status(
+                    conn,
+                    event_row_id=int(state["id"]),
+                    status="failed",
+                    error_text="temporary fail",
+                )
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            retry_response = client.post("/admin/calls/mango/retry-failed?limit=5", auth=auth)
+            self.assertEqual(retry_response.status_code, 200)
+            payload = retry_response.json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["processed"], 1)
+            self.assertEqual(payload["retried"], 1)
+            self.assertEqual(payload["failed"], 0)
+
+            events_response = client.get("/admin/calls/mango/events?status=done", auth=auth)
+            self.assertEqual(events_response.status_code, 200)
+            items = events_response.json()["items"]
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["event_id"], "evt-failed-1")
 
     def test_mango_poll_endpoint_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -242,6 +354,8 @@ class ApiMangoIngestTests(unittest.TestCase):
             auth = ("admin", "secret")
             response = client.post("/admin/calls/mango/poll", auth=auth)
             self.assertEqual(response.status_code, 503)
+            retry_response = client.post("/admin/calls/mango/retry-failed", auth=auth)
+            self.assertEqual(retry_response.status_code, 503)
 
     def test_mango_poll_endpoint_reports_config_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

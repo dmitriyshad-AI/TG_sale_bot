@@ -212,6 +212,18 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
                     message="Mango poll interval is too low (<60s) and may cause unnecessary load.",
                 )
             )
+        if settings.mango_polling_enabled and settings.mango_poll_retry_attempts > 1:
+            if settings.mango_poll_retry_backoff_seconds <= 0:
+                issues.append(
+                    DiagnosticIssue(
+                        severity="warning",
+                        code="mango_retry_backoff_zero",
+                        message=(
+                            "Mango poll retries are enabled but MANGO_POLL_RETRY_BACKOFF_SECONDS is 0; "
+                            "retries will be immediate bursts."
+                        ),
+                    )
+                )
 
     tallanto_token_present = bool((settings.tallanto_api_token or settings.tallanto_api_key).strip())
     if settings.tallanto_read_only and (not settings.tallanto_api_url or not tallanto_token_present):
@@ -371,7 +383,13 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
             "tallanto_token_set": tallanto_token_present,
             "tallanto_default_contact_module": settings.tallanto_default_contact_module,
             "enable_call_copilot": settings.enable_call_copilot,
+            "enable_faq_lab": settings.enable_faq_lab,
             "enable_mango_auto_ingest": settings.enable_mango_auto_ingest,
+            "faq_lab_scheduler_enabled": settings.faq_lab_scheduler_enabled,
+            "faq_lab_interval_seconds": settings.faq_lab_interval_seconds,
+            "faq_lab_window_days": settings.faq_lab_window_days,
+            "faq_lab_min_question_count": settings.faq_lab_min_question_count,
+            "faq_lab_max_items_per_run": settings.faq_lab_max_items_per_run,
             "mango_api_base_url_set": bool(settings.mango_api_base_url),
             "mango_api_token_set": bool(settings.mango_api_token),
             "mango_calls_path": settings.mango_calls_path,
@@ -381,6 +399,9 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
             "mango_poll_interval_seconds": settings.mango_poll_interval_seconds,
             "mango_call_recording_ttl_hours": settings.mango_call_recording_ttl_hours,
             "mango_poll_limit_per_run": settings.mango_poll_limit_per_run,
+            "mango_poll_retry_attempts": settings.mango_poll_retry_attempts,
+            "mango_poll_retry_backoff_seconds": settings.mango_poll_retry_backoff_seconds,
+            "mango_retry_failed_limit_per_run": settings.mango_retry_failed_limit_per_run,
             "database_path": str(settings.database_path),
             "database_parent_writable": database_parent_writable,
             "running_on_render": settings.running_on_render,

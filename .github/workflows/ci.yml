@@ -50,4 +50,7 @@ jobs:
         run: python scripts/check_catalog_freshness.py
 
       - name: Run Test Suite With Coverage Gate
-        run: pytest --cov=sales_agent --cov=scripts --cov-report=term-missing --cov-fail-under=85 -q
+        run: pytest --cov=sales_agent --cov=scripts --cov-report=term-missing --cov-fail-under=90 -q
+
+      - name: Run Mango Offline Smoke
+        run: python scripts/mango_offline_smoke.py

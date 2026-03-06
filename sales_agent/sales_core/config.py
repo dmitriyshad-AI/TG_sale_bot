@@ -58,6 +58,7 @@ class Settings:
     enable_tallanto_enrichment: bool = False
     enable_director_agent: bool = False
     enable_lead_radar: bool = False
+    enable_faq_lab: bool = False
     enable_mango_auto_ingest: bool = False
     lead_radar_scheduler_enabled: bool = True
     lead_radar_interval_seconds: int = 3600
@@ -65,6 +66,11 @@ class Settings:
     lead_radar_call_no_next_step_hours: int = 24
     lead_radar_stale_warm_days: int = 7
     lead_radar_max_items_per_run: int = 50
+    faq_lab_scheduler_enabled: bool = True
+    faq_lab_interval_seconds: int = 21600
+    faq_lab_window_days: int = 90
+    faq_lab_min_question_count: int = 2
+    faq_lab_max_items_per_run: int = 120
     mango_api_base_url: str = ""
     mango_api_token: str = ""
     mango_calls_path: str = "/calls"
@@ -74,6 +80,9 @@ class Settings:
     mango_poll_interval_seconds: int = 300
     mango_call_recording_ttl_hours: int = 48
     mango_poll_limit_per_run: int = 50
+    mango_poll_retry_attempts: int = 3
+    mango_poll_retry_backoff_seconds: int = 2
+    mango_retry_failed_limit_per_run: int = 25
 
 
 def project_root() -> Path:
@@ -225,6 +234,30 @@ def get_settings() -> Settings:
         min_value=1,
         max_value=500,
     )
+    faq_lab_interval_seconds = _parse_int_env(
+        "FAQ_LAB_INTERVAL_SECONDS",
+        21600,
+        min_value=300,
+        max_value=7 * 24 * 3600,
+    )
+    faq_lab_window_days = _parse_int_env(
+        "FAQ_LAB_WINDOW_DAYS",
+        90,
+        min_value=1,
+        max_value=365,
+    )
+    faq_lab_min_question_count = _parse_int_env(
+        "FAQ_LAB_MIN_QUESTION_COUNT",
+        2,
+        min_value=1,
+        max_value=100,
+    )
+    faq_lab_max_items_per_run = _parse_int_env(
+        "FAQ_LAB_MAX_ITEMS_PER_RUN",
+        120,
+        min_value=1,
+        max_value=1000,
+    )
     mango_poll_interval_seconds = _parse_int_env(
         "MANGO_POLL_INTERVAL_SECONDS",
         300,
@@ -240,6 +273,24 @@ def get_settings() -> Settings:
     mango_poll_limit_per_run = _parse_int_env(
         "MANGO_POLL_LIMIT_PER_RUN",
         50,
+        min_value=1,
+        max_value=500,
+    )
+    mango_poll_retry_attempts = _parse_int_env(
+        "MANGO_POLL_RETRY_ATTEMPTS",
+        3,
+        min_value=1,
+        max_value=10,
+    )
+    mango_poll_retry_backoff_seconds = _parse_int_env(
+        "MANGO_POLL_RETRY_BACKOFF_SECONDS",
+        2,
+        min_value=0,
+        max_value=60,
+    )
+    mango_retry_failed_limit_per_run = _parse_int_env(
+        "MANGO_RETRY_FAILED_LIMIT_PER_RUN",
+        25,
         min_value=1,
         max_value=500,
     )
@@ -318,6 +369,7 @@ def get_settings() -> Settings:
         enable_tallanto_enrichment=_parse_bool_env("ENABLE_TALLANTO_ENRICHMENT", default=False),
         enable_director_agent=_parse_bool_env("ENABLE_DIRECTOR_AGENT", default=False),
         enable_lead_radar=_parse_bool_env("ENABLE_LEAD_RADAR", default=False),
+        enable_faq_lab=_parse_bool_env("ENABLE_FAQ_LAB", default=False),
         enable_mango_auto_ingest=_parse_bool_env("ENABLE_MANGO_AUTO_INGEST", default=False),
         lead_radar_scheduler_enabled=_parse_bool_env("LEAD_RADAR_SCHEDULER_ENABLED", default=True),
         lead_radar_interval_seconds=lead_radar_interval_seconds,
@@ -325,6 +377,11 @@ def get_settings() -> Settings:
         lead_radar_call_no_next_step_hours=lead_radar_call_no_next_step_hours,
         lead_radar_stale_warm_days=lead_radar_stale_warm_days,
         lead_radar_max_items_per_run=lead_radar_max_items_per_run,
+        faq_lab_scheduler_enabled=_parse_bool_env("FAQ_LAB_SCHEDULER_ENABLED", default=True),
+        faq_lab_interval_seconds=faq_lab_interval_seconds,
+        faq_lab_window_days=faq_lab_window_days,
+        faq_lab_min_question_count=faq_lab_min_question_count,
+        faq_lab_max_items_per_run=faq_lab_max_items_per_run,
         mango_api_base_url=os.getenv("MANGO_API_BASE_URL", "").strip(),
         mango_api_token=os.getenv("MANGO_API_TOKEN", "").strip(),
         mango_calls_path=mango_calls_path,
@@ -334,4 +391,7 @@ def get_settings() -> Settings:
         mango_poll_interval_seconds=mango_poll_interval_seconds,
         mango_call_recording_ttl_hours=mango_call_recording_ttl_hours,
         mango_poll_limit_per_run=mango_poll_limit_per_run,
+        mango_poll_retry_attempts=mango_poll_retry_attempts,
+        mango_poll_retry_backoff_seconds=mango_poll_retry_backoff_seconds,
+        mango_retry_failed_limit_per_run=mango_retry_failed_limit_per_run,
     )

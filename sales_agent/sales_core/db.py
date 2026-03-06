@@ -270,6 +270,62 @@ CREATE_TABLE_STATEMENTS = [
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS faq_candidates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        question_key TEXT NOT NULL UNIQUE,
+        question_text TEXT NOT NULL,
+        question_count INTEGER NOT NULL DEFAULT 0,
+        thread_count INTEGER NOT NULL DEFAULT 0,
+        approvals_count INTEGER NOT NULL DEFAULT 0,
+        sends_count INTEGER NOT NULL DEFAULT 0,
+        next_step_count INTEGER NOT NULL DEFAULT 0,
+        reply_approved_rate REAL NOT NULL DEFAULT 0,
+        next_step_rate REAL NOT NULL DEFAULT 0,
+        first_seen_at TEXT,
+        last_seen_at TEXT,
+        sample_thread_id TEXT,
+        status TEXT NOT NULL DEFAULT 'new',
+        source_json TEXT NOT NULL DEFAULT '{}',
+        suggested_answer TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS canonical_answers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        candidate_id INTEGER NOT NULL UNIQUE,
+        question_key TEXT NOT NULL,
+        question_text TEXT NOT NULL,
+        answer_text TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_by TEXT,
+        promoted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(candidate_id) REFERENCES faq_candidates(id)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS answer_performance (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        answer_kind TEXT NOT NULL,
+        answer_ref TEXT NOT NULL,
+        question_key TEXT NOT NULL,
+        question_text TEXT NOT NULL,
+        question_count INTEGER NOT NULL DEFAULT 0,
+        approvals_count INTEGER NOT NULL DEFAULT 0,
+        sends_count INTEGER NOT NULL DEFAULT 0,
+        next_step_count INTEGER NOT NULL DEFAULT 0,
+        reply_approved_rate REAL NOT NULL DEFAULT 0,
+        next_step_rate REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active',
+        source_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(answer_kind, answer_ref, question_key)
+    );
+    """,
 ]
 
 CREATE_INDEX_STATEMENTS = [
@@ -314,6 +370,13 @@ CREATE_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_call_summaries_warmth_created ON call_summaries(warmth, created_at);",
     "CREATE INDEX IF NOT EXISTS idx_mango_events_status_created ON mango_events(status, created_at);",
     "CREATE INDEX IF NOT EXISTS idx_mango_events_call_external ON mango_events(call_external_id, created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_faq_candidates_question_count ON faq_candidates(question_count DESC, updated_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_faq_candidates_status ON faq_candidates(status, updated_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_faq_candidates_last_seen ON faq_candidates(last_seen_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_canonical_answers_status ON canonical_answers(status, updated_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_canonical_answers_question_key ON canonical_answers(question_key);",
+    "CREATE INDEX IF NOT EXISTS idx_answer_performance_kind_status ON answer_performance(answer_kind, status, next_step_rate DESC, question_count DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_answer_performance_question_key ON answer_performance(question_key);",
 ]
 
 
@@ -1418,6 +1481,449 @@ def get_revenue_metrics_snapshot(conn: sqlite3.Connection) -> Dict[str, Any]:
     }
 
 
+def upsert_faq_candidate(
+    conn: sqlite3.Connection,
+    *,
+    question_key: str,
+    question_text: str,
+    question_count: int,
+    thread_count: int,
+    approvals_count: int,
+    sends_count: int,
+    next_step_count: int,
+    reply_approved_rate: float,
+    next_step_rate: float,
+    first_seen_at: Optional[str] = None,
+    last_seen_at: Optional[str] = None,
+    sample_thread_id: Optional[str] = None,
+    status: str = "new",
+    source: Optional[Dict[str, Any]] = None,
+    suggested_answer: Optional[str] = None,
+) -> int:
+    normalized_key = (question_key or "").strip()
+    if not normalized_key:
+        raise ValueError("question_key is required")
+
+    normalized_text = (question_text or "").strip()
+    if not normalized_text:
+        raise ValueError("question_text is required")
+
+    source_json = json.dumps(source or {}, ensure_ascii=False)
+    conn.execute(
+        """
+        INSERT INTO faq_candidates (
+            question_key,
+            question_text,
+            question_count,
+            thread_count,
+            approvals_count,
+            sends_count,
+            next_step_count,
+            reply_approved_rate,
+            next_step_rate,
+            first_seen_at,
+            last_seen_at,
+            sample_thread_id,
+            status,
+            source_json,
+            suggested_answer
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(question_key) DO UPDATE SET
+            question_text = excluded.question_text,
+            question_count = excluded.question_count,
+            thread_count = excluded.thread_count,
+            approvals_count = excluded.approvals_count,
+            sends_count = excluded.sends_count,
+            next_step_count = excluded.next_step_count,
+            reply_approved_rate = excluded.reply_approved_rate,
+            next_step_rate = excluded.next_step_rate,
+            first_seen_at = COALESCE(excluded.first_seen_at, faq_candidates.first_seen_at),
+            last_seen_at = COALESCE(excluded.last_seen_at, faq_candidates.last_seen_at),
+            sample_thread_id = COALESCE(excluded.sample_thread_id, faq_candidates.sample_thread_id),
+            source_json = excluded.source_json,
+            suggested_answer = COALESCE(excluded.suggested_answer, faq_candidates.suggested_answer),
+            status = CASE
+                WHEN faq_candidates.status IN ('promoted', 'archived') THEN faq_candidates.status
+                ELSE excluded.status
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            normalized_key,
+            normalized_text,
+            max(0, int(question_count)),
+            max(0, int(thread_count)),
+            max(0, int(approvals_count)),
+            max(0, int(sends_count)),
+            max(0, int(next_step_count)),
+            float(reply_approved_rate),
+            float(next_step_rate),
+            (first_seen_at or "").strip() or None,
+            (last_seen_at or "").strip() or None,
+            (sample_thread_id or "").strip() or None,
+            (status or "new").strip().lower() or "new",
+            source_json,
+            (suggested_answer or "").strip() or None,
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id FROM faq_candidates WHERE question_key = ? LIMIT 1",
+        (normalized_key,),
+    ).fetchone()
+    return int(row["id"]) if row else 0
+
+
+def get_faq_candidate(conn: sqlite3.Connection, *, candidate_id: int) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT
+            id,
+            question_key,
+            question_text,
+            question_count,
+            thread_count,
+            approvals_count,
+            sends_count,
+            next_step_count,
+            reply_approved_rate,
+            next_step_rate,
+            first_seen_at,
+            last_seen_at,
+            sample_thread_id,
+            status,
+            source_json,
+            suggested_answer,
+            created_at,
+            updated_at
+        FROM faq_candidates
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (candidate_id,),
+    ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["source"] = _safe_json_loads(item.pop("source_json"))
+    return item
+
+
+def list_faq_candidates(
+    conn: sqlite3.Connection,
+    *,
+    status: Optional[str] = None,
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    params: list[Any] = []
+    where_sql = ""
+    if isinstance(status, str) and status.strip():
+        where_sql = "WHERE status = ?"
+        params.append(status.strip().lower())
+    params.append(max(1, int(limit)))
+    cursor = conn.execute(
+        f"""
+        SELECT
+            id,
+            question_key,
+            question_text,
+            question_count,
+            thread_count,
+            approvals_count,
+            sends_count,
+            next_step_count,
+            reply_approved_rate,
+            next_step_rate,
+            first_seen_at,
+            last_seen_at,
+            sample_thread_id,
+            status,
+            source_json,
+            suggested_answer,
+            created_at,
+            updated_at
+        FROM faq_candidates
+        {where_sql}
+        ORDER BY question_count DESC, last_seen_at DESC, id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    rows: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["source"] = _safe_json_loads(item.pop("source_json"))
+        rows.append(item)
+    return rows
+
+
+def promote_faq_candidate_to_canonical(
+    conn: sqlite3.Connection,
+    *,
+    candidate_id: int,
+    answer_text: Optional[str] = None,
+    created_by: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    candidate = get_faq_candidate(conn, candidate_id=candidate_id)
+    if not candidate:
+        return None
+
+    resolved_answer = (answer_text or "").strip() or (candidate.get("suggested_answer") or "").strip()
+    if not resolved_answer:
+        resolved_answer = (
+            "Уточняем цель, класс и формат, затем даём 2-3 релевантных направления "
+            "и предлагаем следующий шаг с менеджером."
+        )
+
+    conn.execute(
+        """
+        INSERT INTO canonical_answers (
+            candidate_id,
+            question_key,
+            question_text,
+            answer_text,
+            status,
+            created_by,
+            promoted_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(candidate_id) DO UPDATE SET
+            question_key = excluded.question_key,
+            question_text = excluded.question_text,
+            answer_text = excluded.answer_text,
+            status = 'active',
+            created_by = COALESCE(excluded.created_by, canonical_answers.created_by),
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            int(candidate_id),
+            str(candidate.get("question_key") or ""),
+            str(candidate.get("question_text") or ""),
+            resolved_answer,
+            (created_by or "").strip() or None,
+        ),
+    )
+    conn.execute(
+        """
+        UPDATE faq_candidates
+        SET status = 'promoted',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (candidate_id,),
+    )
+    conn.commit()
+
+    row = conn.execute(
+        """
+        SELECT
+            id,
+            candidate_id,
+            question_key,
+            question_text,
+            answer_text,
+            status,
+            created_by,
+            promoted_at,
+            updated_at
+        FROM canonical_answers
+        WHERE candidate_id = ?
+        LIMIT 1
+        """,
+        (candidate_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_canonical_answers(
+    conn: sqlite3.Connection,
+    *,
+    status: Optional[str] = "active",
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    params: list[Any] = []
+    where_sql = ""
+    if isinstance(status, str) and status.strip():
+        where_sql = "WHERE status = ?"
+        params.append(status.strip().lower())
+    params.append(max(1, int(limit)))
+    cursor = conn.execute(
+        f"""
+        SELECT
+            id,
+            candidate_id,
+            question_key,
+            question_text,
+            answer_text,
+            status,
+            created_by,
+            promoted_at,
+            updated_at
+        FROM canonical_answers
+        {where_sql}
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def upsert_answer_performance(
+    conn: sqlite3.Connection,
+    *,
+    answer_kind: str,
+    answer_ref: str,
+    question_key: str,
+    question_text: str,
+    question_count: int,
+    approvals_count: int,
+    sends_count: int,
+    next_step_count: int,
+    reply_approved_rate: float,
+    next_step_rate: float,
+    status: str = "active",
+    source: Optional[Dict[str, Any]] = None,
+) -> int:
+    normalized_kind = (answer_kind or "").strip().lower()
+    normalized_ref = (answer_ref or "").strip()
+    normalized_key = (question_key or "").strip()
+    normalized_text = (question_text or "").strip()
+    if not normalized_kind or not normalized_ref or not normalized_key or not normalized_text:
+        raise ValueError("answer_kind, answer_ref, question_key and question_text are required")
+
+    source_json = json.dumps(source or {}, ensure_ascii=False)
+    conn.execute(
+        """
+        INSERT INTO answer_performance (
+            answer_kind,
+            answer_ref,
+            question_key,
+            question_text,
+            question_count,
+            approvals_count,
+            sends_count,
+            next_step_count,
+            reply_approved_rate,
+            next_step_rate,
+            status,
+            source_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(answer_kind, answer_ref, question_key) DO UPDATE SET
+            question_text = excluded.question_text,
+            question_count = excluded.question_count,
+            approvals_count = excluded.approvals_count,
+            sends_count = excluded.sends_count,
+            next_step_count = excluded.next_step_count,
+            reply_approved_rate = excluded.reply_approved_rate,
+            next_step_rate = excluded.next_step_rate,
+            status = excluded.status,
+            source_json = excluded.source_json,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            normalized_kind,
+            normalized_ref,
+            normalized_key,
+            normalized_text,
+            max(0, int(question_count)),
+            max(0, int(approvals_count)),
+            max(0, int(sends_count)),
+            max(0, int(next_step_count)),
+            float(reply_approved_rate),
+            float(next_step_rate),
+            (status or "active").strip().lower() or "active",
+            source_json,
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        """
+        SELECT id
+        FROM answer_performance
+        WHERE answer_kind = ? AND answer_ref = ? AND question_key = ?
+        LIMIT 1
+        """,
+        (normalized_kind, normalized_ref, normalized_key),
+    ).fetchone()
+    return int(row["id"]) if row else 0
+
+
+def list_answer_performance(
+    conn: sqlite3.Connection,
+    *,
+    answer_kind: Optional[str] = None,
+    status: Optional[str] = "active",
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    where_parts: list[str] = []
+    params: list[Any] = []
+    if isinstance(answer_kind, str) and answer_kind.strip():
+        where_parts.append("answer_kind = ?")
+        params.append(answer_kind.strip().lower())
+    if isinstance(status, str) and status.strip():
+        where_parts.append("status = ?")
+        params.append(status.strip().lower())
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    params.append(max(1, int(limit)))
+    cursor = conn.execute(
+        f"""
+        SELECT
+            id,
+            answer_kind,
+            answer_ref,
+            question_key,
+            question_text,
+            question_count,
+            approvals_count,
+            sends_count,
+            next_step_count,
+            reply_approved_rate,
+            next_step_rate,
+            status,
+            source_json,
+            created_at,
+            updated_at
+        FROM answer_performance
+        {where_sql}
+        ORDER BY next_step_rate DESC, reply_approved_rate DESC, question_count DESC, updated_at DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    rows: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["source"] = _safe_json_loads(item.pop("source_json"))
+        rows.append(item)
+    return rows
+
+
+def list_rejected_reply_drafts(conn: sqlite3.Connection, *, limit: int = 50) -> list[Dict[str, Any]]:
+    cursor = conn.execute(
+        """
+        SELECT
+            id,
+            user_id,
+            thread_id,
+            source_message_id,
+            draft_text,
+            model_name,
+            created_at,
+            updated_at
+        FROM reply_drafts
+        WHERE status = 'rejected'
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?
+        """,
+        (max(1, int(limit)),),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
 def build_business_thread_key(*, business_connection_id: str, chat_id: int) -> str:
     return f"biz:{business_connection_id}:{int(chat_id)}"
 
@@ -2111,6 +2617,7 @@ def list_mango_events(
     *,
     status: Optional[str] = None,
     limit: int = 100,
+    newest_first: bool = True,
 ) -> list[Dict[str, Any]]:
     params: list[Any] = []
     where_sql = ""
@@ -2118,12 +2625,13 @@ def list_mango_events(
         where_sql = "WHERE status = ?"
         params.append(status.strip())
     params.append(max(1, int(limit)))
+    order_sql = "DESC" if newest_first else "ASC"
     cursor = conn.execute(
         f"""
         SELECT id, event_id, call_external_id, source, status, payload_json, error_text, created_at, updated_at
         FROM mango_events
         {where_sql}
-        ORDER BY id DESC
+        ORDER BY id {order_sql}
         LIMIT ?
         """,
         tuple(params),
@@ -2149,6 +2657,46 @@ def get_latest_mango_event_created_at(conn: sqlite3.Connection) -> str:
     if not row:
         return ""
     return str(row["created_at"] or "").strip()
+
+
+def get_oldest_mango_event_created_at(conn: sqlite3.Connection, *, status: Optional[str] = None) -> str:
+    params: list[Any] = []
+    where_sql = ""
+    if isinstance(status, str) and status.strip():
+        where_sql = "WHERE status = ?"
+        params.append(status.strip())
+    row = conn.execute(
+        f"""
+        SELECT created_at
+        FROM mango_events
+        {where_sql}
+        ORDER BY id ASC
+        LIMIT 1
+        """,
+        tuple(params),
+    ).fetchone()
+    if not row:
+        return ""
+    return str(row["created_at"] or "").strip()
+
+
+def count_mango_events(conn: sqlite3.Connection, *, status: Optional[str] = None) -> int:
+    params: list[Any] = []
+    where_sql = ""
+    if isinstance(status, str) and status.strip():
+        where_sql = "WHERE status = ?"
+        params.append(status.strip())
+    row = conn.execute(
+        f"""
+        SELECT COUNT(1) AS cnt
+        FROM mango_events
+        {where_sql}
+        """,
+        tuple(params),
+    ).fetchone()
+    if not row:
+        return 0
+    return int(row["cnt"] or 0)
 
 
 def find_user_by_phone(conn: sqlite3.Connection, *, phone: str) -> Optional[int]:

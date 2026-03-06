@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urljoin
@@ -49,6 +50,23 @@ def _build_parser() -> argparse.ArgumentParser:
         default="TELEGRAM_BOT_TOKEN",
         help="Env var name that stores Telegram bot token (used with --check-telegram-webhook).",
     )
+    parser.add_argument(
+        "--check-mango-runtime",
+        action="store_true",
+        help="Validate Mango runtime metrics from /api/runtime/diagnostics.",
+    )
+    parser.add_argument(
+        "--mango-max-failed-events",
+        type=int,
+        default=20,
+        help="Fail if runtime mango.events_failed is above this threshold.",
+    )
+    parser.add_argument(
+        "--mango-max-oldest-failed-hours",
+        type=float,
+        default=48.0,
+        help="Fail if oldest failed Mango event is older than this threshold (hours).",
+    )
     return parser
 
 
@@ -76,6 +94,23 @@ def _fetch_telegram_webhook_info(bot_token: str, timeout: float) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("Unexpected Telegram response format.")
     return payload
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -212,6 +247,47 @@ def main(argv: list[str] | None = None) -> int:
                         )
             except Exception as exc:
                 checks.append(("telegram_webhook_info", False, f"error: {exc}"))
+
+    if args.check_mango_runtime:
+        mango = runtime.get("mango") if isinstance(runtime, dict) else None
+        if not isinstance(mango, dict):
+            checks.append(("mango_runtime_block", False, "runtime.mango is missing"))
+        else:
+            mango_enabled = bool(mango.get("enabled"))
+            checks.append(("mango_runtime_block", True, f"enabled={mango_enabled}"))
+            if mango_enabled:
+                failed_events = int(mango.get("events_failed") or 0)
+                failed_ok = failed_events <= max(0, int(args.mango_max_failed_events))
+                checks.append(
+                    (
+                        "mango_failed_events",
+                        failed_ok,
+                        f"events_failed={failed_events} max={int(args.mango_max_failed_events)}",
+                    )
+                )
+                oldest_failed_raw = str(mango.get("oldest_failed_created_at") or "").strip()
+                if oldest_failed_raw:
+                    oldest_failed = _parse_iso_datetime(oldest_failed_raw)
+                    if oldest_failed is None:
+                        checks.append(
+                            (
+                                "mango_oldest_failed_age",
+                                False,
+                                f"unparseable oldest_failed_created_at={oldest_failed_raw}",
+                            )
+                        )
+                    else:
+                        age_hours = max(0.0, (datetime.now(timezone.utc) - oldest_failed).total_seconds() / 3600.0)
+                        max_hours = max(0.0, float(args.mango_max_oldest_failed_hours))
+                        checks.append(
+                            (
+                                "mango_oldest_failed_age",
+                                age_hours <= max_hours,
+                                f"age_hours={age_hours:.2f} max={max_hours:.2f}",
+                            )
+                        )
+                else:
+                    checks.append(("mango_oldest_failed_age", True, "no failed events"))
 
     failed = [item for item in checks if not item[1]]
     for name, ok, details in checks:

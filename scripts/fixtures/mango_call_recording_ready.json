@@ -1,0 +1,9 @@
+{
+  "event": "call_recording_ready",
+  "event_id": "fixture-event-1",
+  "data": {
+    "call_id": "fixture-call-1",
+    "phone": "+79990000011",
+    "recording_url": "https://cdn.example/fixture-recording.mp3"
+  }
+}

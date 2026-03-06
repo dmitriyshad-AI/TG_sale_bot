@@ -27,6 +27,10 @@ class LoadSmokeScriptTests(unittest.TestCase):
         self.assertEqual(load_smoke._percentile(values, 1.0), 40.0)
         self.assertAlmostEqual(load_smoke._percentile(values, 0.5), 25.0)
 
+    def test_percentile_handles_empty_and_single_values(self) -> None:
+        self.assertEqual(load_smoke._percentile([], 0.5), 0.0)
+        self.assertEqual(load_smoke._percentile([42.5], 0.9), 42.5)
+
     def test_main_reports_ok_when_all_responses_are_2xx(self) -> None:
         probe_result = load_smoke.ProbeResult(status_code=200, latency_ms=10.0, error="")
         with patch.object(load_smoke, "_probe_once", return_value=probe_result), patch(
@@ -73,6 +77,19 @@ class LoadSmokeScriptTests(unittest.TestCase):
             )
         self.assertEqual(result.status_code, 0)
         self.assertIn("network down", result.error.lower())
+
+    def test_probe_once_catalog_target_uses_get(self) -> None:
+        with patch.object(load_smoke, "urlopen", return_value=_MockResponse(status=200, body=b"{}")) as mocked:
+            result = load_smoke._probe_once(
+                base_url="http://127.0.0.1:8000",
+                target="catalog",
+                timeout=2.0,
+                assistant_token="",
+            )
+        self.assertEqual(result.status_code, 200)
+        request_obj = mocked.call_args.args[0]
+        self.assertIn("api/catalog/search", request_obj.full_url)
+        self.assertEqual(request_obj.method, "GET")
 
 
 if __name__ == "__main__":

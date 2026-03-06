@@ -209,6 +209,9 @@ SALES_TONE_PATH=
 - `MANGO_POLLING_ENABLED=true` (если хотите регулярный pull по API)
 - `MANGO_POLL_INTERVAL_SECONDS=300`
 - `MANGO_POLL_LIMIT_PER_RUN=50`
+- `MANGO_POLL_RETRY_ATTEMPTS=3` (ретраи fetch из Mango API при временных ошибках)
+- `MANGO_POLL_RETRY_BACKOFF_SECONDS=2` (экспоненциальный backoff 2s, 4s, 8s...)
+- `MANGO_RETRY_FAILED_LIMIT_PER_RUN=25` (пакет ручного/авто повторного прогона failed events)
 - `MANGO_CALL_RECORDING_TTL_HOURS=48` (через этот срок локальные аудиофайлы удаляются, summary/transcript сохраняются)
 
 Проверка:
@@ -217,9 +220,30 @@ SALES_TONE_PATH=
 3. События доступны в админ API:
    - `GET /admin/calls/mango/events`
    - `POST /admin/calls/mango/poll` (ручной запуск poll, Basic Auth admin)
+   - `POST /admin/calls/mango/retry-failed` (повторная обработка failed events, Basic Auth admin)
 4. Статус и конфиг видны в:
    - `GET /api/runtime/diagnostics`
    - `GET /admin/revenue-metrics`
+5. Оффлайн smoke (без реального Mango API) для локали/CI:
+   - `python scripts/mango_offline_smoke.py`
+
+## FAQ Lab (Step 9)
+
+Назначение: nightly/periodic кластеризация реальных вопросов, список кандидатов в canonical answers и ranking ответов по метрикам.
+
+Минимальные env:
+- `ENABLE_FAQ_LAB=true`
+- `FAQ_LAB_SCHEDULER_ENABLED=true`
+- `FAQ_LAB_INTERVAL_SECONDS=21600`
+- `FAQ_LAB_WINDOW_DAYS=90`
+- `FAQ_LAB_MIN_QUESTION_COUNT=2`
+- `FAQ_LAB_MAX_ITEMS_PER_RUN=120`
+
+Admin API/UI:
+- `GET /admin/faq-lab` — snapshot (`top new questions`, `top performing replies`, `rejected replies`)
+- `POST /admin/faq-lab/run` — ручной запуск refresh
+- `POST /admin/faq-lab/candidates/{candidate_id}/promote` — promote в canonical answer
+- `GET /admin/ui/faq-lab` — базовая HTML-панель FAQ Lab
 
 ## Команды обслуживания
 
@@ -262,6 +286,7 @@ SALES_TONE_PATH=
     --strict-runtime \
     --require-webhook-mode \
     --require-render-persistent \
+    --check-mango-runtime \
     --check-telegram-webhook
   ```
   - Регулярный remote smoke можно включить через GitHub Actions workflow `Release Smoke`:

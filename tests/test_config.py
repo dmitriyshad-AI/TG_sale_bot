@@ -66,6 +66,7 @@ class ConfigTests(unittest.TestCase):
             "ENABLE_TALLANTO_ENRICHMENT": "yes",
             "ENABLE_DIRECTOR_AGENT": "on",
             "ENABLE_LEAD_RADAR": "true",
+            "ENABLE_FAQ_LAB": "true",
             "ENABLE_MANGO_AUTO_INGEST": "yes",
             "LEAD_RADAR_SCHEDULER_ENABLED": "false",
             "LEAD_RADAR_INTERVAL_SECONDS": "1200",
@@ -73,6 +74,11 @@ class ConfigTests(unittest.TestCase):
             "LEAD_RADAR_CALL_NO_NEXT_STEP_HOURS": "30",
             "LEAD_RADAR_STALE_WARM_DAYS": "10",
             "LEAD_RADAR_MAX_ITEMS_PER_RUN": "77",
+            "FAQ_LAB_SCHEDULER_ENABLED": "false",
+            "FAQ_LAB_INTERVAL_SECONDS": "7200",
+            "FAQ_LAB_WINDOW_DAYS": "45",
+            "FAQ_LAB_MIN_QUESTION_COUNT": "3",
+            "FAQ_LAB_MAX_ITEMS_PER_RUN": "222",
             "MANGO_API_BASE_URL": "https://mango.example/api",
             "MANGO_API_TOKEN": "mango-token",
             "MANGO_CALLS_PATH": "vpbx/calls",
@@ -82,6 +88,9 @@ class ConfigTests(unittest.TestCase):
             "MANGO_POLL_INTERVAL_SECONDS": "180",
             "MANGO_CALL_RECORDING_TTL_HOURS": "72",
             "MANGO_POLL_LIMIT_PER_RUN": "88",
+            "MANGO_POLL_RETRY_ATTEMPTS": "4",
+            "MANGO_POLL_RETRY_BACKOFF_SECONDS": "3",
+            "MANGO_RETRY_FAILED_LIMIT_PER_RUN": "66",
         },
         clear=True,
     )
@@ -132,6 +141,7 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(settings.enable_tallanto_enrichment)
         self.assertTrue(settings.enable_director_agent)
         self.assertTrue(settings.enable_lead_radar)
+        self.assertTrue(settings.enable_faq_lab)
         self.assertTrue(settings.enable_mango_auto_ingest)
         self.assertFalse(settings.lead_radar_scheduler_enabled)
         self.assertEqual(settings.lead_radar_interval_seconds, 1200)
@@ -139,6 +149,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.lead_radar_call_no_next_step_hours, 30)
         self.assertEqual(settings.lead_radar_stale_warm_days, 10)
         self.assertEqual(settings.lead_radar_max_items_per_run, 77)
+        self.assertFalse(settings.faq_lab_scheduler_enabled)
+        self.assertEqual(settings.faq_lab_interval_seconds, 7200)
+        self.assertEqual(settings.faq_lab_window_days, 45)
+        self.assertEqual(settings.faq_lab_min_question_count, 3)
+        self.assertEqual(settings.faq_lab_max_items_per_run, 222)
         self.assertEqual(settings.mango_api_base_url, "https://mango.example/api")
         self.assertEqual(settings.mango_api_token, "mango-token")
         self.assertEqual(settings.mango_calls_path, "/vpbx/calls")
@@ -148,6 +163,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.mango_poll_interval_seconds, 180)
         self.assertEqual(settings.mango_call_recording_ttl_hours, 72)
         self.assertEqual(settings.mango_poll_limit_per_run, 88)
+        self.assertEqual(settings.mango_poll_retry_attempts, 4)
+        self.assertEqual(settings.mango_poll_retry_backoff_seconds, 3)
+        self.assertEqual(settings.mango_retry_failed_limit_per_run, 66)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_get_settings_uses_defaults(self) -> None:
@@ -196,6 +214,7 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(settings.enable_tallanto_enrichment)
         self.assertFalse(settings.enable_director_agent)
         self.assertFalse(settings.enable_lead_radar)
+        self.assertFalse(settings.enable_faq_lab)
         self.assertFalse(settings.enable_mango_auto_ingest)
         self.assertTrue(settings.lead_radar_scheduler_enabled)
         self.assertEqual(settings.lead_radar_interval_seconds, 3600)
@@ -203,6 +222,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.lead_radar_call_no_next_step_hours, 24)
         self.assertEqual(settings.lead_radar_stale_warm_days, 7)
         self.assertEqual(settings.lead_radar_max_items_per_run, 50)
+        self.assertTrue(settings.faq_lab_scheduler_enabled)
+        self.assertEqual(settings.faq_lab_interval_seconds, 21600)
+        self.assertEqual(settings.faq_lab_window_days, 90)
+        self.assertEqual(settings.faq_lab_min_question_count, 2)
+        self.assertEqual(settings.faq_lab_max_items_per_run, 120)
         self.assertEqual(settings.mango_api_base_url, "")
         self.assertEqual(settings.mango_api_token, "")
         self.assertEqual(settings.mango_calls_path, "/calls")
@@ -212,6 +236,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.mango_poll_interval_seconds, 300)
         self.assertEqual(settings.mango_call_recording_ttl_hours, 48)
         self.assertEqual(settings.mango_poll_limit_per_run, 50)
+        self.assertEqual(settings.mango_poll_retry_attempts, 3)
+        self.assertEqual(settings.mango_poll_retry_backoff_seconds, 2)
+        self.assertEqual(settings.mango_retry_failed_limit_per_run, 25)
 
     @patch.dict(
         os.environ,
@@ -226,9 +253,16 @@ class ConfigTests(unittest.TestCase):
             "LEAD_RADAR_CALL_NO_NEXT_STEP_HOURS": "-2",
             "LEAD_RADAR_STALE_WARM_DAYS": "9999",
             "LEAD_RADAR_MAX_ITEMS_PER_RUN": "0",
+            "FAQ_LAB_INTERVAL_SECONDS": "20",
+            "FAQ_LAB_WINDOW_DAYS": "999",
+            "FAQ_LAB_MIN_QUESTION_COUNT": "0",
+            "FAQ_LAB_MAX_ITEMS_PER_RUN": "5000",
             "MANGO_POLL_INTERVAL_SECONDS": "-1",
             "MANGO_CALL_RECORDING_TTL_HOURS": "999999",
             "MANGO_POLL_LIMIT_PER_RUN": "0",
+            "MANGO_POLL_RETRY_ATTEMPTS": "999",
+            "MANGO_POLL_RETRY_BACKOFF_SECONDS": "-2",
+            "MANGO_RETRY_FAILED_LIMIT_PER_RUN": "0",
         },
         clear=True,
     )
@@ -244,9 +278,16 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.lead_radar_call_no_next_step_hours, 1)
         self.assertEqual(settings.lead_radar_stale_warm_days, 180)
         self.assertEqual(settings.lead_radar_max_items_per_run, 1)
+        self.assertEqual(settings.faq_lab_interval_seconds, 300)
+        self.assertEqual(settings.faq_lab_window_days, 365)
+        self.assertEqual(settings.faq_lab_min_question_count, 1)
+        self.assertEqual(settings.faq_lab_max_items_per_run, 1000)
         self.assertEqual(settings.mango_poll_interval_seconds, 30)
         self.assertEqual(settings.mango_call_recording_ttl_hours, 2160)
         self.assertEqual(settings.mango_poll_limit_per_run, 1)
+        self.assertEqual(settings.mango_poll_retry_attempts, 10)
+        self.assertEqual(settings.mango_poll_retry_backoff_seconds, 0)
+        self.assertEqual(settings.mango_retry_failed_limit_per_run, 1)
 
     @patch.dict(
         os.environ,

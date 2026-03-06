@@ -42,6 +42,9 @@ class DatabaseTests(unittest.TestCase):
                 "call_transcripts",
                 "call_summaries",
                 "mango_events",
+                "faq_candidates",
+                "canonical_answers",
+                "answer_performance",
             }.issubset(table_names)
         )
 
@@ -353,6 +356,21 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["event_id"], "evt-1")
         self.assertTrue(db.get_latest_mango_event_created_at(self.conn))
+        self.assertGreaterEqual(db.count_mango_events(self.conn), 1)
+        self.assertEqual(db.count_mango_events(self.conn, status="done"), 1)
+        self.assertTrue(db.get_oldest_mango_event_created_at(self.conn, status="done"))
+
+        db.create_or_get_mango_event(
+            self.conn,
+            event_id="evt-2",
+            call_external_id="call-2",
+            source="poll",
+            payload={"event_id": "evt-2"},
+        )
+        ordered_oldest = db.list_mango_events(self.conn, limit=10, newest_first=False)
+        self.assertEqual(ordered_oldest[0]["event_id"], "evt-1")
+        ordered_newest = db.list_mango_events(self.conn, limit=10, newest_first=True)
+        self.assertEqual(ordered_newest[0]["event_id"], "evt-2")
 
         call_id = db.create_call_record(
             self.conn,
@@ -759,6 +777,114 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(len(messages), 1)
         self.assertTrue(messages[0]["is_deleted"])
         self.assertEqual(messages[0]["payload"]["event_type"], "business_message")
+
+    def test_faq_candidates_and_canonical_answers_roundtrip(self) -> None:
+        candidate_id = db.upsert_faq_candidate(
+            self.conn,
+            question_key="как поступить в мфти 10 класс",
+            question_text="Как поступить в МФТИ в 10 классе?",
+            question_count=12,
+            thread_count=9,
+            approvals_count=6,
+            sends_count=5,
+            next_step_count=4,
+            reply_approved_rate=0.67,
+            next_step_rate=0.80,
+            first_seen_at="2026-03-01T10:00:00+00:00",
+            last_seen_at="2026-03-06T10:00:00+00:00",
+            sample_thread_id="tg:42",
+            status="candidate",
+            source={"channels": {"telegram": 12}},
+            suggested_answer="Уточняем цель, класс и предмет, затем предлагаем план.",
+        )
+        self.assertGreater(candidate_id, 0)
+
+        candidate = db.get_faq_candidate(self.conn, candidate_id=candidate_id)
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate["question_count"], 12)
+        self.assertEqual(candidate["source"]["channels"]["telegram"], 12)
+
+        listed = db.list_faq_candidates(self.conn, limit=10)
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["id"], candidate_id)
+
+        canonical = db.promote_faq_candidate_to_canonical(
+            self.conn,
+            candidate_id=candidate_id,
+            answer_text="Сначала определим приоритетные экзамены и текущий уровень.",
+            created_by="admin",
+        )
+        self.assertIsNotNone(canonical)
+        assert canonical is not None
+        self.assertEqual(canonical["candidate_id"], candidate_id)
+        self.assertIn("приоритетные экзамены", canonical["answer_text"])
+
+        candidate_after = db.get_faq_candidate(self.conn, candidate_id=candidate_id)
+        self.assertEqual(candidate_after["status"], "promoted")
+
+        canonical_rows = db.list_canonical_answers(self.conn, limit=10)
+        self.assertEqual(len(canonical_rows), 1)
+        self.assertEqual(canonical_rows[0]["candidate_id"], candidate_id)
+
+    def test_answer_performance_and_rejected_drafts_lists(self) -> None:
+        candidate_id = db.upsert_faq_candidate(
+            self.conn,
+            question_key="что делать если проседает математика",
+            question_text="Что делать, если проседает математика?",
+            question_count=7,
+            thread_count=6,
+            approvals_count=3,
+            sends_count=2,
+            next_step_count=1,
+            reply_approved_rate=0.5,
+            next_step_rate=0.5,
+            status="candidate",
+        )
+        self.assertGreater(candidate_id, 0)
+
+        perf_id = db.upsert_answer_performance(
+            self.conn,
+            answer_kind="candidate",
+            answer_ref=f"candidate:{candidate_id}",
+            question_key="что делать если проседает математика",
+            question_text="Что делать, если проседает математика?",
+            question_count=7,
+            approvals_count=3,
+            sends_count=2,
+            next_step_count=1,
+            reply_approved_rate=0.5,
+            next_step_rate=0.5,
+            source={"trigger": "test"},
+        )
+        self.assertGreater(perf_id, 0)
+
+        performance = db.list_answer_performance(self.conn, limit=10)
+        self.assertEqual(len(performance), 1)
+        self.assertEqual(performance[0]["answer_kind"], "candidate")
+        self.assertEqual(performance[0]["source"]["trigger"], "test")
+
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="faq-rejected")
+        thread_id = f"tg:{user_id}"
+        draft_id = db.create_reply_draft(
+            self.conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            draft_text="Тестовый отклоненный черновик",
+            model_name="faq_lab_v1",
+        )
+        self.assertTrue(
+            db.update_reply_draft_status(
+                self.conn,
+                draft_id=draft_id,
+                status="rejected",
+                actor="moderator",
+            )
+        )
+
+        rejected = db.list_rejected_reply_drafts(self.conn, limit=10)
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(rejected[0]["id"], draft_id)
 
 
 if __name__ == "__main__":

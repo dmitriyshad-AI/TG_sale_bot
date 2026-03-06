@@ -181,6 +181,15 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         self.assertIn("mango_calls_path", runtime)
         self.assertIn("mango_webhook_path", runtime)
         self.assertIn("enable_mango_auto_ingest", runtime)
+        self.assertIn("mango_poll_retry_attempts", runtime)
+        self.assertIn("mango_poll_retry_backoff_seconds", runtime)
+        self.assertIn("mango_retry_failed_limit_per_run", runtime)
+        self.assertIn("enable_faq_lab", runtime)
+        self.assertIn("faq_lab_scheduler_enabled", runtime)
+        self.assertIn("faq_lab_interval_seconds", runtime)
+        self.assertIn("faq_lab_window_days", runtime)
+        self.assertIn("faq_lab_min_question_count", runtime)
+        self.assertIn("faq_lab_max_items_per_run", runtime)
 
     def test_diagnostics_warns_when_vector_store_loaded_only_from_meta_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -327,6 +336,47 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         self.assertIn("mango_requires_call_copilot", issue_codes)
         self.assertIn("mango_config_incomplete", issue_codes)
         self.assertIn("mango_webhook_secret_missing", issue_codes)
+
+    def test_diagnostics_warns_when_mango_retry_backoff_is_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            catalog_path = root / "catalog.yaml"
+            _write_catalog(catalog_path)
+            knowledge_path = root / "knowledge"
+            knowledge_path.mkdir(parents=True, exist_ok=True)
+            (knowledge_path / "faq_general.md").write_text("FAQ", encoding="utf-8")
+            db_path = root / "data" / "sales_agent.db"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+
+            settings = Settings(
+                telegram_bot_token="tg-token",
+                openai_api_key="sk-test",
+                openai_model="gpt-4.1",
+                tallanto_api_url="",
+                tallanto_api_key="",
+                brand_default="kmipt",
+                database_path=db_path,
+                catalog_path=catalog_path,
+                knowledge_path=knowledge_path,
+                vector_store_meta_path=root / "data" / "vector_store.json",
+                openai_vector_store_id="vs_123",
+                admin_user="",
+                admin_pass="",
+                enable_call_copilot=True,
+                enable_mango_auto_ingest=True,
+                mango_api_base_url="https://mango.example/api",
+                mango_api_token="token",
+                mango_webhook_secret="secret",
+                mango_polling_enabled=True,
+                mango_poll_retry_attempts=3,
+                mango_poll_retry_backoff_seconds=0,
+            )
+            with patch("sales_agent.sales_core.runtime_diagnostics.TELEGRAM_LIBRARY_VERSION", "21.11.1"):
+                diagnostics = build_runtime_diagnostics(settings)
+
+        self.assertEqual(diagnostics["status"], "warn")
+        issue_codes = {item["code"] for item in diagnostics["issues"]}
+        self.assertIn("mango_retry_backoff_zero", issue_codes)
 
     def test_diagnostics_warns_for_render_non_persistent_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

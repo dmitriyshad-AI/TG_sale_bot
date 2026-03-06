@@ -26,12 +26,14 @@ from sales_agent.sales_core.call_copilot import (
     build_transcript_fallback,
     extract_transcript_from_file,
 )
+from sales_agent.sales_core import faq_lab as faq_lab_service
 from sales_agent.sales_core.config import Settings, get_settings, project_root
 from sales_agent.sales_core.copilot import run_copilot_from_file
 from sales_agent.sales_core.crm import build_crm_client
 from sales_agent.sales_core.db import (
     clear_call_record_file_path,
     claim_webhook_update,
+    count_mango_events,
     count_webhook_updates_by_status,
     create_approval_action,
     create_call_record,
@@ -43,6 +45,7 @@ from sales_agent.sales_core.db import (
     find_user_by_phone,
     get_business_connection,
     get_latest_mango_event_created_at,
+    get_oldest_mango_event_created_at,
     get_conversation_outcome,
     get_conversation_context,
     get_connection,
@@ -93,6 +96,7 @@ from sales_agent.sales_core.mango_client import MangoCallEvent, MangoClient, Man
 from sales_agent.sales_core.telegram_webapp import verify_telegram_webapp_init_data
 from sales_agent.sales_core.llm_client import LLMClient
 from sales_agent.sales_core.vector_store import load_vector_store_id
+from sales_agent.sales_api.routers.faq_lab import build_faq_lab_router
 
 
 security = HTTPBasic()
@@ -114,6 +118,7 @@ LEAD_RADAR_RULE_NO_REPLY = "radar:no_reply"
 LEAD_RADAR_RULE_CALL_NO_NEXT_STEP = "radar:call_no_next_step"
 LEAD_RADAR_RULE_STALE_WARM = "radar:stale_warm"
 LEAD_RADAR_MODEL_NAME = "lead_radar_v1"
+FAQ_LAB_MODEL_NAME = "faq_lab_v1"
 CALL_COPILOT_MODEL_NAME = "call_copilot_v1"
 MANGO_CLEANUP_BATCH_SIZE = 200
 ASSISTANT_KNOWLEDGE_HINTS = {
@@ -776,6 +781,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 cfg.lead_radar_call_no_next_step_hours,
                 cfg.lead_radar_stale_warm_days,
             )
+        if cfg.enable_faq_lab and cfg.faq_lab_scheduler_enabled:
+            app_instance.state.faq_lab_event = asyncio.Event()
+            app_instance.state.faq_lab_task = asyncio.create_task(faq_lab_loop(app_instance))
+            app_instance.state.faq_lab_event.set()
+            logger.info(
+                "FAQ lab scheduler started (interval=%ss, window=%sd, min_count=%s, max_items=%s)",
+                cfg.faq_lab_interval_seconds,
+                cfg.faq_lab_window_days,
+                cfg.faq_lab_min_question_count,
+                cfg.faq_lab_max_items_per_run,
+            )
         if _mango_ingest_enabled() and cfg.mango_polling_enabled:
             app_instance.state.mango_poll_event = asyncio.Event()
             app_instance.state.mango_poll_task = asyncio.create_task(mango_poll_loop(app_instance))
@@ -796,6 +812,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 except asyncio.CancelledError:
                     pass
             logger.info("Mango poll scheduler stopped")
+        if cfg.enable_faq_lab and cfg.faq_lab_scheduler_enabled:
+            faq_task = getattr(app_instance.state, "faq_lab_task", None)
+            if faq_task is not None:
+                faq_task.cancel()
+                try:
+                    await faq_task
+                except asyncio.CancelledError:
+                    pass
+            logger.info("FAQ lab scheduler stopped")
         if cfg.enable_lead_radar and cfg.lead_radar_scheduler_enabled:
             radar_task = getattr(app_instance.state, "lead_radar_task", None)
             if radar_task is not None:
@@ -1599,6 +1624,79 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             finally:
                 event.clear()
 
+    faq_lab_lock: Optional[asyncio.Lock] = None
+
+    def _resolve_faq_lab_limit(limit_override: Optional[int]) -> int:
+        max_cfg = max(1, int(cfg.faq_lab_max_items_per_run))
+        if limit_override is None:
+            return max_cfg
+        return max(1, min(int(limit_override), max_cfg))
+
+    async def run_faq_lab_once(
+        *,
+        trigger: str,
+        limit_override: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        effective_limit = _resolve_faq_lab_limit(limit_override)
+        if not cfg.enable_faq_lab:
+            return {
+                "ok": False,
+                "enabled": False,
+                "trigger": trigger,
+                "window_days": cfg.faq_lab_window_days,
+                "min_question_count": cfg.faq_lab_min_question_count,
+                "limit": effective_limit,
+                "model_name": FAQ_LAB_MODEL_NAME,
+            }
+
+        nonlocal faq_lab_lock
+        if faq_lab_lock is None:
+            faq_lab_lock = asyncio.Lock()
+
+        async with faq_lab_lock:
+            conn = get_connection(cfg.database_path)
+            try:
+                summary = faq_lab_service.refresh_faq_lab(
+                    conn,
+                    window_days=cfg.faq_lab_window_days,
+                    min_question_count=cfg.faq_lab_min_question_count,
+                    limit=effective_limit,
+                    trigger=trigger,
+                )
+            finally:
+                conn.close()
+
+        summary["enabled"] = True
+        summary["limit"] = effective_limit
+        summary["model_name"] = FAQ_LAB_MODEL_NAME
+        return summary
+
+    async def faq_lab_loop(app_instance: FastAPI) -> None:
+        event = getattr(app_instance.state, "faq_lab_event", None)
+        if event is None:
+            return
+        interval = max(300, int(cfg.faq_lab_interval_seconds))
+        while True:
+            try:
+                summary = await run_faq_lab_once(trigger="scheduler")
+                if int(summary.get("candidates_upserted") or 0) > 0:
+                    logger.info(
+                        "FAQ lab refreshed: candidates=%s canonical_synced=%s",
+                        summary.get("candidates_upserted"),
+                        summary.get("canonical_synced"),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("FAQ lab scheduler iteration failed")
+
+            try:
+                await asyncio.wait_for(event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            finally:
+                event.clear()
+
     def _extract_mango_user_and_thread(
         conn: Any,
         *,
@@ -1642,6 +1740,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         *,
         event: MangoCallEvent,
         source: str,
+        existing_event_row_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         nonlocal mango_ingest_lock
         if mango_ingest_lock is None:
@@ -1650,23 +1749,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async with mango_ingest_lock:
             conn = get_connection(cfg.database_path)
             try:
-                state = create_or_get_mango_event(
-                    conn,
-                    event_id=event.event_id,
-                    call_external_id=event.call_id,
-                    source=source,
-                    payload=event.payload,
-                )
-                event_row_id = int(state.get("id") or 0)
-                if not bool(state.get("is_new")):
-                    return {
-                        "ok": True,
-                        "duplicate": True,
-                        "event_row_id": event_row_id,
-                        "event_id": event.event_id,
-                        "call_external_id": event.call_id,
-                    }
-                update_mango_event_status(conn, event_row_id=event_row_id, status="processing")
+                if isinstance(existing_event_row_id, int) and existing_event_row_id > 0:
+                    event_row_id = int(existing_event_row_id)
+                    updated = update_mango_event_status(
+                        conn,
+                        event_row_id=event_row_id,
+                        status="processing",
+                        error_text=None,
+                    )
+                    if not updated:
+                        raise ValueError(f"Mango event row {event_row_id} not found.")
+                else:
+                    state = create_or_get_mango_event(
+                        conn,
+                        event_id=event.event_id,
+                        call_external_id=event.call_id,
+                        source=source,
+                        payload=event.payload,
+                    )
+                    event_row_id = int(state.get("id") or 0)
+                    if not bool(state.get("is_new")):
+                        return {
+                            "ok": True,
+                            "duplicate": True,
+                            "event_row_id": event_row_id,
+                            "event_id": event.event_id,
+                            "call_external_id": event.call_id,
+                        }
+                    update_mango_event_status(conn, event_row_id=event_row_id, status="processing")
                 user_id, thread_id = _extract_mango_user_and_thread(conn, event=event)
             finally:
                 conn.close()
@@ -1698,6 +1808,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return {
                     "ok": True,
                     "duplicate": False,
+                    "retried": isinstance(existing_event_row_id, int) and existing_event_row_id > 0,
                     "event_row_id": event_row_id,
                     "event_id": event.event_id,
                     "call_external_id": event.call_id,
@@ -1710,11 +1821,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         conn_failed,
                         event_row_id=event_row_id,
                         status="failed",
-                        error_text=str(exc),
+                        error_text=str(exc)[:700],
                     )
                 finally:
                     conn_failed.close()
                 raise
+
+    async def _fetch_mango_poll_events_with_retries(
+        *,
+        client: MangoClient,
+        since: str,
+        limit: int,
+    ) -> tuple[list[MangoCallEvent], int]:
+        attempts = max(1, int(cfg.mango_poll_retry_attempts))
+        base_backoff = max(0, int(cfg.mango_poll_retry_backoff_seconds))
+        last_error: Optional[MangoClientError] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                events = client.list_recent_calls(since_iso=since, limit=limit)
+                return events, attempt
+            except MangoClientError as exc:
+                last_error = exc
+                if attempt < attempts and base_backoff > 0:
+                    await asyncio.sleep(float(base_backoff) * (2 ** (attempt - 1)))
+        assert last_error is not None
+        raise last_error
+
+    def _event_from_mango_record(item: Dict[str, Any]) -> Optional[MangoCallEvent]:
+        payload = item.get("payload")
+        payload_dict = payload if isinstance(payload, dict) else {}
+        parser = MangoClient(base_url="https://offline.local", token="offline")
+        parsed = parser.parse_call_event(payload_dict)
+        if parsed is not None:
+            return parsed
+        event_id = str(item.get("event_id") or "").strip()
+        if not event_id:
+            return None
+        call_external_id = str(item.get("call_external_id") or "").strip()
+        return MangoCallEvent(
+            event_id=event_id,
+            call_id=call_external_id or event_id,
+            phone="",
+            recording_url="",
+            transcript_hint="",
+            occurred_at="",
+            payload=payload_dict,
+        )
 
     async def run_mango_poll_once(*, trigger: str, limit_override: Optional[int] = None) -> Dict[str, Any]:
         if not _mango_ingest_enabled():
@@ -1726,6 +1878,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "created": 0,
                 "duplicates": 0,
                 "failed": 0,
+                "attempts": 0,
                 "cleanup": _cleanup_old_call_files(),
             }
 
@@ -1741,6 +1894,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "created": 0,
                 "duplicates": 0,
                 "failed": 0,
+                "attempts": 0,
                 "cleanup": _cleanup_old_call_files(),
             }
 
@@ -1752,7 +1906,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         effective_limit = max(1, min(int(limit_override or cfg.mango_poll_limit_per_run), 500))
         try:
-            events = client.list_recent_calls(since_iso=since, limit=effective_limit)
+            events, attempts_used = await _fetch_mango_poll_events_with_retries(
+                client=client,
+                since=since,
+                limit=effective_limit,
+            )
         except MangoClientError as exc:
             return {
                 "ok": False,
@@ -1763,6 +1921,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "created": 0,
                 "duplicates": 0,
                 "failed": 0,
+                "attempts": max(1, int(cfg.mango_poll_retry_attempts)),
                 "cleanup": _cleanup_old_call_files(),
             }
 
@@ -1789,9 +1948,79 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "trigger": trigger,
             "since": since,
             "limit": effective_limit,
+            "attempts": attempts_used,
             "fetched": len(events),
             "processed": processed,
             "created": created,
+            "duplicates": duplicates,
+            "failed": failed,
+            "cleanup": cleanup_result,
+        }
+
+    async def run_mango_retry_failed_once(*, trigger: str, limit_override: Optional[int] = None) -> Dict[str, Any]:
+        if not _mango_ingest_enabled():
+            return {
+                "ok": False,
+                "enabled": False,
+                "trigger": trigger,
+                "processed": 0,
+                "retried": 0,
+                "failed": 0,
+                "duplicates": 0,
+                "cleanup": _cleanup_old_call_files(),
+            }
+
+        effective_limit = max(1, min(int(limit_override or cfg.mango_retry_failed_limit_per_run), 500))
+        conn = get_connection(cfg.database_path)
+        try:
+            items = list_mango_events(conn, status="failed", limit=effective_limit, newest_first=False)
+        finally:
+            conn.close()
+
+        processed = 0
+        retried = 0
+        failed = 0
+        duplicates = 0
+        for item in items:
+            processed += 1
+            event_row_id = int(item.get("id") or 0)
+            event = _event_from_mango_record(item)
+            if event is None:
+                failed += 1
+                conn_failed = get_connection(cfg.database_path)
+                try:
+                    update_mango_event_status(
+                        conn_failed,
+                        event_row_id=event_row_id,
+                        status="failed",
+                        error_text="retry_parse_failed",
+                    )
+                finally:
+                    conn_failed.close()
+                continue
+            try:
+                result = await ingest_mango_event(
+                    event=event,
+                    source=f"retry:{trigger}",
+                    existing_event_row_id=event_row_id,
+                )
+                if result.get("duplicate"):
+                    duplicates += 1
+                else:
+                    retried += 1
+            except Exception:
+                failed += 1
+                logger.exception("Mango retry-failed event processing failed (event_id=%s)", event.event_id)
+
+        cleanup_result = _cleanup_old_call_files()
+        return {
+            "ok": failed == 0,
+            "enabled": True,
+            "trigger": trigger,
+            "limit": effective_limit,
+            "fetched": len(items),
+            "processed": processed,
+            "retried": retried,
             "duplicates": duplicates,
             "failed": failed,
             "cleanup": cleanup_result,
@@ -1856,6 +2085,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     <a href="/admin/ui/business-inbox">Business Inbox</a>
     <a href="/admin/ui/followups">Followups</a>
     <a href="/admin/ui/calls">Calls</a>
+    <a href="/admin/ui/faq-lab">FAQ Lab</a>
     <a href="/admin/ui/revenue-metrics">Revenue Metrics</a>
     <a href="/admin/ui/leads">Leads</a>
     <a href="/admin/ui/conversations">Conversations</a>
@@ -1866,6 +2096,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 </html>
 """
         return HTMLResponse(page)
+
+    app.include_router(
+        build_faq_lab_router(
+            db_path=cfg.database_path,
+            require_admin_dependency=require_admin,
+            render_page=render_page,
+            enabled=cfg.enable_faq_lab,
+            scheduler_enabled=cfg.faq_lab_scheduler_enabled,
+            interval_seconds=cfg.faq_lab_interval_seconds,
+            window_days=cfg.faq_lab_window_days,
+            min_question_count=cfg.faq_lab_min_question_count,
+            default_limit=cfg.faq_lab_max_items_per_run,
+        )
+    )
 
     @app.get("/admin", response_class=HTMLResponse)
     async def admin_home(_: str = Depends(require_admin)):
@@ -1924,8 +2168,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "enable_tallanto_enrichment": cfg.enable_tallanto_enrichment,
                 "enable_director_agent": cfg.enable_director_agent,
                 "enable_lead_radar": cfg.enable_lead_radar,
+                "enable_faq_lab": cfg.enable_faq_lab,
                 "enable_mango_auto_ingest": cfg.enable_mango_auto_ingest,
                 "lead_radar_scheduler_enabled": cfg.lead_radar_scheduler_enabled,
+                "faq_lab_scheduler_enabled": cfg.faq_lab_scheduler_enabled,
             },
             "lead_radar": {
                 "interval_seconds": cfg.lead_radar_interval_seconds,
@@ -1934,11 +2180,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "stale_warm_days": cfg.lead_radar_stale_warm_days,
                 "max_items_per_run": cfg.lead_radar_max_items_per_run,
             },
+            "faq_lab": {
+                "interval_seconds": cfg.faq_lab_interval_seconds,
+                "window_days": cfg.faq_lab_window_days,
+                "min_question_count": cfg.faq_lab_min_question_count,
+                "max_items_per_run": cfg.faq_lab_max_items_per_run,
+            },
             "mango": {
                 "webhook_path": mango_webhook_path,
                 "polling_enabled": cfg.mango_polling_enabled,
                 "poll_interval_seconds": cfg.mango_poll_interval_seconds,
                 "poll_limit_per_run": cfg.mango_poll_limit_per_run,
+                "poll_retry_attempts": cfg.mango_poll_retry_attempts,
+                "poll_retry_backoff_seconds": cfg.mango_poll_retry_backoff_seconds,
+                "retry_failed_limit_per_run": cfg.mango_retry_failed_limit_per_run,
                 "recording_ttl_hours": cfg.mango_call_recording_ttl_hours,
                 "calls_path": cfg.mango_calls_path,
             },
@@ -1972,6 +2227,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             f"ENABLE_TALLANTO_ENRICHMENT={cfg.enable_tallanto_enrichment}<br/>"
             f"ENABLE_DIRECTOR_AGENT={cfg.enable_director_agent}<br/>"
             f"ENABLE_LEAD_RADAR={cfg.enable_lead_radar}<br/>"
+            f"ENABLE_FAQ_LAB={cfg.enable_faq_lab}<br/>"
             f"ENABLE_MANGO_AUTO_INGEST={cfg.enable_mango_auto_ingest}<br/>"
             f"LEAD_RADAR_SCHEDULER_ENABLED={cfg.lead_radar_scheduler_enabled}<br/>"
             f"LEAD_RADAR_INTERVAL_SECONDS={cfg.lead_radar_interval_seconds}<br/>"
@@ -1979,10 +2235,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             f"LEAD_RADAR_CALL_NO_NEXT_STEP_HOURS={cfg.lead_radar_call_no_next_step_hours}<br/>"
             f"LEAD_RADAR_STALE_WARM_DAYS={cfg.lead_radar_stale_warm_days}<br/>"
             f"LEAD_RADAR_MAX_ITEMS_PER_RUN={cfg.lead_radar_max_items_per_run}<br/>"
+            f"FAQ_LAB_SCHEDULER_ENABLED={cfg.faq_lab_scheduler_enabled}<br/>"
+            f"FAQ_LAB_INTERVAL_SECONDS={cfg.faq_lab_interval_seconds}<br/>"
+            f"FAQ_LAB_WINDOW_DAYS={cfg.faq_lab_window_days}<br/>"
+            f"FAQ_LAB_MIN_QUESTION_COUNT={cfg.faq_lab_min_question_count}<br/>"
+            f"FAQ_LAB_MAX_ITEMS_PER_RUN={cfg.faq_lab_max_items_per_run}<br/>"
             f"MANGO_WEBHOOK_PATH={html.escape(mango_webhook_path)}<br/>"
             f"MANGO_POLLING_ENABLED={cfg.mango_polling_enabled}<br/>"
             f"MANGO_POLL_INTERVAL_SECONDS={cfg.mango_poll_interval_seconds}<br/>"
             f"MANGO_POLL_LIMIT_PER_RUN={cfg.mango_poll_limit_per_run}<br/>"
+            f"MANGO_POLL_RETRY_ATTEMPTS={cfg.mango_poll_retry_attempts}<br/>"
+            f"MANGO_POLL_RETRY_BACKOFF_SECONDS={cfg.mango_poll_retry_backoff_seconds}<br/>"
+            f"MANGO_RETRY_FAILED_LIMIT_PER_RUN={cfg.mango_retry_failed_limit_per_run}<br/>"
             f"MANGO_CALL_RECORDING_TTL_HOURS={cfg.mango_call_recording_ttl_hours}<br/>"
             f"MANGO_CALLS_PATH={html.escape(cfg.mango_calls_path)}"
             "</div>"
@@ -2291,6 +2555,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail="Mango auto-ingest is disabled. Set ENABLE_MANGO_AUTO_INGEST=true and ENABLE_CALL_COPILOT=true.",
             )
         result = await run_mango_poll_once(trigger="manual", limit_override=limit)
+        return result
+
+    @app.post("/admin/calls/mango/retry-failed")
+    async def admin_calls_mango_retry_failed(
+        _: str = Depends(require_admin),
+        limit: Optional[int] = Query(default=None, ge=1, le=500),
+    ):
+        if not _mango_ingest_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Mango auto-ingest is disabled. Set ENABLE_MANGO_AUTO_INGEST=true and ENABLE_CALL_COPILOT=true.",
+            )
+        result = await run_mango_retry_failed_once(trigger="manual", limit_override=limit)
         return result
 
     @app.get("/admin/calls/mango/events")
@@ -2867,10 +3144,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "<div class='card'>"
             f"<b>Mango Auto-Ingest:</b> enabled={_mango_ingest_enabled()} | "
             f"polling={cfg.mango_polling_enabled} | interval={cfg.mango_poll_interval_seconds}s | "
-            f"ttl={cfg.mango_call_recording_ttl_hours}h<br/>"
+            f"ttl={cfg.mango_call_recording_ttl_hours}h | "
+            f"retries={cfg.mango_poll_retry_attempts} (backoff={cfg.mango_poll_retry_backoff_seconds}s)<br/>"
             "<form method='post' action='/admin/ui/calls/mango/poll'>"
-            "<p><label>Manual poll limit: <input type='number' name='limit' min='1' max='500' value='50' /></label></p>"
+            f"<p><label>Manual poll limit: <input type='number' name='limit' min='1' max='500' value='{cfg.mango_poll_limit_per_run}' /></label></p>"
             "<p><button type='submit'>Запустить Mango poll сейчас</button></p>"
+            "</form>"
+            "<form method='post' action='/admin/ui/calls/mango/retry-failed'>"
+            f"<p><label>Retry failed limit: <input type='number' name='limit' min='1' max='500' value='{cfg.mango_retry_failed_limit_per_run}' /></label></p>"
+            "<p><button type='submit'>Повторно обработать failed events</button></p>"
             "</form>"
             "<p><a href='/admin/calls/mango/events'>Открыть Mango events (JSON)</a></p>"
             "</div>"
@@ -2902,6 +3184,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail="Mango auto-ingest is disabled. Set ENABLE_MANGO_AUTO_INGEST=true and ENABLE_CALL_COPILOT=true.",
             )
         await run_mango_poll_once(trigger="manual_ui", limit_override=limit)
+        return RedirectResponse(url="/admin/ui/calls", status_code=status.HTTP_303_SEE_OTHER)
+
+    @app.post("/admin/ui/calls/mango/retry-failed")
+    async def admin_calls_ui_mango_retry_failed(
+        _: str = Depends(require_admin),
+        limit: int = Form(25),
+    ):
+        if not _mango_ingest_enabled():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Mango auto-ingest is disabled. Set ENABLE_MANGO_AUTO_INGEST=true and ENABLE_CALL_COPILOT=true.",
+            )
+        await run_mango_retry_failed_once(trigger="manual_ui", limit_override=limit)
         return RedirectResponse(url="/admin/ui/calls", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.post("/admin/ui/calls/upload")
@@ -3966,10 +4261,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "polling_enabled": cfg.mango_polling_enabled,
                 "poll_interval_seconds": cfg.mango_poll_interval_seconds,
                 "poll_limit_per_run": cfg.mango_poll_limit_per_run,
+                "poll_retry_attempts": cfg.mango_poll_retry_attempts,
+                "poll_retry_backoff_seconds": cfg.mango_poll_retry_backoff_seconds,
+                "retry_failed_limit_per_run": cfg.mango_retry_failed_limit_per_run,
                 "recording_ttl_hours": cfg.mango_call_recording_ttl_hours,
                 "calls_path": cfg.mango_calls_path,
-                "events_queued": len(list_mango_events(conn, status="queued", limit=500)),
-                "events_failed": len(list_mango_events(conn, status="failed", limit=500)),
+                "events_total": count_mango_events(conn),
+                "events_queued": count_mango_events(conn, status="queued"),
+                "events_processing": count_mango_events(conn, status="processing"),
+                "events_failed": count_mango_events(conn, status="failed"),
+                "oldest_failed_created_at": get_oldest_mango_event_created_at(conn, status="failed"),
+            }
+            payload["runtime"]["faq_lab"] = {
+                "enabled": cfg.enable_faq_lab,
+                "scheduler_enabled": cfg.faq_lab_scheduler_enabled,
+                "interval_seconds": cfg.faq_lab_interval_seconds,
+                "window_days": cfg.faq_lab_window_days,
+                "min_question_count": cfg.faq_lab_min_question_count,
+                "max_items_per_run": cfg.faq_lab_max_items_per_run,
             }
         finally:
             conn.close()
