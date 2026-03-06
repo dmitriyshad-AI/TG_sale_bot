@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 try:
-    from fastapi.testclient import TestClient
+    from tests.test_client_compat import build_test_client
 
     from sales_agent.sales_api.main import create_app
     from sales_agent.sales_core import db as db_module
@@ -115,7 +115,7 @@ class ApiEndToEndJourneyTests(unittest.TestCase):
             catalog_path = root / "products.yaml"
             _write_catalog(catalog_path)
             app = create_app(_settings(root / "app.db", catalog_path))
-            client = TestClient(app)
+            client = build_test_client(app)
 
             response = client.post(
                 "/api/assistant/ask",
@@ -136,7 +136,7 @@ class ApiEndToEndJourneyTests(unittest.TestCase):
             catalog_path = root / "products.yaml"
             _write_catalog(catalog_path)
             app = create_app(_settings(db_path, catalog_path))
-            client = TestClient(app)
+            client = build_test_client(app)
             headers = _telegram_headers(user_id=777)
 
             first = client.post(
@@ -185,7 +185,7 @@ class ApiEndToEndJourneyTests(unittest.TestCase):
             catalog_path = root / "products.yaml"
             _write_catalog(catalog_path)
             app = create_app(_settings(root / "app.db", catalog_path))
-            client = TestClient(app)
+            client = build_test_client(app)
 
             response = client.get(
                 "/api/catalog/search",
@@ -211,7 +211,7 @@ class ApiEndToEndJourneyTests(unittest.TestCase):
             catalog_path = root / "products.yaml"
             _write_catalog(catalog_path)
             app = create_app(_settings(root / "app.db", catalog_path))
-            client = TestClient(app)
+            client = build_test_client(app)
 
             response = client.get(
                 "/api/catalog/search",
@@ -242,7 +242,7 @@ class ApiEndToEndJourneyTests(unittest.TestCase):
             cfg.assistant_rate_limit_user_requests = 1
             cfg.assistant_rate_limit_ip_requests = 100
             app = create_app(cfg)
-            client = TestClient(app)
+            client = build_test_client(app)
             headers = _telegram_headers(user_id=999)
 
             first = client.post(

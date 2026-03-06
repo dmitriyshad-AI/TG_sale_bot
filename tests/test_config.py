@@ -61,6 +61,10 @@ class ConfigTests(unittest.TestCase):
             "CRM_API_EXPOSED": "true",
             "CRM_RATE_LIMIT_WINDOW_SECONDS": "420",
             "CRM_RATE_LIMIT_IP_REQUESTS": "222",
+            "ENABLE_BUSINESS_INBOX": "true",
+            "ENABLE_CALL_COPILOT": "1",
+            "ENABLE_TALLANTO_ENRICHMENT": "yes",
+            "ENABLE_DIRECTOR_AGENT": "on",
         },
         clear=True,
     )
@@ -106,6 +110,10 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(settings.crm_api_exposed)
         self.assertEqual(settings.crm_rate_limit_window_seconds, 420)
         self.assertEqual(settings.crm_rate_limit_ip_requests, 222)
+        self.assertTrue(settings.enable_business_inbox)
+        self.assertTrue(settings.enable_call_copilot)
+        self.assertTrue(settings.enable_tallanto_enrichment)
+        self.assertTrue(settings.enable_director_agent)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_get_settings_uses_defaults(self) -> None:
@@ -149,6 +157,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.tallanto_default_contact_module, "")
         self.assertFalse(settings.running_on_render)
         self.assertEqual(settings.persistent_data_root, Path())
+        self.assertFalse(settings.enable_business_inbox)
+        self.assertFalse(settings.enable_call_copilot)
+        self.assertFalse(settings.enable_tallanto_enrichment)
+        self.assertFalse(settings.enable_director_agent)
 
     @patch.dict(
         os.environ,

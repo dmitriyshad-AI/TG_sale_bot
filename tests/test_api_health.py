@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 
 try:
-    from fastapi.testclient import TestClient
+    from tests.test_client_compat import build_test_client
 
     from sales_agent.sales_api.main import app, create_app
     from sales_agent.sales_core.config import Settings
@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 @unittest.skipUnless(HAS_FASTAPI, "fastapi dependencies are not installed")
 class ApiHealthTests(unittest.TestCase):
     def test_health_endpoint_returns_ok_payload(self) -> None:
-        client = TestClient(app)
+        client = build_test_client(app)
         response = client.get("/api/health")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok", "service": "sales-agent"})
@@ -64,7 +64,7 @@ products:
                 admin_pass="",
             )
             cfg.database_path.parent.mkdir(parents=True, exist_ok=True)
-            client = TestClient(create_app(cfg))
+            client = build_test_client(create_app(cfg))
             response = client.get("/api/runtime/diagnostics")
 
         self.assertEqual(response.status_code, 200)

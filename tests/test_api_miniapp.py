@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 try:
-    from fastapi.testclient import TestClient
+    from tests.test_client_compat import build_test_client
 
     from sales_agent.sales_api.main import create_app
     from sales_agent.sales_core import db
@@ -66,14 +66,14 @@ class ApiMiniAppTests(unittest.TestCase):
     def test_miniapp_page_disabled_returns_404(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             app = create_app(self._settings(Path(tmpdir) / "miniapp.db", enabled=False))
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.get("/admin/miniapp")
             self.assertEqual(response.status_code, 404)
 
     def test_miniapp_page_enabled_returns_html(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             app = create_app(self._settings(Path(tmpdir) / "miniapp.db", enabled=True))
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.get("/admin/miniapp")
             self.assertEqual(response.status_code, 200)
             self.assertIn("Admin Mini App", response.text)
@@ -81,14 +81,14 @@ class ApiMiniAppTests(unittest.TestCase):
     def test_miniapp_api_requires_init_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             app = create_app(self._settings(Path(tmpdir) / "miniapp.db", enabled=True))
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.get("/admin/miniapp/api/me")
             self.assertEqual(response.status_code, 401)
 
     def test_miniapp_api_rejects_user_not_in_allowlist(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             app = create_app(self._settings(Path(tmpdir) / "miniapp.db", enabled=True))
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.get("/admin/miniapp/api/me", headers=self._headers(user_id=777))
             self.assertEqual(response.status_code, 403)
 
@@ -117,7 +117,7 @@ class ApiMiniAppTests(unittest.TestCase):
             finally:
                 conn.close()
 
-            client = TestClient(app)
+            client = build_test_client(app)
             headers = self._headers(user_id=101)
 
             me_response = client.get("/admin/miniapp/api/me", headers=headers)

@@ -53,6 +53,10 @@ class Settings:
     crm_api_exposed: bool = False
     crm_rate_limit_window_seconds: int = 300
     crm_rate_limit_ip_requests: int = 180
+    enable_business_inbox: bool = False
+    enable_call_copilot: bool = False
+    enable_tallanto_enrichment: bool = False
+    enable_director_agent: bool = False
 
 
 def project_root() -> Path:
@@ -66,6 +70,12 @@ def _path_is_writable_directory(path: Path) -> bool:
 
 def get_settings() -> Settings:
     root = project_root()
+
+    def _parse_bool_env(name: str, default: bool = False) -> bool:
+        raw = os.getenv(name, "").strip().lower()
+        if not raw:
+            return default
+        return raw in {"1", "true", "yes", "on"}
 
     def _parse_int_env(name: str, default: int, *, min_value: int, max_value: int) -> int:
         raw = os.getenv(name, "").strip()
@@ -130,7 +140,7 @@ def get_settings() -> Settings:
         telegram_webhook_path = f"/{telegram_webhook_path}"
     telegram_webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
     admin_miniapp_enabled = os.getenv("ADMIN_MINIAPP_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
-    crm_api_exposed = os.getenv("CRM_API_EXPOSED", "").strip().lower() in {"1", "true", "yes", "on"}
+    crm_api_exposed = _parse_bool_env("CRM_API_EXPOSED", default=False)
     openai_web_fallback_enabled = (
         os.getenv("OPENAI_WEB_FALLBACK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     )
@@ -228,4 +238,8 @@ def get_settings() -> Settings:
         crm_api_exposed=crm_api_exposed,
         crm_rate_limit_window_seconds=crm_rate_limit_window_seconds,
         crm_rate_limit_ip_requests=crm_rate_limit_ip_requests,
+        enable_business_inbox=_parse_bool_env("ENABLE_BUSINESS_INBOX", default=False),
+        enable_call_copilot=_parse_bool_env("ENABLE_CALL_COPILOT", default=False),
+        enable_tallanto_enrichment=_parse_bool_env("ENABLE_TALLANTO_ENRICHMENT", default=False),
+        enable_director_agent=_parse_bool_env("ENABLE_DIRECTOR_AGENT", default=False),
     )

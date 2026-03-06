@@ -4,11 +4,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 try:
-    from fastapi.testclient import TestClient
-
     from sales_agent.sales_api.main import create_app
     from sales_agent.sales_core import db
     from sales_agent.sales_core.config import Settings
+    from tests.test_client_compat import build_test_client
 
     HAS_ADMIN_DEPS = True
 except ModuleNotFoundError:
@@ -32,13 +31,17 @@ class ApiAdminTests(unittest.TestCase):
             openai_vector_store_id="",
             admin_user=admin_user,
             admin_pass=admin_pass,
+            enable_business_inbox=True,
+            enable_call_copilot=True,
+            enable_tallanto_enrichment=True,
+            enable_director_agent=True,
         )
 
     def test_admin_endpoints_require_auth(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"
             app = create_app(self._settings(db_path))
-            client = TestClient(app)
+            client = build_test_client(app)
 
             response = client.get("/admin/leads")
             self.assertEqual(response.status_code, 401)
@@ -49,7 +52,7 @@ class ApiAdminTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"
             app = create_app(self._settings(db_path, admin_user="", admin_pass=""))
-            client = TestClient(app)
+            client = build_test_client(app)
 
             response = client.get("/admin/leads", auth=("x", "y"))
             self.assertEqual(response.status_code, 503)
@@ -79,7 +82,7 @@ class ApiAdminTests(unittest.TestCase):
             finally:
                 conn.close()
 
-            client = TestClient(app)
+            client = build_test_client(app)
             auth = ("admin", "secret")
 
             leads_response = client.get("/admin/leads", auth=auth)
@@ -118,11 +121,135 @@ class ApiAdminTests(unittest.TestCase):
             self.assertIn("Conversation #", conv_detail_ui.text)
             self.assertIn("hi", conv_detail_ui.text)
 
+    def test_admin_revenue_metrics_and_inbox_workflow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            app = create_app(self._settings(db_path))
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(
+                    conn,
+                    channel="telegram",
+                    external_id="user-2",
+                    username="boris",
+                    first_name="Boris",
+                    last_name="Ivanov",
+                )
+                db.log_message(conn, user_id=user_id, direction="inbound", text="Нужна стратегия ЕГЭ", meta={})
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            metrics_response = client.get("/admin/revenue-metrics", auth=auth)
+            self.assertEqual(metrics_response.status_code, 200)
+            metrics_payload = metrics_response.json()
+            self.assertTrue(metrics_payload["ok"])
+            self.assertIn("drafts_created_today", metrics_payload["metrics"])
+            self.assertTrue(metrics_payload["feature_flags"]["enable_business_inbox"])
+
+            inbox_response = client.get("/admin/inbox", auth=auth)
+            self.assertEqual(inbox_response.status_code, 200)
+            inbox_items = inbox_response.json()["items"]
+            self.assertEqual(len(inbox_items), 1)
+            self.assertEqual(inbox_items[0]["user_id"], user_id)
+
+            create_draft_response = client.post(
+                f"/admin/inbox/{user_id}/drafts",
+                auth=auth,
+                json={"draft_text": "Предлагаю консультацию", "model_name": "gpt-test"},
+            )
+            self.assertEqual(create_draft_response.status_code, 200)
+            draft_id = int(create_draft_response.json()["draft"]["id"])
+
+            patch_draft_response = client.patch(
+                f"/admin/inbox/drafts/{draft_id}",
+                auth=auth,
+                json={"draft_text": "Предлагаю консультацию и план", "model_name": "gpt-test-2"},
+            )
+            self.assertEqual(patch_draft_response.status_code, 200)
+            self.assertEqual(
+                patch_draft_response.json()["draft"]["draft_text"],
+                "Предлагаю консультацию и план",
+            )
+
+            send_without_approve_response = client.post(
+                f"/admin/inbox/drafts/{draft_id}/send",
+                auth=auth,
+                json={},
+            )
+            self.assertEqual(send_without_approve_response.status_code, 409)
+
+            approve_response = client.post(f"/admin/inbox/drafts/{draft_id}/approve", auth=auth)
+            self.assertEqual(approve_response.status_code, 200)
+            self.assertEqual(approve_response.json()["draft"]["status"], "approved")
+
+            send_response = client.post(
+                f"/admin/inbox/drafts/{draft_id}/send",
+                auth=auth,
+                json={"sent_message_id": "tg-msg-1"},
+            )
+            self.assertEqual(send_response.status_code, 200)
+            self.assertEqual(send_response.json()["draft"]["status"], "sent")
+
+            outcome_response = client.post(
+                f"/admin/inbox/{user_id}/outcome",
+                auth=auth,
+                json={"outcome": "consultation_booked", "note": "Клиент просит звонок вечером"},
+            )
+            self.assertEqual(outcome_response.status_code, 200)
+            self.assertEqual(outcome_response.json()["outcome"]["outcome"], "consultation_booked")
+
+            followup_response = client.post(
+                f"/admin/inbox/{user_id}/followups",
+                auth=auth,
+                json={"priority": "hot", "reason": "Контрольный созвон", "assigned_to": "sales-1"},
+            )
+            self.assertEqual(followup_response.status_code, 200)
+            self.assertEqual(followup_response.json()["task"]["priority"], "hot")
+
+            lead_score_response = client.post(
+                f"/admin/inbox/{user_id}/lead-score",
+                auth=auth,
+                json={"score": 87.4, "temperature": "hot", "confidence": 0.76},
+            )
+            self.assertEqual(lead_score_response.status_code, 200)
+            self.assertEqual(lead_score_response.json()["lead_score"]["temperature"], "hot")
+
+            event_response = client.post(
+                f"/admin/inbox/{user_id}/events",
+                auth=auth,
+                json={"action": "manual_action", "payload": {"note": "checked"}},
+            )
+            self.assertEqual(event_response.status_code, 200)
+            self.assertGreater(int(event_response.json()["action_id"]), 0)
+
+            detail_response = client.get(f"/admin/inbox/{user_id}", auth=auth)
+            self.assertEqual(detail_response.status_code, 200)
+            detail_payload = detail_response.json()
+            self.assertEqual(detail_payload["outcome"]["outcome"], "consultation_booked")
+            self.assertEqual(detail_payload["lead_score"]["temperature"], "hot")
+            self.assertGreaterEqual(len(detail_payload["approval_actions"]), 1)
+
+            inbox_ui = client.get("/admin/ui/inbox", auth=auth)
+            self.assertEqual(inbox_ui.status_code, 200)
+            self.assertIn("Inbox", inbox_ui.text)
+
+            inbox_detail_ui = client.get(f"/admin/ui/inbox/{user_id}", auth=auth)
+            self.assertEqual(inbox_detail_ui.status_code, 200)
+            self.assertIn("Create Draft", inbox_detail_ui.text)
+            self.assertIn("Approval Actions", inbox_detail_ui.text)
+
+            metrics_ui = client.get("/admin/ui/revenue-metrics", auth=auth)
+            self.assertEqual(metrics_ui.status_code, 200)
+            self.assertIn("Revenue Metrics", metrics_ui.text)
+
     def test_admin_copilot_import_returns_summary_and_draft(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"
             app = create_app(self._settings(db_path))
-            client = TestClient(app)
+            client = build_test_client(app)
             auth = ("admin", "secret")
 
             payload = (
@@ -157,7 +284,7 @@ class ApiAdminTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"
             app = create_app(self._settings(db_path))
-            client = TestClient(app)
+            client = build_test_client(app)
             auth = ("admin", "secret")
 
             response = client.post(
@@ -172,7 +299,7 @@ class ApiAdminTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"
             app = create_app(self._settings(db_path))
-            client = TestClient(app)
+            client = build_test_client(app)
             auth = ("admin", "secret")
 
             response = client.post(
@@ -198,7 +325,7 @@ class ApiAdminTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"
             app = create_app(self._settings(db_path))
-            client = TestClient(app)
+            client = build_test_client(app)
             auth = ("admin", "secret")
 
             payload = (

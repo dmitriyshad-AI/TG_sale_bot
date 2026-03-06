@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 try:
-    from fastapi.testclient import TestClient
+    from tests.test_client_compat import build_test_client
 
     from sales_agent.sales_api.main import create_app
     from sales_agent.sales_core.config import Settings
@@ -59,7 +59,7 @@ class ApiWebhookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "webhook.db"
             app = create_app(self._settings(db_path, telegram_mode="polling"))
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.post("/telegram/webhook", json={"update_id": 1})
             self.assertEqual(response.status_code, 409)
             self.assertIn("disabled", response.json()["detail"].lower())
@@ -76,7 +76,7 @@ class ApiWebhookTests(unittest.TestCase):
                         webhook_secret="secret-1",
                     )
                 )
-                with TestClient(app) as client:
+                with build_test_client(app) as client:
                     response = client.post("/telegram/webhook", json={"update_id": 1})
                     self.assertEqual(response.status_code, 403)
                     mock_tg_app.process_update.assert_not_awaited()
@@ -96,7 +96,7 @@ class ApiWebhookTests(unittest.TestCase):
                         webhook_path="tg/webhook",
                     )
                 )
-                with TestClient(app) as client:
+                with build_test_client(app) as client:
                     response = client.post(
                         "/tg/webhook",
                         json={"update_id": 1},
@@ -128,7 +128,7 @@ class ApiWebhookTests(unittest.TestCase):
                         webhook_secret="secret-4",
                     )
                 )
-                with TestClient(app) as client:
+                with build_test_client(app) as client:
                     for _ in range(2):
                         response = client.post(
                             "/telegram/webhook",
@@ -154,7 +154,7 @@ class ApiWebhookTests(unittest.TestCase):
                         webhook_secret="secret-3",
                     )
                 )
-                with TestClient(app) as client:
+                with build_test_client(app) as client:
                     response = client.post(
                         "/telegram/webhook",
                         content="{invalid",
@@ -175,7 +175,7 @@ class ApiWebhookTests(unittest.TestCase):
                 "sales_agent.sales_api.main.Update.de_json", return_value=SimpleNamespace(update_id=7)
             ):
                 app = create_app(self._settings(db_path, telegram_mode="webhook", webhook_secret=""))
-                with TestClient(app) as client:
+                with build_test_client(app) as client:
                     response = client.post(
                         "/telegram/webhook",
                         json={"update_id": 7},

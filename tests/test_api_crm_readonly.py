@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 try:
-    from fastapi.testclient import TestClient
+    from tests.test_client_compat import build_test_client
 
     from sales_agent.sales_api.main import create_app
     from sales_agent.sales_core.config import Settings
@@ -43,7 +43,7 @@ class ApiCrmReadOnlyTests(unittest.TestCase):
     def test_crm_endpoints_require_readonly_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             app = create_app(_settings(Path(tmpdir) / "app.db", read_only=False))
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.get("/api/crm/meta/modules", auth=self.ADMIN_AUTH)
         self.assertEqual(response.status_code, 503)
         self.assertIn("read-only mode is disabled", response.json()["detail"].lower())
@@ -51,7 +51,7 @@ class ApiCrmReadOnlyTests(unittest.TestCase):
     def test_modules_endpoint_uses_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             app = create_app(_settings(Path(tmpdir) / "app.db", read_only=True))
-            client = TestClient(app)
+            client = build_test_client(app)
             with patch(
                 "sales_agent.sales_api.main.TallantoReadOnlyClient.call",
                 return_value={"result": [{"module": "contacts"}, {"module": "leads"}]},
@@ -69,7 +69,7 @@ class ApiCrmReadOnlyTests(unittest.TestCase):
     def test_fields_endpoint_maps_tallanto_401_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             app = create_app(_settings(Path(tmpdir) / "app.db", read_only=True))
-            client = TestClient(app)
+            client = build_test_client(app)
             with patch(
                 "sales_agent.sales_api.main.TallantoReadOnlyClient.call",
                 side_effect=RuntimeError("Tallanto HTTP error: 401"),
@@ -80,7 +80,7 @@ class ApiCrmReadOnlyTests(unittest.TestCase):
     def test_modules_endpoint_maps_tallanto_400_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             app = create_app(_settings(Path(tmpdir) / "app.db", read_only=True))
-            client = TestClient(app)
+            client = build_test_client(app)
             with patch(
                 "sales_agent.sales_api.main.TallantoReadOnlyClient.call",
                 side_effect=RuntimeError("Tallanto HTTP error: 400"),
@@ -91,7 +91,7 @@ class ApiCrmReadOnlyTests(unittest.TestCase):
     def test_lookup_endpoint_returns_sanitized_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             app = create_app(_settings(Path(tmpdir) / "app.db", read_only=True))
-            client = TestClient(app)
+            client = build_test_client(app)
             with patch(
                 "sales_agent.sales_api.main.TallantoReadOnlyClient.call",
                 return_value={
@@ -122,7 +122,7 @@ class ApiCrmReadOnlyTests(unittest.TestCase):
     def test_lookup_endpoint_uses_fallback_when_primary_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             app = create_app(_settings(Path(tmpdir) / "app.db", read_only=True))
-            client = TestClient(app)
+            client = build_test_client(app)
             with patch(
                 "sales_agent.sales_api.main.TallantoReadOnlyClient.call",
                 side_effect=[
@@ -147,7 +147,7 @@ class ApiCrmReadOnlyTests(unittest.TestCase):
     def test_crm_endpoints_require_admin_auth(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             app = create_app(_settings(Path(tmpdir) / "app.db", read_only=True))
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.get("/api/crm/meta/modules")
 
         self.assertEqual(response.status_code, 401)
@@ -158,7 +158,7 @@ class ApiCrmReadOnlyTests(unittest.TestCase):
             cfg = _settings(Path(tmpdir) / "app.db", read_only=True)
             cfg.crm_api_exposed = False
             app = create_app(cfg)
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.get("/api/crm/meta/modules", auth=self.ADMIN_AUTH)
 
         self.assertEqual(response.status_code, 404)

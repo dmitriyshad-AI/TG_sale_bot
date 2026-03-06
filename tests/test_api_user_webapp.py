@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 from urllib.parse import urlencode
 
 try:
-    from fastapi.testclient import TestClient
+    from tests.test_client_compat import build_test_client
 
     from sales_agent.sales_api.main import create_app
     from sales_agent.sales_core import db as db_module
@@ -75,7 +75,7 @@ class ApiUserWebappTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             app = create_app(_settings(root / "app.db", root / "missing_dist"))
-            client = TestClient(app)
+            client = build_test_client(app)
 
             root_response = client.get("/")
             self.assertEqual(root_response.status_code, 200)
@@ -93,7 +93,7 @@ class ApiUserWebappTests(unittest.TestCase):
             (dist / "index.html").write_text("<!doctype html><html><body>miniapp-ready</body></html>", encoding="utf-8")
 
             app = create_app(_settings(root / "app.db", dist))
-            client = TestClient(app)
+            client = build_test_client(app)
 
             root_response = client.get("/")
             self.assertEqual(root_response.status_code, 200)
@@ -107,7 +107,7 @@ class ApiUserWebappTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             app = create_app(_settings(root / "app.db", root / "missing_dist"))
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.get("/api/auth/whoami")
 
         self.assertEqual(response.status_code, 200)
@@ -124,7 +124,7 @@ class ApiUserWebappTests(unittest.TestCase):
             cfg.sales_manager_chat_url = "https://t.me/kmipt_sales_manager"
             cfg.user_webapp_url = "https://example.com/app"
             app = create_app(cfg)
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.get("/api/miniapp/meta")
 
         self.assertEqual(response.status_code, 200)
@@ -140,7 +140,7 @@ class ApiUserWebappTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             app = create_app(_settings(root / "app.db", root / "missing_dist"))
-            client = TestClient(app)
+            client = build_test_client(app)
             init_data = _build_init_data(
                 {
                     "auth_date": str(int(time.time())),
@@ -164,7 +164,7 @@ class ApiUserWebappTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             app = create_app(_settings(root / "app.db", root / "missing_dist"))
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.get(
                 "/api/auth/whoami",
                 headers={
@@ -224,7 +224,7 @@ products:
             cfg = _settings(root / "app.db", root / "missing_dist")
             cfg.catalog_path = catalog_path
             app = create_app(cfg)
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.get(
                 "/api/catalog/search",
                 params={
@@ -280,7 +280,7 @@ products:
             cfg = _settings(root / "app.db", root / "missing_dist")
             cfg.catalog_path = catalog_path
             app = create_app(cfg)
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.get(
                 "/api/catalog/search",
                 params={
@@ -304,7 +304,7 @@ products:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             app = create_app(_settings(root / "app.db", root / "missing_dist"))
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.post(
                 "/api/assistant/ask",
                 json={
@@ -328,7 +328,7 @@ products:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             app = create_app(_settings(root / "app.db", root / "missing_dist"))
-            client = TestClient(app)
+            client = build_test_client(app)
             with patch("sales_agent.sales_api.main.LLMClient") as llm_cls:
                 llm = llm_cls.return_value
                 llm.answer_knowledge_question_async = AsyncMock(
@@ -374,7 +374,7 @@ products:
             root = Path(tmpdir)
             db_path = root / "app.db"
             app = create_app(_settings(db_path, root / "missing_dist"))
-            client = TestClient(app)
+            client = build_test_client(app)
 
             conn = db_module.get_connection(db_path)
             try:
@@ -447,7 +447,7 @@ products:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             app = create_app(_settings(root / "app.db", root / "missing_dist"))
-            client = TestClient(app)
+            client = build_test_client(app)
             with patch("sales_agent.sales_api.main.LLMClient") as llm_cls:
                 llm = llm_cls.return_value
                 llm.answer_knowledge_question_async = AsyncMock(
@@ -505,7 +505,7 @@ products:
             cfg = _settings(root / "app.db", root / "missing_dist")
             cfg.catalog_path = catalog_path
             app = create_app(cfg)
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.post(
                 "/api/assistant/ask",
                 json={
@@ -529,7 +529,7 @@ products:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             app = create_app(_settings(root / "app.db", root / "missing_dist"))
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.post(
                 "/api/assistant/ask",
                 json={
@@ -551,7 +551,7 @@ products:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             app = create_app(_settings(root / "app.db", root / "missing_dist"))
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.post(
                 "/api/assistant/ask",
                 json={
@@ -569,7 +569,7 @@ products:
             cfg = _settings(root / "app.db", root / "missing_dist")
             cfg.assistant_api_token = "assistant-secret"
             app = create_app(cfg)
-            client = TestClient(app)
+            client = build_test_client(app)
             response = client.post(
                 "/api/assistant/ask",
                 json={
@@ -590,7 +590,7 @@ products:
             cfg.assistant_rate_limit_user_requests = 2
             cfg.assistant_rate_limit_ip_requests = 100
             app = create_app(cfg)
-            client = TestClient(app)
+            client = build_test_client(app)
             headers = _assistant_headers(user_id=777)
             first = client.post(
                 "/api/assistant/ask",

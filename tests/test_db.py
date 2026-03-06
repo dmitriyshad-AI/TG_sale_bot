@@ -30,6 +30,11 @@ class DatabaseTests(unittest.TestCase):
                 "conversation_contexts",
                 "crm_cache",
                 "webhook_updates",
+                "conversation_outcomes",
+                "reply_drafts",
+                "approval_actions",
+                "followup_tasks",
+                "lead_scores",
             }.issubset(table_names)
         )
 
@@ -413,6 +418,123 @@ class DatabaseTests(unittest.TestCase):
         self.conn.commit()
         expired = db.get_crm_cache(self.conn, key="crm:modules", max_age_seconds=10)
         self.assertIsNone(expired)
+
+    def test_revenue_entities_roundtrip_and_metrics(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="rev-1", first_name="Dmitriy")
+        thread_id = f"tg:{user_id}"
+        db.log_message(self.conn, user_id=user_id, direction="inbound", text="Здравствуйте", meta={})
+
+        draft_id = db.create_reply_draft(
+            self.conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            draft_text="Черновик ответа",
+            model_name="gpt-test",
+            created_by="admin",
+            idempotency_key="rev-1-draft",
+        )
+        draft = db.get_reply_draft(self.conn, draft_id)
+        self.assertIsNotNone(draft)
+        self.assertEqual(draft["status"], "created")
+
+        updated = db.update_reply_draft_text(
+            self.conn,
+            draft_id=draft_id,
+            draft_text="Черновик ответа 2",
+            model_name="gpt-test-2",
+            quality={"quality": "ok"},
+            actor="admin",
+        )
+        self.assertTrue(updated)
+        approved = db.update_reply_draft_status(self.conn, draft_id=draft_id, status="approved", actor="admin")
+        self.assertTrue(approved)
+
+        action_id = db.create_approval_action(
+            self.conn,
+            draft_id=draft_id,
+            user_id=user_id,
+            thread_id=thread_id,
+            action="draft_approved",
+            actor="admin",
+            payload={"source": "test"},
+        )
+        self.assertGreater(action_id, 0)
+
+        followup_id = db.create_followup_task(
+            self.conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            priority="hot",
+            reason="Нужен созвон",
+            status="pending",
+            due_at=None,
+            assigned_to="manager",
+        )
+        self.assertGreater(followup_id, 0)
+
+        score_id = db.create_lead_score(
+            self.conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            score=92.5,
+            temperature="hot",
+            confidence=0.8,
+            factors={"reason": "high_intent"},
+        )
+        self.assertGreater(score_id, 0)
+
+        outcome_id = db.upsert_conversation_outcome(
+            self.conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            outcome="consultation_booked",
+            note="Перезвонить вечером",
+            created_by="admin",
+        )
+        self.assertGreater(outcome_id, 0)
+
+        threads = db.list_inbox_threads(self.conn, limit=10)
+        self.assertEqual(len(threads), 1)
+        self.assertEqual(threads[0]["thread_id"], thread_id)
+        self.assertEqual(threads[0]["status"], "approved")
+        self.assertEqual(threads[0]["pending_followups"], 1)
+        self.assertEqual(threads[0]["lead_score"]["temperature"], "hot")
+
+        detail = db.get_inbox_thread_detail(self.conn, user_id=user_id, limit_messages=50)
+        self.assertEqual(detail["thread_id"], thread_id)
+        self.assertGreaterEqual(len(detail["messages"]), 1)
+        self.assertEqual(detail["outcome"]["outcome"], "consultation_booked")
+        self.assertEqual(detail["followups"][0]["priority"], "hot")
+        self.assertEqual(detail["lead_score"]["score"], 92.5)
+        self.assertEqual(detail["approval_actions"][0]["action"], "draft_approved")
+
+        metrics = db.get_revenue_metrics_snapshot(self.conn)
+        self.assertGreaterEqual(metrics["drafts_created_today"], 1)
+        self.assertEqual(metrics["followups_pending"], 1)
+        self.assertEqual(metrics["lead_temperature"]["hot"], 1)
+
+    def test_create_reply_draft_idempotency_returns_existing_draft(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="rev-2")
+        thread_id = f"tg:{user_id}"
+        first_id = db.create_reply_draft(
+            self.conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            draft_text="Первый вариант",
+            idempotency_key="same-key",
+        )
+        second_id = db.create_reply_draft(
+            self.conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            draft_text="Второй вариант",
+            idempotency_key="same-key",
+        )
+        self.assertEqual(first_id, second_id)
+
+        drafts = db.list_reply_drafts_for_thread(self.conn, thread_id=thread_id, limit=10)
+        self.assertEqual(len(drafts), 1)
+        self.assertEqual(drafts[0]["draft_text"], "Первый вариант")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 try:
-    from fastapi.testclient import TestClient
+    from tests.test_client_compat import build_test_client
 
     from sales_agent.sales_api.main import create_app
     from sales_agent.sales_core.config import Settings
@@ -86,7 +86,7 @@ class AssistantApiE2ETests(unittest.TestCase):
             _write_catalog(catalog_path)
 
             app = create_app(_settings(root / "app.db", catalog_path))
-            client = TestClient(app)
+            client = build_test_client(app)
             headers = {"X-Assistant-Token": "assistant-e2e-token"}
 
             first = client.post(
@@ -138,7 +138,7 @@ class AssistantApiE2ETests(unittest.TestCase):
             _write_catalog(catalog_path)
 
             app = create_app(_settings(root / "app.db", catalog_path))
-            client = TestClient(app)
+            client = build_test_client(app)
             headers = {"X-Assistant-Token": "assistant-e2e-token"}
 
             response = client.post(
