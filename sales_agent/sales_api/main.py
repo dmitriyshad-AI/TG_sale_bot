@@ -97,6 +97,7 @@ from sales_agent.sales_core.telegram_webapp import verify_telegram_webapp_init_d
 from sales_agent.sales_core.llm_client import LLMClient
 from sales_agent.sales_core.vector_store import load_vector_store_id
 from sales_agent.sales_api.routers.faq_lab import build_faq_lab_router
+from sales_agent.sales_api.routers.director import build_director_router
 
 
 security = HTTPBasic()
@@ -2084,6 +2085,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     <a href="/admin/ui/inbox">Inbox</a>
     <a href="/admin/ui/business-inbox">Business Inbox</a>
     <a href="/admin/ui/followups">Followups</a>
+    <a href="/admin/ui/director">Director</a>
     <a href="/admin/ui/calls">Calls</a>
     <a href="/admin/ui/faq-lab">FAQ Lab</a>
     <a href="/admin/ui/revenue-metrics">Revenue Metrics</a>
@@ -2108,6 +2110,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             window_days=cfg.faq_lab_window_days,
             min_question_count=cfg.faq_lab_min_question_count,
             default_limit=cfg.faq_lab_max_items_per_run,
+        )
+    )
+    app.include_router(
+        build_director_router(
+            db_path=cfg.database_path,
+            require_admin_dependency=require_admin,
+            render_page=render_page,
+            enabled=cfg.enable_director_agent,
         )
     )
 

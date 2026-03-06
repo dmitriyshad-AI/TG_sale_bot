@@ -45,6 +45,10 @@ class DatabaseTests(unittest.TestCase):
                 "faq_candidates",
                 "canonical_answers",
                 "answer_performance",
+                "campaign_goals",
+                "campaign_plans",
+                "campaign_actions",
+                "campaign_reports",
             }.issubset(table_names)
         )
 
@@ -885,6 +889,119 @@ class DatabaseTests(unittest.TestCase):
         rejected = db.list_rejected_reply_drafts(self.conn, limit=10)
         self.assertEqual(len(rejected), 1)
         self.assertEqual(rejected[0]["id"], draft_id)
+
+    def test_campaign_goal_plan_action_report_roundtrip(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="campaign-user")
+        thread_id = f"tg:{user_id}"
+
+        goal_id = db.create_campaign_goal(
+            self.conn,
+            goal_text="Вернуть теплых лидов по ЕГЭ информатика",
+            created_by="admin",
+        )
+        self.assertGreater(goal_id, 0)
+
+        plan_id = db.create_campaign_plan(
+            self.conn,
+            goal_id=goal_id,
+            objective="Реактивировать теплые лиды",
+            assumptions=["Only approval-based sends"],
+            target_segment={"tags": ["ege", "informatics"]},
+            success_metric="draft_sent_count>=5",
+            actions=[
+                {
+                    "action_type": "reactivation",
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "priority": "hot",
+                }
+            ],
+            created_by="admin",
+        )
+        self.assertGreater(plan_id, 0)
+
+        self.assertTrue(
+            db.update_campaign_goal_status(
+                self.conn,
+                goal_id=goal_id,
+                status="approved",
+                actor="manager",
+            )
+        )
+        self.assertTrue(
+            db.update_campaign_plan_status(
+                self.conn,
+                plan_id=plan_id,
+                status="approved",
+                actor="manager",
+            )
+        )
+
+        draft_id = db.create_reply_draft(
+            self.conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            draft_text="Возвращаюсь к вашему запросу.",
+            model_name="director_agent_v1",
+        )
+        followup_id = db.create_followup_task(
+            self.conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            priority="hot",
+            reason="campaign followup",
+            related_draft_id=draft_id,
+        )
+        action_id = db.create_campaign_action(
+            self.conn,
+            goal_id=goal_id,
+            plan_id=plan_id,
+            action_type="reactivation",
+            status="created",
+            user_id=user_id,
+            thread_id=thread_id,
+            priority="hot",
+            reason="keyword_match",
+            draft_id=draft_id,
+            followup_task_id=followup_id,
+            payload={"source": "test"},
+        )
+        self.assertGreater(action_id, 0)
+
+        report_id = db.create_campaign_report(
+            self.conn,
+            goal_id=goal_id,
+            plan_id=plan_id,
+            report={"created_actions": 1},
+            created_by="admin",
+        )
+        self.assertGreater(report_id, 0)
+
+        goal = db.get_campaign_goal(self.conn, goal_id=goal_id)
+        self.assertEqual(goal["status"], "approved")
+        plan = db.get_campaign_plan(self.conn, plan_id=plan_id)
+        self.assertEqual(plan["status"], "approved")
+        self.assertEqual(plan["target_segment"]["tags"][0], "ege")
+        self.assertEqual(len(plan["actions"]), 1)
+
+        goals = db.list_campaign_goals(self.conn, limit=10)
+        self.assertEqual(len(goals), 1)
+        plans = db.list_campaign_plans(self.conn, goal_id=goal_id, limit=10)
+        self.assertEqual(len(plans), 1)
+        actions = db.list_campaign_actions(self.conn, goal_id=goal_id, limit=10)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["payload"]["source"], "test")
+        reports = db.list_campaign_reports(self.conn, goal_id=goal_id, limit=10)
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["report"]["created_actions"], 1)
+
+        self.assertFalse(db.update_campaign_goal_status(self.conn, goal_id=99999, status="approved", actor="x"))
+        self.assertFalse(db.update_campaign_plan_status(self.conn, plan_id=99999, status="approved", actor="x"))
+
+        with self.assertRaises(ValueError):
+            db.update_campaign_goal_status(self.conn, goal_id=goal_id, status="invalid", actor="x")
+        with self.assertRaises(ValueError):
+            db.update_campaign_plan_status(self.conn, plan_id=plan_id, status="invalid", actor="x")
 
 
 if __name__ == "__main__":

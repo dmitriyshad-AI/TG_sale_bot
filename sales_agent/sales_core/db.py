@@ -326,6 +326,72 @@ CREATE_TABLE_STATEMENTS = [
         UNIQUE(answer_kind, answer_ref, question_key)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS campaign_goals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        goal_text TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft',
+        created_by TEXT,
+        approved_by TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        approved_at TEXT
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS campaign_plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        goal_id INTEGER NOT NULL,
+        objective TEXT NOT NULL,
+        assumptions_json TEXT NOT NULL DEFAULT '[]',
+        target_segment_json TEXT NOT NULL DEFAULT '{}',
+        success_metric TEXT,
+        actions_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'draft',
+        approvals_required INTEGER NOT NULL DEFAULT 1,
+        created_by TEXT,
+        approved_by TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        approved_at TEXT,
+        FOREIGN KEY(goal_id) REFERENCES campaign_goals(id)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS campaign_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        goal_id INTEGER NOT NULL,
+        plan_id INTEGER NOT NULL,
+        action_type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'planned',
+        user_id INTEGER,
+        thread_id TEXT,
+        priority TEXT,
+        reason TEXT,
+        draft_id INTEGER,
+        followup_task_id INTEGER,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(goal_id) REFERENCES campaign_goals(id),
+        FOREIGN KEY(plan_id) REFERENCES campaign_plans(id),
+        FOREIGN KEY(user_id) REFERENCES users(id),
+        FOREIGN KEY(draft_id) REFERENCES reply_drafts(id),
+        FOREIGN KEY(followup_task_id) REFERENCES followup_tasks(id)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS campaign_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        goal_id INTEGER NOT NULL,
+        plan_id INTEGER NOT NULL,
+        report_json TEXT NOT NULL DEFAULT '{}',
+        created_by TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(goal_id) REFERENCES campaign_goals(id),
+        FOREIGN KEY(plan_id) REFERENCES campaign_plans(id)
+    );
+    """,
 ]
 
 CREATE_INDEX_STATEMENTS = [
@@ -377,6 +443,12 @@ CREATE_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_canonical_answers_question_key ON canonical_answers(question_key);",
     "CREATE INDEX IF NOT EXISTS idx_answer_performance_kind_status ON answer_performance(answer_kind, status, next_step_rate DESC, question_count DESC);",
     "CREATE INDEX IF NOT EXISTS idx_answer_performance_question_key ON answer_performance(question_key);",
+    "CREATE INDEX IF NOT EXISTS idx_campaign_goals_status_created ON campaign_goals(status, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_campaign_plans_goal_status ON campaign_plans(goal_id, status, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_campaign_actions_goal_status ON campaign_actions(goal_id, status, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_campaign_actions_plan_status ON campaign_actions(plan_id, status, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_campaign_actions_thread ON campaign_actions(thread_id, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_campaign_reports_goal_created ON campaign_reports(goal_id, created_at DESC);",
 ]
 
 
@@ -1922,6 +1994,448 @@ def list_rejected_reply_drafts(conn: sqlite3.Connection, *, limit: int = 50) -> 
         (max(1, int(limit)),),
     )
     return [dict(row) for row in cursor.fetchall()]
+
+
+def create_campaign_goal(
+    conn: sqlite3.Connection,
+    *,
+    goal_text: str,
+    created_by: Optional[str] = None,
+    status: str = "draft",
+) -> int:
+    normalized_goal = (goal_text or "").strip()
+    if not normalized_goal:
+        raise ValueError("goal_text is required")
+    cursor = conn.execute(
+        """
+        INSERT INTO campaign_goals (goal_text, status, created_by)
+        VALUES (?, ?, ?)
+        """,
+        (
+            normalized_goal,
+            (status or "draft").strip().lower() or "draft",
+            (created_by or "").strip() or None,
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def get_campaign_goal(conn: sqlite3.Connection, *, goal_id: int) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT
+            id,
+            goal_text,
+            status,
+            created_by,
+            approved_by,
+            created_at,
+            updated_at,
+            approved_at
+        FROM campaign_goals
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (goal_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def update_campaign_goal_status(
+    conn: sqlite3.Connection,
+    *,
+    goal_id: int,
+    status: str,
+    actor: Optional[str] = None,
+) -> bool:
+    normalized_status = (status or "").strip().lower()
+    if normalized_status not in {"draft", "approved", "applied", "completed", "archived"}:
+        raise ValueError(f"Unsupported campaign goal status: {status}")
+    row = conn.execute("SELECT id FROM campaign_goals WHERE id = ? LIMIT 1", (goal_id,)).fetchone()
+    if not row:
+        return False
+
+    approved_by = (actor or "").strip() or None if normalized_status == "approved" else None
+    conn.execute(
+        """
+        UPDATE campaign_goals
+        SET
+            status = ?,
+            approved_by = COALESCE(?, approved_by),
+            approved_at = CASE WHEN ? = 'approved' THEN CURRENT_TIMESTAMP ELSE approved_at END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (normalized_status, approved_by, normalized_status, goal_id),
+    )
+    conn.commit()
+    return True
+
+
+def list_campaign_goals(
+    conn: sqlite3.Connection,
+    *,
+    status: Optional[str] = None,
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    params: list[Any] = []
+    where_sql = ""
+    if isinstance(status, str) and status.strip():
+        where_sql = "WHERE status = ?"
+        params.append(status.strip().lower())
+    params.append(max(1, int(limit)))
+    cursor = conn.execute(
+        f"""
+        SELECT
+            id,
+            goal_text,
+            status,
+            created_by,
+            approved_by,
+            created_at,
+            updated_at,
+            approved_at
+        FROM campaign_goals
+        {where_sql}
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def create_campaign_plan(
+    conn: sqlite3.Connection,
+    *,
+    goal_id: int,
+    objective: str,
+    assumptions: Optional[list[Any]] = None,
+    target_segment: Optional[Dict[str, Any]] = None,
+    success_metric: Optional[str] = None,
+    actions: Optional[list[Dict[str, Any]]] = None,
+    status: str = "draft",
+    approvals_required: int = 1,
+    created_by: Optional[str] = None,
+) -> int:
+    normalized_objective = (objective or "").strip()
+    if not normalized_objective:
+        raise ValueError("objective is required")
+
+    cursor = conn.execute(
+        """
+        INSERT INTO campaign_plans (
+            goal_id,
+            objective,
+            assumptions_json,
+            target_segment_json,
+            success_metric,
+            actions_json,
+            status,
+            approvals_required,
+            created_by
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(goal_id),
+            normalized_objective,
+            json.dumps(assumptions or [], ensure_ascii=False),
+            json.dumps(target_segment or {}, ensure_ascii=False),
+            (success_metric or "").strip() or None,
+            json.dumps(actions or [], ensure_ascii=False),
+            (status or "draft").strip().lower() or "draft",
+            max(0, int(approvals_required)),
+            (created_by or "").strip() or None,
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def get_campaign_plan(conn: sqlite3.Connection, *, plan_id: int) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT
+            id,
+            goal_id,
+            objective,
+            assumptions_json,
+            target_segment_json,
+            success_metric,
+            actions_json,
+            status,
+            approvals_required,
+            created_by,
+            approved_by,
+            created_at,
+            updated_at,
+            approved_at
+        FROM campaign_plans
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (plan_id,),
+    ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["assumptions"] = _safe_json_list(item.pop("assumptions_json"))
+    item["target_segment"] = _safe_json_loads(item.pop("target_segment_json"))
+    item["actions"] = _safe_json_list(item.pop("actions_json"))
+    return item
+
+
+def list_campaign_plans(
+    conn: sqlite3.Connection,
+    *,
+    goal_id: Optional[int] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    where_parts: list[str] = []
+    params: list[Any] = []
+    if goal_id is not None:
+        where_parts.append("goal_id = ?")
+        params.append(int(goal_id))
+    if isinstance(status, str) and status.strip():
+        where_parts.append("status = ?")
+        params.append(status.strip().lower())
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    params.append(max(1, int(limit)))
+    cursor = conn.execute(
+        f"""
+        SELECT
+            id,
+            goal_id,
+            objective,
+            assumptions_json,
+            target_segment_json,
+            success_metric,
+            actions_json,
+            status,
+            approvals_required,
+            created_by,
+            approved_by,
+            created_at,
+            updated_at,
+            approved_at
+        FROM campaign_plans
+        {where_sql}
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    rows: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["assumptions"] = _safe_json_list(item.pop("assumptions_json"))
+        item["target_segment"] = _safe_json_loads(item.pop("target_segment_json"))
+        item["actions"] = _safe_json_list(item.pop("actions_json"))
+        rows.append(item)
+    return rows
+
+
+def update_campaign_plan_status(
+    conn: sqlite3.Connection,
+    *,
+    plan_id: int,
+    status: str,
+    actor: Optional[str] = None,
+) -> bool:
+    normalized_status = (status or "").strip().lower()
+    if normalized_status not in {"draft", "approved", "applied", "completed", "archived"}:
+        raise ValueError(f"Unsupported campaign plan status: {status}")
+    row = conn.execute("SELECT id FROM campaign_plans WHERE id = ? LIMIT 1", (plan_id,)).fetchone()
+    if not row:
+        return False
+
+    approved_by = (actor or "").strip() or None if normalized_status == "approved" else None
+    conn.execute(
+        """
+        UPDATE campaign_plans
+        SET
+            status = ?,
+            approved_by = COALESCE(?, approved_by),
+            approved_at = CASE WHEN ? = 'approved' THEN CURRENT_TIMESTAMP ELSE approved_at END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (normalized_status, approved_by, normalized_status, plan_id),
+    )
+    conn.commit()
+    return True
+
+
+def create_campaign_action(
+    conn: sqlite3.Connection,
+    *,
+    goal_id: int,
+    plan_id: int,
+    action_type: str,
+    status: str = "planned",
+    user_id: Optional[int] = None,
+    thread_id: Optional[str] = None,
+    priority: Optional[str] = None,
+    reason: Optional[str] = None,
+    draft_id: Optional[int] = None,
+    followup_task_id: Optional[int] = None,
+    payload: Optional[Dict[str, Any]] = None,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO campaign_actions (
+            goal_id,
+            plan_id,
+            action_type,
+            status,
+            user_id,
+            thread_id,
+            priority,
+            reason,
+            draft_id,
+            followup_task_id,
+            payload_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(goal_id),
+            int(plan_id),
+            (action_type or "").strip().lower() or "manual",
+            (status or "planned").strip().lower() or "planned",
+            int(user_id) if isinstance(user_id, int) else None,
+            (thread_id or "").strip() or None,
+            (priority or "").strip().lower() or None,
+            (reason or "").strip() or None,
+            int(draft_id) if isinstance(draft_id, int) else None,
+            int(followup_task_id) if isinstance(followup_task_id, int) else None,
+            json.dumps(payload or {}, ensure_ascii=False),
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def list_campaign_actions(
+    conn: sqlite3.Connection,
+    *,
+    goal_id: Optional[int] = None,
+    plan_id: Optional[int] = None,
+    status: Optional[str] = None,
+    limit: int = 500,
+) -> list[Dict[str, Any]]:
+    where_parts: list[str] = []
+    params: list[Any] = []
+    if goal_id is not None:
+        where_parts.append("ca.goal_id = ?")
+        params.append(int(goal_id))
+    if plan_id is not None:
+        where_parts.append("ca.plan_id = ?")
+        params.append(int(plan_id))
+    if isinstance(status, str) and status.strip():
+        where_parts.append("ca.status = ?")
+        params.append(status.strip().lower())
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    params.append(max(1, int(limit)))
+
+    cursor = conn.execute(
+        f"""
+        SELECT
+            ca.id,
+            ca.goal_id,
+            ca.plan_id,
+            ca.action_type,
+            ca.status,
+            ca.user_id,
+            ca.thread_id,
+            ca.priority,
+            ca.reason,
+            ca.draft_id,
+            ca.followup_task_id,
+            ca.payload_json,
+            ca.created_at,
+            ca.updated_at,
+            u.channel AS user_channel,
+            u.external_id AS user_external_id,
+            u.username,
+            u.first_name,
+            u.last_name
+        FROM campaign_actions ca
+        LEFT JOIN users u ON u.id = ca.user_id
+        {where_sql}
+        ORDER BY ca.id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    rows: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["payload"] = _safe_json_loads(item.pop("payload_json"))
+        rows.append(item)
+    return rows
+
+
+def create_campaign_report(
+    conn: sqlite3.Connection,
+    *,
+    goal_id: int,
+    plan_id: int,
+    report: Dict[str, Any],
+    created_by: Optional[str] = None,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO campaign_reports (goal_id, plan_id, report_json, created_by)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            int(goal_id),
+            int(plan_id),
+            json.dumps(report or {}, ensure_ascii=False),
+            (created_by or "").strip() or None,
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def list_campaign_reports(
+    conn: sqlite3.Connection,
+    *,
+    goal_id: Optional[int] = None,
+    plan_id: Optional[int] = None,
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    where_parts: list[str] = []
+    params: list[Any] = []
+    if goal_id is not None:
+        where_parts.append("goal_id = ?")
+        params.append(int(goal_id))
+    if plan_id is not None:
+        where_parts.append("plan_id = ?")
+        params.append(int(plan_id))
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    params.append(max(1, int(limit)))
+    cursor = conn.execute(
+        f"""
+        SELECT id, goal_id, plan_id, report_json, created_by, created_at
+        FROM campaign_reports
+        {where_sql}
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    rows: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["report"] = _safe_json_loads(item.pop("report_json"))
+        rows.append(item)
+    return rows
 
 
 def build_business_thread_key(*, business_connection_id: str, chat_id: int) -> str:

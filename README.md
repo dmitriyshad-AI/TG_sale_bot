@@ -245,6 +245,20 @@ Admin API/UI:
 - `POST /admin/faq-lab/candidates/{candidate_id}/promote` — promote в canonical answer
 - `GET /admin/ui/faq-lab` — базовая HTML-панель FAQ Lab
 
+## Director Agent (Step 10)
+
+Назначение: руководитель задаёт цель естественным языком, система собирает структурный campaign plan и очередь задач без автоотправки.
+
+Feature flag:
+- `ENABLE_DIRECTOR_AGENT=true`
+
+API/UI:
+- `GET /admin/director` — обзор goals/plans/actions/reports
+- `POST /admin/director/plan` — создать goal + draft plan
+- `POST /admin/director/plans/{plan_id}/approve` — approve плана
+- `POST /admin/director/plans/{plan_id}/apply` — создать followups + drafts из плана
+- `GET /admin/ui/director` — рабочая HTML-панель (Goal -> Plan -> Approve -> Apply)
+
 ## Команды обслуживания
 
 - Инициализация/создание БД выполняется автоматически при старте API или бота.
@@ -292,7 +306,10 @@ Admin API/UI:
   - Регулярный remote smoke можно включить через GitHub Actions workflow `Release Smoke`:
     1. Добавьте GitHub Secret `RELEASE_SMOKE_BASE_URL=https://<your-domain>`.
     2. Опционально добавьте `TELEGRAM_BOT_TOKEN` (для проверки webhook в Telegram API).
-    3. Workflow запускается вручную и по cron (каждые 30 минут).
+    3. Опционально добавьте Telegram alert secrets (уведомление только при падении smoke):
+       - `RELEASE_SMOKE_ALERT_TG_BOT_TOKEN`
+       - `RELEASE_SMOKE_ALERT_TG_CHAT_ID`
+    4. Workflow запускается вручную и по cron (каждые 30 минут).
 - Резервное копирование SQLite:
   ```bash
   # Создать backup (по умолчанию gzip + ротация последних 14 файлов)

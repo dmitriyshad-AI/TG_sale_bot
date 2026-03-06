@@ -302,6 +302,9 @@ python3 scripts/release_smoke.py \
 Примечание: для регулярного контроля можно включить GitHub Actions workflow `Release Smoke`:
 - Secret `RELEASE_SMOKE_BASE_URL=https://<your-render-domain>`
 - Optional Secret `TELEGRAM_BOT_TOKEN` (для проверки `getWebhookInfo`)
+- Optional Secrets для Telegram-алерта при падении smoke:
+  - `RELEASE_SMOKE_ALERT_TG_BOT_TOKEN`
+  - `RELEASE_SMOKE_ALERT_TG_CHAT_ID`
 - cron каждые 30 минут + ручной запуск.
 
 ### Offline Mango smoke (локально и в CI)
