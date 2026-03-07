@@ -1390,6 +1390,7 @@ def list_followup_tasks(
     conn: sqlite3.Connection,
     *,
     status: Optional[str] = None,
+    search: Optional[str] = None,
     limit: int = 200,
 ) -> list[Dict[str, Any]]:
     params: list[Any] = []
@@ -1429,7 +1430,27 @@ def list_followup_tasks(
         """,
         tuple(params),
     )
-    return [dict(row) for row in cursor.fetchall()]
+    items = [dict(row) for row in cursor.fetchall()]
+    normalized_search = (search or "").strip().lower()
+    if not normalized_search:
+        return items
+
+    filtered: list[Dict[str, Any]] = []
+    for item in items:
+        haystack = " ".join(
+            [
+                str(item.get("thread_id") or ""),
+                str(item.get("reason") or ""),
+                str(item.get("assigned_to") or ""),
+                str(item.get("external_id") or ""),
+                str(item.get("username") or ""),
+                str(item.get("first_name") or ""),
+                str(item.get("last_name") or ""),
+            ]
+        ).lower()
+        if normalized_search in haystack:
+            filtered.append(item)
+    return filtered
 
 
 def create_lead_score(
@@ -1476,7 +1497,36 @@ def get_latest_lead_score(
     return item
 
 
-def list_inbox_threads(conn: sqlite3.Connection, *, limit: int = 100) -> list[Dict[str, Any]]:
+def _derive_inbox_workflow_status(
+    *,
+    draft_status: Optional[str],
+    draft_last_error: Optional[str],
+    pending_followups: int,
+) -> str:
+    normalized_status = (draft_status or "").strip().lower()
+    has_last_error = bool((draft_last_error or "").strip())
+    if normalized_status == "sent":
+        return "sent"
+    if normalized_status == "sending":
+        return "sending"
+    if normalized_status == "approved":
+        return "failed" if has_last_error else "ready_to_send"
+    if normalized_status == "created":
+        return "needs_approval"
+    if normalized_status == "rejected":
+        return "rejected"
+    if int(pending_followups or 0) > 0:
+        return "manual_required"
+    return "new"
+
+
+def list_inbox_threads(
+    conn: sqlite3.Connection,
+    *,
+    workflow_status: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
     conversations = list_recent_conversations(conn, limit=max(1, int(limit)))
     items: list[Dict[str, Any]] = []
     for row in conversations:
@@ -1484,7 +1534,7 @@ def list_inbox_threads(conn: sqlite3.Connection, *, limit: int = 100) -> list[Di
         thread_id = f"tg:{user_id}"
         latest_draft_row = conn.execute(
             """
-            SELECT id, status, draft_text, created_at, updated_at, sent_at, approved_at
+            SELECT id, status, draft_text, created_at, updated_at, sent_at, approved_at, last_error, sent_message_id
             FROM reply_drafts
             WHERE thread_id = ?
             ORDER BY id DESC
@@ -1508,10 +1558,17 @@ def list_inbox_threads(conn: sqlite3.Connection, *, limit: int = 100) -> list[Di
         elif pending_followups > 0:
             status_value = "manual_required"
 
+        derived_workflow_status = _derive_inbox_workflow_status(
+            draft_status=status_value if latest_draft is not None else None,
+            draft_last_error=(latest_draft or {}).get("last_error") if latest_draft else None,
+            pending_followups=pending_followups,
+        )
+
         items.append(
             {
                 "thread_id": thread_id,
                 "status": status_value,
+                "workflow_status": derived_workflow_status,
                 "user_id": user_id,
                 "channel": row.get("channel"),
                 "external_id": row.get("external_id"),
@@ -1526,6 +1583,27 @@ def list_inbox_threads(conn: sqlite3.Connection, *, limit: int = 100) -> list[Di
                 "lead_score": lead_score,
             }
         )
+
+    normalized_status_filter = (workflow_status or "").strip().lower()
+    if normalized_status_filter:
+        items = [item for item in items if str(item.get("workflow_status") or "").lower() == normalized_status_filter]
+
+    normalized_search = (search or "").strip().lower()
+    if normalized_search:
+        filtered: list[Dict[str, Any]] = []
+        for item in items:
+            haystack = " ".join(
+                [
+                    str(item.get("thread_id") or ""),
+                    str(item.get("external_id") or ""),
+                    str(item.get("username") or ""),
+                    str(item.get("first_name") or ""),
+                    str(item.get("last_name") or ""),
+                ]
+            ).lower()
+            if normalized_search in haystack:
+                filtered.append(item)
+        items = filtered
     return items
 
 

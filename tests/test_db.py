@@ -702,6 +702,62 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(len(drafts), 1)
         self.assertEqual(drafts[0]["draft_text"], "Первый вариант")
 
+    def test_list_inbox_threads_supports_workflow_filter_and_search(self) -> None:
+        user_id = db.get_or_create_user(
+            self.conn,
+            channel="telegram",
+            external_id="search-u1",
+            username="search_user",
+            first_name="Search",
+            last_name="User",
+        )
+        thread_id = f"tg:{user_id}"
+        db.log_message(self.conn, user_id=user_id, direction="inbound", text="Нужна стратегия", meta={})
+        draft_id = db.create_reply_draft(
+            self.conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            draft_text="Черновик для фильтра",
+        )
+        db.update_reply_draft_status(self.conn, draft_id=draft_id, status="approved", actor="admin")
+        db.set_reply_draft_last_error(self.conn, draft_id=draft_id, last_error="temporary send error")
+
+        all_items = db.list_inbox_threads(self.conn, limit=50)
+        self.assertEqual(len(all_items), 1)
+        self.assertEqual(all_items[0]["workflow_status"], "failed")
+
+        filtered = db.list_inbox_threads(self.conn, workflow_status="failed", search="search_user", limit=50)
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["user_id"], user_id)
+
+        not_found = db.list_inbox_threads(self.conn, workflow_status="sent", search="missing", limit=50)
+        self.assertEqual(not_found, [])
+
+    def test_list_followup_tasks_supports_search(self) -> None:
+        user_id = db.get_or_create_user(
+            self.conn,
+            channel="telegram",
+            external_id="followup-search",
+            username="followup_user",
+        )
+        thread_id = f"tg:{user_id}"
+        db.create_followup_task(
+            self.conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            priority="warm",
+            reason="Контрольный созвон по математике",
+            status="pending",
+            assigned_to="manager-1",
+        )
+
+        matched = db.list_followup_tasks(self.conn, status="pending", search="математике", limit=50)
+        self.assertEqual(len(matched), 1)
+        self.assertIn("математике", matched[0]["reason"])
+
+        missing = db.list_followup_tasks(self.conn, status="pending", search="физике", limit=50)
+        self.assertEqual(missing, [])
+
     def test_claim_reply_draft_for_send_is_atomic_and_sets_sending(self) -> None:
         user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="rev-claim")
         thread_id = f"tg:{user_id}"

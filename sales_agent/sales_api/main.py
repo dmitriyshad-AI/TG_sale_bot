@@ -32,7 +32,6 @@ from sales_agent.sales_core.copilot import run_copilot_from_file
 from sales_agent.sales_core.crm import build_crm_client
 from sales_agent.sales_core.db import (
     clear_call_record_file_path,
-    claim_reply_draft_for_send,
     claim_webhook_update,
     count_mango_events,
     count_webhook_updates_by_status,
@@ -43,7 +42,6 @@ from sales_agent.sales_core.db import (
     create_lead_score,
     create_reply_draft,
     enqueue_webhook_update,
-    find_user_by_phone,
     get_business_connection,
     get_latest_mango_event_created_at,
     get_oldest_mango_event_created_at,
@@ -75,7 +73,6 @@ from sales_agent.sales_core.db import (
     mark_webhook_update_done,
     mark_webhook_update_retry,
     requeue_stuck_webhook_updates,
-    resolve_preferred_thread_for_user,
     update_call_record_status,
     update_mango_event_status,
     set_reply_draft_last_error,
@@ -96,6 +93,11 @@ from sales_agent.sales_core.tallanto_readonly import (
     sanitize_tallanto_lookup_context,
 )
 from sales_agent.sales_core.mango_client import MangoCallEvent, MangoClient, MangoClientError
+from sales_agent.sales_core.mango_auto_ingest import (
+    event_from_mango_record,
+    extract_mango_user_and_thread,
+    fetch_mango_poll_events_with_retries,
+)
 from sales_agent.sales_core.telegram_webapp import verify_telegram_webapp_init_data
 from sales_agent.sales_core.llm_client import LLMClient
 from sales_agent.sales_core.telegram_business_sender import (
@@ -105,6 +107,7 @@ from sales_agent.sales_core.telegram_business_sender import (
 from sales_agent.sales_core.vector_store import load_vector_store_id
 from sales_agent.sales_api.routers.faq_lab import build_faq_lab_router
 from sales_agent.sales_api.routers.director import build_director_router
+from sales_agent.sales_api.services.draft_send import send_approved_draft
 
 
 security = HTTPBasic()
@@ -1530,6 +1533,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return False
         return reason.startswith("radar:")
 
+    def _inbox_workflow_status_label(status_value: str) -> str:
+        normalized = (status_value or "").strip().lower()
+        labels = {
+            "new": "Новый",
+            "needs_approval": "Нужен approve",
+            "ready_to_send": "Готов к отправке",
+            "sending": "Отправляется",
+            "failed": "Ошибка отправки",
+            "sent": "Отправлен",
+            "rejected": "Отклонён",
+            "manual_required": "Нужен ручной шаг",
+        }
+        return labels.get(normalized, status_value or "new")
+
+    def _inbox_workflow_badge(status_value: str) -> str:
+        normalized = (status_value or "").strip().lower()
+        colors = {
+            "new": "#e5e7eb",
+            "needs_approval": "#fef3c7",
+            "ready_to_send": "#dbeafe",
+            "sending": "#bfdbfe",
+            "failed": "#fecaca",
+            "sent": "#dcfce7",
+            "rejected": "#f3f4f6",
+            "manual_required": "#ede9fe",
+        }
+        bg = colors.get(normalized, "#e5e7eb")
+        label = html.escape(_inbox_workflow_status_label(normalized))
+        return f"<span class='badge' style='background:{bg};'>{label}</span>"
+
     def _pending_radar_followup_exists(conn: Any, *, thread_id: str, rule_key: str) -> bool:
         row = conn.execute(
             """
@@ -1543,6 +1576,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             (thread_id, f"{rule_key}:%"),
         ).fetchone()
         return row is not None
+
+    def _count_recent_radar_followups(conn: Any, *, thread_id: str, hours: int) -> int:
+        normalized_hours = max(0, int(hours))
+        if normalized_hours <= 0:
+            return 0
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM followup_tasks
+            WHERE thread_id = ?
+              AND reason LIKE 'radar:%'
+              AND created_at >= datetime('now', ?)
+            """,
+            (thread_id, f"-{normalized_hours} hours"),
+        ).fetchone()
+        return int(row["cnt"]) if row else 0
+
+    def _count_today_radar_followups(conn: Any, *, thread_id: str) -> int:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM followup_tasks
+            WHERE thread_id = ?
+              AND reason LIKE 'radar:%'
+              AND created_at >= date('now')
+            """,
+            (thread_id,),
+        ).fetchone()
+        return int(row["cnt"]) if row else 0
+
+    def _lead_radar_guard(
+        conn: Any,
+        *,
+        thread_id: str,
+        rule_key: str,
+    ) -> tuple[bool, str]:
+        if _pending_radar_followup_exists(conn, thread_id=thread_id, rule_key=rule_key):
+            return (False, "pending_rule")
+        if cfg.lead_radar_thread_cooldown_hours > 0:
+            recent_count = _count_recent_radar_followups(
+                conn,
+                thread_id=thread_id,
+                hours=cfg.lead_radar_thread_cooldown_hours,
+            )
+            if recent_count > 0:
+                return (False, "cooldown")
+        today_count = _count_today_radar_followups(conn, thread_id=thread_id)
+        if today_count >= int(cfg.lead_radar_daily_cap_per_thread):
+            return (False, "daily_cap")
+        return (True, "ok")
 
     def _collect_no_reply_candidates(conn: Any, *, no_reply_hours: int, limit: int) -> list[Dict[str, Any]]:
         cursor = conn.execute(
@@ -1830,9 +1913,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         LEAD_RADAR_RULE_NO_REPLY: {
                             "candidates": len(no_reply_candidates) + len(business_no_reply_candidates),
                             "created": 0,
+                            "skipped_pending_rule": 0,
+                            "skipped_outcome": 0,
+                            "skipped_cooldown": 0,
+                            "skipped_daily_cap": 0,
                         },
-                        LEAD_RADAR_RULE_CALL_NO_NEXT_STEP: {"candidates": len(call_candidates), "created": 0},
-                        LEAD_RADAR_RULE_STALE_WARM: {"candidates": len(stale_warm_candidates), "created": 0},
+                        LEAD_RADAR_RULE_CALL_NO_NEXT_STEP: {
+                            "candidates": len(call_candidates),
+                            "created": 0,
+                            "skipped_pending_rule": 0,
+                            "skipped_outcome": 0,
+                            "skipped_cooldown": 0,
+                            "skipped_daily_cap": 0,
+                        },
+                        LEAD_RADAR_RULE_STALE_WARM: {
+                            "candidates": len(stale_warm_candidates),
+                            "created": 0,
+                            "skipped_pending_rule": 0,
+                            "skipped_outcome": 0,
+                            "skipped_cooldown": 0,
+                            "skipped_daily_cap": 0,
+                        },
                     },
                 }
 
@@ -1845,9 +1946,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     if user_id <= 0:
                         continue
                     thread_id = _safe_thread_id(candidate.get("thread_id")) or _thread_id_from_user_id(user_id)
-                    if _pending_radar_followup_exists(conn, thread_id=thread_id, rule_key=LEAD_RADAR_RULE_NO_REPLY):
-                        continue
                     if get_conversation_outcome(conn, thread_id=thread_id) is not None:
+                        result["rules"][LEAD_RADAR_RULE_NO_REPLY]["skipped_outcome"] += 1
+                        continue
+                    allowed, skip_reason = _lead_radar_guard(
+                        conn,
+                        thread_id=thread_id,
+                        rule_key=LEAD_RADAR_RULE_NO_REPLY,
+                    )
+                    if not allowed:
+                        if skip_reason == "pending_rule":
+                            result["rules"][LEAD_RADAR_RULE_NO_REPLY]["skipped_pending_rule"] += 1
+                        elif skip_reason == "cooldown":
+                            result["rules"][LEAD_RADAR_RULE_NO_REPLY]["skipped_cooldown"] += 1
+                        elif skip_reason == "daily_cap":
+                            result["rules"][LEAD_RADAR_RULE_NO_REPLY]["skipped_daily_cap"] += 1
                         continue
                     inbound_text = str(candidate.get("inbound_text") or "").strip()
                     reason_human = f"Нет ответа менеджера после входящего сообщения более {cfg.lead_radar_no_reply_hours} ч."
@@ -1883,13 +1996,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     thread_id = _safe_thread_id(candidate.get("thread_id"))
                     if user_id <= 0 or not thread_id:
                         continue
-                    if _pending_radar_followup_exists(
+                    if get_conversation_outcome(conn, thread_id=thread_id) is not None:
+                        result["rules"][LEAD_RADAR_RULE_CALL_NO_NEXT_STEP]["skipped_outcome"] += 1
+                        continue
+                    allowed, skip_reason = _lead_radar_guard(
                         conn,
                         thread_id=thread_id,
                         rule_key=LEAD_RADAR_RULE_CALL_NO_NEXT_STEP,
-                    ):
-                        continue
-                    if get_conversation_outcome(conn, thread_id=thread_id) is not None:
+                    )
+                    if not allowed:
+                        if skip_reason == "pending_rule":
+                            result["rules"][LEAD_RADAR_RULE_CALL_NO_NEXT_STEP]["skipped_pending_rule"] += 1
+                        elif skip_reason == "cooldown":
+                            result["rules"][LEAD_RADAR_RULE_CALL_NO_NEXT_STEP]["skipped_cooldown"] += 1
+                        elif skip_reason == "daily_cap":
+                            result["rules"][LEAD_RADAR_RULE_CALL_NO_NEXT_STEP]["skipped_daily_cap"] += 1
                         continue
                     action_time = str(candidate.get("created_at") or "").strip()
                     reason_human = (
@@ -1929,9 +2050,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     thread_id = _safe_thread_id(candidate.get("thread_id"))
                     if user_id <= 0 or not thread_id:
                         continue
-                    if _pending_radar_followup_exists(conn, thread_id=thread_id, rule_key=LEAD_RADAR_RULE_STALE_WARM):
-                        continue
                     if get_conversation_outcome(conn, thread_id=thread_id) is not None:
+                        result["rules"][LEAD_RADAR_RULE_STALE_WARM]["skipped_outcome"] += 1
+                        continue
+                    allowed, skip_reason = _lead_radar_guard(
+                        conn,
+                        thread_id=thread_id,
+                        rule_key=LEAD_RADAR_RULE_STALE_WARM,
+                    )
+                    if not allowed:
+                        if skip_reason == "pending_rule":
+                            result["rules"][LEAD_RADAR_RULE_STALE_WARM]["skipped_pending_rule"] += 1
+                        elif skip_reason == "cooldown":
+                            result["rules"][LEAD_RADAR_RULE_STALE_WARM]["skipped_cooldown"] += 1
+                        elif skip_reason == "daily_cap":
+                            result["rules"][LEAD_RADAR_RULE_STALE_WARM]["skipped_daily_cap"] += 1
                         continue
                     score = float(candidate.get("score") or 0.0)
                     score_created_at = str(candidate.get("created_at") or "").strip()
@@ -2071,37 +2204,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         *,
         event: MangoCallEvent,
     ) -> tuple[Optional[int], Optional[str]]:
-        payload = event.payload if isinstance(event.payload, dict) else {}
-        user_id: Optional[int] = None
-        thread_id: Optional[str] = None
-
-        payload_user = payload.get("user_id")
-        if isinstance(payload_user, int) and payload_user > 0:
-            row = conn.execute("SELECT id FROM users WHERE id = ? LIMIT 1", (payload_user,)).fetchone()
-            if row is not None:
-                user_id = int(payload_user)
-
-        payload_thread = str(payload.get("thread_id") or "").strip()
-        if payload_thread:
-            thread_id = payload_thread
-            if thread_id.startswith("tg:"):
-                token = thread_id[3:]
-                if token.isdigit():
-                    user_id = int(token)
-            elif thread_id.startswith("biz:") and user_id is None:
-                row = conn.execute(
-                    "SELECT user_id FROM business_threads WHERE thread_key = ? LIMIT 1",
-                    (thread_id,),
-                ).fetchone()
-                if row and row["user_id"] is not None:
-                    user_id = int(row["user_id"])
-
-        if user_id is None and event.phone:
-            user_id = find_user_by_phone(conn, phone=event.phone)
-
-        if user_id is not None and thread_id is None:
-            thread_id = resolve_preferred_thread_for_user(conn, user_id=user_id)
-        return user_id, thread_id
+        return extract_mango_user_and_thread(conn, event=event)
 
     mango_ingest_lock: Optional[asyncio.Lock] = None
 
@@ -2202,40 +2305,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         since: str,
         limit: int,
     ) -> tuple[list[MangoCallEvent], int]:
-        attempts = max(1, int(cfg.mango_poll_retry_attempts))
-        base_backoff = max(0, int(cfg.mango_poll_retry_backoff_seconds))
-        last_error: Optional[MangoClientError] = None
-        for attempt in range(1, attempts + 1):
-            try:
-                events = client.list_recent_calls(since_iso=since, limit=limit)
-                return events, attempt
-            except MangoClientError as exc:
-                last_error = exc
-                if attempt < attempts and base_backoff > 0:
-                    await asyncio.sleep(float(base_backoff) * (2 ** (attempt - 1)))
-        assert last_error is not None
-        raise last_error
+        return await fetch_mango_poll_events_with_retries(
+            client=client,
+            since=since,
+            limit=limit,
+            attempts=cfg.mango_poll_retry_attempts,
+            base_backoff_seconds=cfg.mango_poll_retry_backoff_seconds,
+        )
 
     def _event_from_mango_record(item: Dict[str, Any]) -> Optional[MangoCallEvent]:
-        payload = item.get("payload")
-        payload_dict = payload if isinstance(payload, dict) else {}
-        parser = MangoClient(base_url="https://offline.local", token="offline")
-        parsed = parser.parse_call_event(payload_dict)
-        if parsed is not None:
-            return parsed
-        event_id = str(item.get("event_id") or "").strip()
-        if not event_id:
-            return None
-        call_external_id = str(item.get("call_external_id") or "").strip()
-        return MangoCallEvent(
-            event_id=event_id,
-            call_id=call_external_id or event_id,
-            phone="",
-            recording_url="",
-            transcript_hint="",
-            occurred_at="",
-            payload=payload_dict,
-        )
+        return event_from_mango_record(item)
 
     async def run_mango_poll_once(*, trigger: str, limit_override: Optional[int] = None) -> Dict[str, Any]:
         if not _mango_ingest_enabled():
@@ -2559,6 +2638,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "call_no_next_step_hours": cfg.lead_radar_call_no_next_step_hours,
                 "stale_warm_days": cfg.lead_radar_stale_warm_days,
                 "max_items_per_run": cfg.lead_radar_max_items_per_run,
+                "thread_cooldown_hours": cfg.lead_radar_thread_cooldown_hours,
+                "daily_cap_per_thread": cfg.lead_radar_daily_cap_per_thread,
             },
             "faq_lab": {
                 "interval_seconds": cfg.faq_lab_interval_seconds,
@@ -2615,6 +2696,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             f"LEAD_RADAR_CALL_NO_NEXT_STEP_HOURS={cfg.lead_radar_call_no_next_step_hours}<br/>"
             f"LEAD_RADAR_STALE_WARM_DAYS={cfg.lead_radar_stale_warm_days}<br/>"
             f"LEAD_RADAR_MAX_ITEMS_PER_RUN={cfg.lead_radar_max_items_per_run}<br/>"
+            f"LEAD_RADAR_THREAD_COOLDOWN_HOURS={cfg.lead_radar_thread_cooldown_hours}<br/>"
+            f"LEAD_RADAR_DAILY_CAP_PER_THREAD={cfg.lead_radar_daily_cap_per_thread}<br/>"
             f"FAQ_LAB_SCHEDULER_ENABLED={cfg.faq_lab_scheduler_enabled}<br/>"
             f"FAQ_LAB_INTERVAL_SECONDS={cfg.faq_lab_interval_seconds}<br/>"
             f"FAQ_LAB_WINDOW_DAYS={cfg.faq_lab_window_days}<br/>"
@@ -2634,10 +2717,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return render_page("Revenue Metrics", body)
 
     @app.get("/admin/inbox")
-    async def admin_inbox(_: str = Depends(require_admin), limit: int = 100):
+    async def admin_inbox(
+        _: str = Depends(require_admin),
+        status_filter: Optional[str] = Query(default=None, alias="status"),
+        search: Optional[str] = Query(default=None),
+        limit: int = 100,
+    ):
         conn = get_connection(cfg.database_path)
         try:
-            items = list_inbox_threads(conn, limit=max(1, min(limit, 500)))
+            items = list_inbox_threads(
+                conn,
+                workflow_status=(status_filter or "").strip() or None,
+                search=(search or "").strip() or None,
+                limit=max(1, min(limit, 500)),
+            )
         finally:
             conn.close()
         return {"ok": True, "items": items}
@@ -2647,6 +2740,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _: str = Depends(require_admin),
         status_filter: Optional[str] = Query(default=None, alias="status"),
         priority: Optional[str] = Query(default=None),
+        search: Optional[str] = Query(default=None),
         radar_only: bool = False,
         limit: int = 200,
     ):
@@ -2657,6 +2751,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             items = list_followup_tasks(
                 conn,
                 status=normalized_status,
+                search=(search or "").strip() or None,
                 limit=max(1, min(limit, 500)),
             )
         finally:
@@ -2967,6 +3062,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             conn.close()
         return {"ok": True, "items": items}
 
+    @app.post("/admin/calls/cleanup")
+    async def admin_calls_cleanup(
+        _: str = Depends(require_admin),
+    ):
+        if not cfg.enable_call_copilot:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Call Copilot is disabled. Set ENABLE_CALL_COPILOT=true.",
+            )
+        return _cleanup_old_call_files()
+
     @app.get("/admin/business/inbox")
     async def admin_business_inbox(_: str = Depends(require_admin), limit: int = 100):
         conn = get_connection(cfg.database_path)
@@ -3206,99 +3312,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ):
         conn = get_connection(cfg.database_path)
         try:
-            draft = get_reply_draft(conn, draft_id)
-            if draft is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Draft {draft_id} not found.")
-
-            current_status = str(draft.get("status") or "")
-            if current_status == "sent":
-                return {"ok": True, "already_sent": True, "draft": draft}
-            if current_status == "sending":
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Draft {draft_id} is already being sent by another request.",
-                )
-            if current_status != "approved":
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Draft {draft_id} must be approved before send.",
-                )
-
-            claimed = claim_reply_draft_for_send(conn, draft_id=draft_id, actor=admin_username)
-            if claimed is None:
-                latest = get_reply_draft(conn, draft_id)
-                if latest and str(latest.get("status") or "") == "sent":
-                    return {"ok": True, "already_sent": True, "draft": latest}
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Draft {draft_id} was modified by another request. Retry.",
-                )
-
-            parsed_thread = _parse_business_thread_key(str(claimed.get("thread_id") or ""))
-            if parsed_thread is None:
-                manual_sent_message_id = (payload.sent_message_id or "").strip()
-                if not manual_sent_message_id:
-                    update_reply_draft_status(
-                        conn,
-                        draft_id=draft_id,
-                        status="approved",
-                        actor=admin_username,
-                        last_error="manual_confirmation_required",
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail="Manual send requires sent_message_id for non-business threads.",
-                    )
-                delivery = {
-                    "transport": "manual_confirmed",
-                    "sent_message_id": manual_sent_message_id,
-                    "message_ids": [],
-                }
-            else:
-                try:
-                    delivery = await _send_business_draft_and_log(
-                        conn,
-                        draft=claimed,
-                        actor=admin_username,
-                    )
-                except HTTPException as exc:
-                    update_reply_draft_status(
-                        conn,
-                        draft_id=draft_id,
-                        status="approved",
-                        actor=admin_username,
-                        last_error=str(exc.detail),
-                    )
-                    raise
-
-            resolved_sent_message_id = (
-                (delivery.get("sent_message_id") if isinstance(delivery, dict) else None)
-                or (payload.sent_message_id or "").strip()
-                or None
-            )
-            update_reply_draft_status(
+            result = await send_approved_draft(
                 conn,
                 draft_id=draft_id,
-                status="sent",
                 actor=admin_username,
-                sent_message_id=resolved_sent_message_id,
+                manual_sent_message_id=(payload.sent_message_id or "").strip(),
+                is_business_thread=lambda thread_id: _parse_business_thread_key(thread_id) is not None,
+                business_sender=lambda draft_item, actor_name: _send_business_draft_and_log(
+                    conn,
+                    draft=draft_item,
+                    actor=actor_name,
+                ),
             )
-            create_approval_action(
-                conn,
-                draft_id=draft_id,
-                user_id=int(draft["user_id"]),
-                thread_id=str(draft["thread_id"]),
-                action="draft_sent",
-                actor=admin_username,
-                payload={
-                    "sent_message_id": resolved_sent_message_id,
-                    "delivery": delivery,
-                },
-            )
-            updated_draft = get_reply_draft(conn, draft_id)
         finally:
             conn.close()
-        return {"ok": True, "draft": updated_draft, "delivery": delivery}
+        return {
+            "ok": True,
+            "draft": result.draft,
+            "delivery": result.delivery,
+            "already_sent": result.already_sent,
+        }
 
     @app.post("/admin/inbox/{user_id}/outcome")
     async def admin_inbox_set_outcome(
@@ -3428,39 +3461,91 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"ok": True, "action_id": action_id}
 
     @app.get("/admin/ui/inbox", response_class=HTMLResponse)
-    async def admin_inbox_ui(_: str = Depends(require_admin), limit: int = 100):
+    async def admin_inbox_ui(
+        _: str = Depends(require_admin),
+        status_filter: Optional[str] = Query(default=None, alias="status"),
+        search: Optional[str] = Query(default=None),
+        limit: int = 100,
+    ):
+        normalized_status_filter = (status_filter or "").strip() or None
+        normalized_search = (search or "").strip() or None
         conn = get_connection(cfg.database_path)
         try:
-            items = list_inbox_threads(conn, limit=max(1, min(limit, 500)))
+            items = list_inbox_threads(
+                conn,
+                workflow_status=normalized_status_filter,
+                search=normalized_search,
+                limit=max(1, min(limit, 500)),
+            )
         finally:
             conn.close()
+
+        counters: Dict[str, int] = {}
+        for item in items:
+            key = str(item.get("workflow_status") or "new").strip().lower() or "new"
+            counters[key] = counters.get(key, 0) + 1
 
         rows: list[str] = []
         for item in items:
             user_id = int(item["user_id"])
-            status_value = html.escape(str(item.get("status") or "new"))
+            workflow_status = str(item.get("workflow_status") or "new")
+            status_raw = html.escape(str(item.get("status") or "new"))
             display_name = html.escape(_format_thread_display_name(item))
             last_message = html.escape(str(item.get("last_message_at") or "-"))
             messages_count = int(item.get("messages_count") or 0)
             pending_followups = int(item.get("pending_followups") or 0)
+            last_error = str(((item.get("latest_draft") or {}) if isinstance(item.get("latest_draft"), dict) else {}).get("last_error") or "").strip()
+            last_error_html = html.escape(last_error) if last_error else "-"
             rows.append(
                 "<tr>"
                 f"<td>{user_id}</td>"
                 f"<td>{display_name}</td>"
-                f"<td><span class='badge'>{status_value}</span></td>"
+                f"<td>{_inbox_workflow_badge(workflow_status)}</td>"
+                f"<td><span class='badge'>{status_raw}</span></td>"
                 f"<td>{messages_count}</td>"
                 f"<td>{pending_followups}</td>"
                 f"<td>{last_message}</td>"
+                f"<td>{last_error_html}</td>"
                 f"<td><a href='/admin/ui/inbox/{user_id}'>Открыть тред</a></td>"
                 "</tr>"
+            )
+
+        filter_search_value = html.escape(normalized_search or "")
+        summary_blocks: list[str] = []
+        for key in ("new", "needs_approval", "ready_to_send", "failed", "sending", "sent", "rejected", "manual_required"):
+            count = counters.get(key, 0)
+            if count <= 0:
+                continue
+            summary_blocks.append(
+                f"<span class='badge' style='margin-right:6px;'>{html.escape(_inbox_workflow_status_label(key))}: {count}</span>"
             )
 
         body = (
             "<h1>Inbox</h1>"
             "<p class='muted'>Треды, драфты, follow-up и статусы продаж.</p>"
+            "<div class='card'>"
+            "<form method='get' action='/admin/ui/inbox'>"
+            "<p><label>Статус (workflow): "
+            "<select name='status'>"
+            f"<option value='' {'selected' if not normalized_status_filter else ''}>Все</option>"
+            f"<option value='new' {'selected' if normalized_status_filter == 'new' else ''}>Новый</option>"
+            f"<option value='needs_approval' {'selected' if normalized_status_filter == 'needs_approval' else ''}>Нужен approve</option>"
+            f"<option value='ready_to_send' {'selected' if normalized_status_filter == 'ready_to_send' else ''}>Готов к отправке</option>"
+            f"<option value='failed' {'selected' if normalized_status_filter == 'failed' else ''}>Ошибка отправки</option>"
+            f"<option value='sending' {'selected' if normalized_status_filter == 'sending' else ''}>Отправляется</option>"
+            f"<option value='sent' {'selected' if normalized_status_filter == 'sent' else ''}>Отправлен</option>"
+            f"<option value='rejected' {'selected' if normalized_status_filter == 'rejected' else ''}>Отклонён</option>"
+            f"<option value='manual_required' {'selected' if normalized_status_filter == 'manual_required' else ''}>Нужен ручной шаг</option>"
+            "</select></label></p>"
+            f"<p><input name='search' placeholder='Поиск: id, username, имя, thread' value='{filter_search_value}' style='width:320px;' /></p>"
+            f"<p><input type='number' name='limit' min='1' max='500' value='{int(limit)}' /></p>"
+            "<p><button type='submit'>Применить фильтры</button></p>"
+            "</form>"
+            f"<p>{''.join(summary_blocks) if summary_blocks else '<span class=muted>Нет данных</span>'}</p>"
+            "</div>"
             "<table>"
-            "<thead><tr><th>User ID</th><th>Клиент</th><th>Статус</th><th>Messages</th><th>Followups</th><th>Last Message</th><th></th></tr></thead>"
-            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=7>Нет тредов</td></tr>'}</tbody>"
+            "<thead><tr><th>User ID</th><th>Клиент</th><th>Workflow</th><th>Draft Status</th><th>Messages</th><th>Followups</th><th>Last Message</th><th>Last Error</th><th></th></tr></thead>"
+            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=9>Нет тредов</td></tr>'}</tbody>"
             "</table>"
         )
         return render_page("Inbox", body)
@@ -3470,16 +3555,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _: str = Depends(require_admin),
         status_filter: Optional[str] = Query(default=None, alias="status"),
         priority: Optional[str] = Query(default=None),
+        search: Optional[str] = Query(default=None),
         radar_only: bool = False,
         limit: int = 200,
     ):
         normalized_status = (status_filter or "").strip() or None
         normalized_priority = (priority or "").strip().lower() or None
+        normalized_search = (search or "").strip() or None
         conn = get_connection(cfg.database_path)
         try:
             items = list_followup_tasks(
                 conn,
                 status=normalized_status,
+                search=normalized_search,
                 limit=max(1, min(limit, 500)),
             )
         finally:
@@ -3492,6 +3580,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ]
         if radar_only:
             items = [item for item in items if _is_radar_reason(item.get("reason"))]
+
+        counters: Dict[str, int] = {}
+        for item in items:
+            key = str(item.get("priority") or "warm").strip().lower() or "warm"
+            counters[key] = counters.get(key, 0) + 1
 
         rows: list[str] = []
         for item in items:
@@ -3525,11 +3618,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "<h1>Followups</h1>"
             "<p class='muted'>Очередь задач для менеджеров, включая Lead Radar сигналы.</p>"
             "<div class='card'>"
+            "<form method='get' action='/admin/ui/followups'>"
+            "<p><label>Status: "
+            "<select name='status'>"
+            f"<option value='' {'selected' if not normalized_status else ''}>Все</option>"
+            f"<option value='pending' {'selected' if normalized_status == 'pending' else ''}>pending</option>"
+            f"<option value='done' {'selected' if normalized_status == 'done' else ''}>done</option>"
+            f"<option value='canceled' {'selected' if normalized_status == 'canceled' else ''}>canceled</option>"
+            "</select></label></p>"
+            "<p><label>Priority: "
+            "<select name='priority'>"
+            f"<option value='' {'selected' if not normalized_priority else ''}>Все</option>"
+            f"<option value='hot' {'selected' if normalized_priority == 'hot' else ''}>hot</option>"
+            f"<option value='warm' {'selected' if normalized_priority == 'warm' else ''}>warm</option>"
+            f"<option value='cold' {'selected' if normalized_priority == 'cold' else ''}>cold</option>"
+            "</select></label></p>"
+            f"<p><label><input type='checkbox' name='radar_only' value='true' {'checked' if radar_only else ''}/> Только Lead Radar</label></p>"
+            f"<p><input name='search' placeholder='Поиск: thread, причина, клиент' value='{html.escape(normalized_search or '')}' style='width:320px;' /></p>"
+            f"<p><input type='number' name='limit' min='1' max='500' value='{int(limit)}' /></p>"
+            "<p><button type='submit'>Применить фильтры</button></p>"
+            "</form>"
+            f"<p><span class='badge'>hot: {counters.get('hot', 0)}</span> "
+            f"<span class='badge'>warm: {counters.get('warm', 0)}</span> "
+            f"<span class='badge'>cold: {counters.get('cold', 0)}</span></p>"
+            "</div>"
+            "<div class='card'>"
             f"<b>Lead Radar:</b> enabled={cfg.enable_lead_radar} | "
             f"interval={cfg.lead_radar_interval_seconds}s | "
             f"no-reply={cfg.lead_radar_no_reply_hours}h | "
             f"call-no-next={cfg.lead_radar_call_no_next_step_hours}h | "
-            f"stale-warm={cfg.lead_radar_stale_warm_days}d"
+            f"stale-warm={cfg.lead_radar_stale_warm_days}d | "
+            f"cooldown={cfg.lead_radar_thread_cooldown_hours}h | "
+            f"daily-cap/thread={cfg.lead_radar_daily_cap_per_thread}"
             "</div>"
             "<table>"
             "<thead><tr><th>ID</th><th>Thread</th><th>Priority</th><th>Status</th><th>Assigned</th><th>Created</th><th>Reason</th></tr></thead>"
@@ -3596,6 +3716,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             f"<p><label>Retry failed limit: <input type='number' name='limit' min='1' max='500' value='{cfg.mango_retry_failed_limit_per_run}' /></label></p>"
             "<p><button type='submit'>Повторно обработать failed events</button></p>"
             "</form>"
+            "<form method='post' action='/admin/ui/calls/cleanup'>"
+            "<p><button type='submit'>Очистить старые call-файлы сейчас</button></p>"
+            "</form>"
             "<p><a href='/admin/calls/mango/events'>Открыть Mango events (JSON)</a></p>"
             "</div>"
             "<div class='card'>"
@@ -3643,6 +3766,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail="Mango auto-ingest is disabled. Set ENABLE_MANGO_AUTO_INGEST=true and ENABLE_CALL_COPILOT=true.",
             )
         await run_mango_retry_failed_once(trigger="manual_ui", limit_override=limit)
+        return RedirectResponse(url="/admin/ui/calls", status_code=status.HTTP_303_SEE_OTHER)
+
+    @app.post("/admin/ui/calls/cleanup")
+    async def admin_calls_ui_cleanup(
+        request: Request,
+        _: str = Depends(require_admin),
+    ):
+        _enforce_admin_ui_csrf(request)
+        if not cfg.enable_call_copilot:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Call Copilot is disabled. Set ENABLE_CALL_COPILOT=true.",
+            )
+        _cleanup_old_call_files()
         return RedirectResponse(url="/admin/ui/calls", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.post("/admin/ui/calls/upload")
@@ -3906,12 +4043,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         draft_cards: list[str] = []
         for draft in drafts:
             draft_id = int(draft["id"])
-            status_value = html.escape(str(draft.get("status") or "created"))
+            draft_status_raw = str(draft.get("status") or "created")
+            status_value = html.escape(draft_status_raw)
             draft_text = html.escape(str(draft.get("draft_text") or ""))
+            draft_last_error = str(draft.get("last_error") or "").strip()
+            send_label = "Retry Send" if draft_status_raw == "approved" and draft_last_error else "Send"
+            last_error_block = ""
+            if draft_last_error:
+                last_error_block = (
+                    "<div class='card' style='background:#fef2f2;border-color:#fecaca;'>"
+                    f"<b>Последняя ошибка отправки:</b><pre>{html.escape(draft_last_error)}</pre>"
+                    "</div>"
+                )
             draft_cards.append(
                 "<div class='card'>"
                 f"<b>Draft #{draft_id}</b> <span class='badge'>{status_value}</span><br/>"
                 f"<small class='muted'>created_at={html.escape(str(draft.get('created_at') or '-'))}</small>"
+                f"{last_error_block}"
                 f"<pre>{draft_text}</pre>"
                 f"<form method='post' action='/admin/ui/inbox/drafts/{draft_id}/edit'>"
                 "<p><textarea name='draft_text' rows='4' style='width:100%;' required>"
@@ -3925,7 +4073,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 f"<form method='post' action='/admin/ui/inbox/drafts/{draft_id}/send' style='display:inline-block;margin-right:8px;'>"
                 "<input name='sent_message_id' placeholder='sent_message_id (manual non-business)' style='margin-bottom:6px;' />"
                 "<br/>"
-                "<button type='submit'>Send</button>"
+                f"<button type='submit'>{send_label}</button>"
                 "</form>"
                 f"<form method='post' action='/admin/ui/inbox/drafts/{draft_id}/reject' style='display:inline-block;'>"
                 "<button type='submit'>Reject</button>"
@@ -3957,6 +4105,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         customer_name = html.escape(_format_thread_display_name(user_item))
+        latest_draft = drafts[0] if drafts else None
+        thread_workflow_status = "new"
+        if isinstance(latest_draft, dict):
+            latest_status_raw = str(latest_draft.get("status") or "").strip().lower()
+            if latest_status_raw == "sent":
+                thread_workflow_status = "sent"
+            elif latest_status_raw == "sending":
+                thread_workflow_status = "sending"
+            elif latest_status_raw == "approved":
+                thread_workflow_status = "failed" if str(latest_draft.get("last_error") or "").strip() else "ready_to_send"
+            elif latest_status_raw == "created":
+                thread_workflow_status = "needs_approval"
+            elif latest_status_raw == "rejected":
+                thread_workflow_status = "rejected"
+        elif followups:
+            thread_workflow_status = "manual_required"
         lead_score_html = "<p class='muted'>Не выставлен</p>"
         if lead_score:
             lead_score_html = (
@@ -4015,6 +4179,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         body = (
             f"<h1>Inbox Thread #{user_id}</h1>"
             f"<p class='muted'>Клиент: {customer_name}</p>"
+            f"<p>{_inbox_workflow_badge(thread_workflow_status)}</p>"
             "<p><a href='/admin/ui/inbox'>← Назад к списку</a></p>"
             "<h2>CRM Context (read-only)</h2>"
             f"{crm_context_html}"
@@ -4176,95 +4341,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _enforce_admin_ui_csrf(request)
         conn = get_connection(cfg.database_path)
         try:
-            draft = get_reply_draft(conn, draft_id)
-            if draft is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Draft {draft_id} not found.")
-            current_status = str(draft.get("status") or "")
-            if current_status == "sent":
-                user_id = int(draft["user_id"])
-                return RedirectResponse(url=f"/admin/ui/inbox/{user_id}", status_code=status.HTTP_303_SEE_OTHER)
-            if current_status == "sending":
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Draft {draft_id} is already being sent by another request.",
-                )
-            if current_status != "approved":
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Draft {draft_id} must be approved before send.",
-                )
-
-            claimed = claim_reply_draft_for_send(conn, draft_id=draft_id, actor=admin_username)
-            if claimed is None:
-                latest = get_reply_draft(conn, draft_id)
-                if latest and str(latest.get("status") or "") == "sent":
-                    user_id = int(latest["user_id"])
-                    return RedirectResponse(url=f"/admin/ui/inbox/{user_id}", status_code=status.HTTP_303_SEE_OTHER)
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Draft {draft_id} was modified by another request. Retry.",
-                )
-            parsed_thread = _parse_business_thread_key(str(claimed.get("thread_id") or ""))
-            if parsed_thread is None:
-                manual_sent_message_id = sent_message_id.strip()
-                if not manual_sent_message_id:
-                    update_reply_draft_status(
-                        conn,
-                        draft_id=draft_id,
-                        status="approved",
-                        actor=admin_username,
-                        last_error="manual_confirmation_required",
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail="Manual send requires sent_message_id for non-business threads.",
-                    )
-                delivery = {
-                    "transport": "manual_confirmed",
-                    "sent_message_id": manual_sent_message_id,
-                    "message_ids": [],
-                }
-            else:
-                try:
-                    delivery = await _send_business_draft_and_log(
-                        conn,
-                        draft=claimed,
-                        actor=admin_username,
-                    )
-                except HTTPException as exc:
-                    update_reply_draft_status(
-                        conn,
-                        draft_id=draft_id,
-                        status="approved",
-                        actor=admin_username,
-                        last_error=str(exc.detail),
-                    )
-                    raise
-            resolved_sent_message_id = (
-                (delivery.get("sent_message_id") if isinstance(delivery, dict) else None)
-                or sent_message_id.strip()
-                or None
-            )
-            update_reply_draft_status(
+            result = await send_approved_draft(
                 conn,
                 draft_id=draft_id,
-                status="sent",
                 actor=admin_username,
-                sent_message_id=resolved_sent_message_id,
+                manual_sent_message_id=sent_message_id.strip(),
+                is_business_thread=lambda thread_id: _parse_business_thread_key(thread_id) is not None,
+                business_sender=lambda draft_item, actor_name: _send_business_draft_and_log(
+                    conn,
+                    draft=draft_item,
+                    actor=actor_name,
+                ),
             )
-            create_approval_action(
-                conn,
-                draft_id=draft_id,
-                user_id=int(draft["user_id"]),
-                thread_id=str(draft["thread_id"]),
-                action="draft_sent",
-                actor=admin_username,
-                payload={
-                    "sent_message_id": resolved_sent_message_id,
-                    "delivery": delivery,
-                },
-            )
-            user_id = int(draft["user_id"])
+            user_id = int(result.draft["user_id"])
         finally:
             conn.close()
         return RedirectResponse(url=f"/admin/ui/inbox/{user_id}", status_code=status.HTTP_303_SEE_OTHER)

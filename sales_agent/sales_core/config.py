@@ -70,6 +70,8 @@ class Settings:
     lead_radar_call_no_next_step_hours: int = 24
     lead_radar_stale_warm_days: int = 7
     lead_radar_max_items_per_run: int = 50
+    lead_radar_thread_cooldown_hours: int = 24
+    lead_radar_daily_cap_per_thread: int = 2
     faq_lab_scheduler_enabled: bool = True
     faq_lab_interval_seconds: int = 21600
     faq_lab_window_days: int = 90
@@ -249,6 +251,18 @@ def get_settings() -> Settings:
         min_value=1,
         max_value=500,
     )
+    lead_radar_thread_cooldown_hours = _parse_int_env(
+        "LEAD_RADAR_THREAD_COOLDOWN_HOURS",
+        24,
+        min_value=0,
+        max_value=240,
+    )
+    lead_radar_daily_cap_per_thread = _parse_int_env(
+        "LEAD_RADAR_DAILY_CAP_PER_THREAD",
+        2,
+        min_value=1,
+        max_value=20,
+    )
     faq_lab_interval_seconds = _parse_int_env(
         "FAQ_LAB_INTERVAL_SECONDS",
         21600,
@@ -396,6 +410,8 @@ def get_settings() -> Settings:
         lead_radar_call_no_next_step_hours=lead_radar_call_no_next_step_hours,
         lead_radar_stale_warm_days=lead_radar_stale_warm_days,
         lead_radar_max_items_per_run=lead_radar_max_items_per_run,
+        lead_radar_thread_cooldown_hours=lead_radar_thread_cooldown_hours,
+        lead_radar_daily_cap_per_thread=lead_radar_daily_cap_per_thread,
         faq_lab_scheduler_enabled=_parse_bool_env("FAQ_LAB_SCHEDULER_ENABLED", default=True),
         faq_lab_interval_seconds=faq_lab_interval_seconds,
         faq_lab_window_days=faq_lab_window_days,

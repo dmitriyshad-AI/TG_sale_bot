@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -43,6 +44,35 @@ def build_faq_lab_router(
 ) -> APIRouter:
     router = APIRouter()
 
+    def _normalize_answer_text(value: Optional[str]) -> Optional[str]:
+        normalized = " ".join((value or "").split()).strip()
+        if not normalized:
+            return None
+        if len(normalized) < 20:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Canonical answer is too short. Use at least 20 characters.",
+            )
+        return normalized[:4000]
+
+    def _candidate_priority_score(item: dict[str, Any]) -> float:
+        question_count = float(item.get("question_count") or 0.0)
+        next_step_rate = float(item.get("next_step_rate") or 0.0)
+        approved_rate = float(item.get("reply_approved_rate") or 0.0)
+        recency_bonus = 0.0
+        last_seen_raw = str(item.get("last_seen_at") or "").strip()
+        if last_seen_raw:
+            try:
+                parsed = datetime.fromisoformat(last_seen_raw.replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                age_days = max(0.0, (now - parsed).total_seconds() / 86400.0)
+                recency_bonus = max(0.0, 8.0 - min(age_days, 8.0))
+            except Exception:
+                recency_bonus = 0.0
+        return round(question_count * 1.6 + next_step_rate * 120.0 + approved_rate * 70.0 + recency_bonus, 3)
+
     def _ensure_enabled() -> None:
         if not enabled:
             raise HTTPException(
@@ -64,6 +94,20 @@ def build_faq_lab_router(
                     trigger=trigger,
                 )
             candidates = list_faq_candidates(conn, limit=limit)
+            ranked_candidates: list[dict[str, Any]] = []
+            for item in candidates:
+                scored = dict(item)
+                scored["priority_score"] = _candidate_priority_score(scored)
+                ranked_candidates.append(scored)
+            ranked_candidates.sort(
+                key=lambda item: (
+                    float(item.get("priority_score") or 0.0),
+                    int(item.get("question_count") or 0),
+                    float(item.get("next_step_rate") or 0.0),
+                    str(item.get("last_seen_at") or ""),
+                ),
+                reverse=True,
+            )
             canonical = list_canonical_answers(conn, limit=limit)
             top_performance = list_answer_performance(conn, status="active", limit=limit)
             rejected = list_rejected_reply_drafts(conn, limit=min(limit, 100))
@@ -100,7 +144,7 @@ def build_faq_lab_router(
                     "default_limit": default_limit,
                 },
                 "latest_run": latest_run,
-                "candidates": candidates,
+                "candidates": ranked_candidates,
                 "canonical_answers": canonical,
                 "top_performing_replies": top_performance,
                 "rejected_replies": rejected,
@@ -152,7 +196,7 @@ def build_faq_lab_router(
             canonical = promote_faq_candidate_to_canonical(
                 conn,
                 candidate_id=candidate_id,
-                answer_text=payload.answer_text,
+                answer_text=_normalize_answer_text(payload.answer_text),
                 created_by=actor,
             )
             if not canonical:
@@ -190,6 +234,7 @@ def build_faq_lab_router(
                 f"<td>{int(item.get('thread_count') or 0)}</td>"
                 f"<td>{float(item.get('reply_approved_rate') or 0.0):.2f}</td>"
                 f"<td>{float(item.get('next_step_rate') or 0.0):.2f}</td>"
+                f"<td>{float(item.get('priority_score') or 0.0):.1f}</td>"
                 f"<td>{html.escape(str(item.get('status') or 'new'))}</td>"
                 "<td>"
                 f"<form method='post' action='/admin/ui/faq-lab/candidates/{candidate_id}/promote'>"
@@ -252,8 +297,8 @@ def build_faq_lab_router(
             f"<pre>{run_text or 'No manual run in this request.'}</pre>"
             "</div>"
             "<h2>Top New Questions</h2>"
-            "<table><thead><tr><th>ID</th><th>Question</th><th>Count</th><th>Threads</th><th>Approved Rate</th><th>Next Step Rate</th><th>Status</th><th>Promote</th></tr></thead>"
-            f"<tbody>{''.join(candidate_rows) if candidate_rows else '<tr><td colspan=8>Нет кандидатов</td></tr>'}</tbody></table>"
+            "<table><thead><tr><th>ID</th><th>Question</th><th>Count</th><th>Threads</th><th>Approved Rate</th><th>Next Step Rate</th><th>Priority</th><th>Status</th><th>Promote</th></tr></thead>"
+            f"<tbody>{''.join(candidate_rows) if candidate_rows else '<tr><td colspan=9>Нет кандидатов</td></tr>'}</tbody></table>"
             "<h2>Top Performing Replies</h2>"
             "<table><thead><tr><th>Kind</th><th>Question</th><th>Count</th><th>Approved Rate</th><th>Next Step Rate</th></tr></thead>"
             f"<tbody>{''.join(top_rows) if top_rows else '<tr><td colspan=5>Нет данных</td></tr>'}</tbody></table>"
@@ -298,7 +343,7 @@ def build_faq_lab_router(
             promoted = promote_faq_candidate_to_canonical(
                 conn,
                 candidate_id=candidate_id,
-                answer_text=answer_text,
+                answer_text=_normalize_answer_text(answer_text),
                 created_by="admin_ui",
             )
             if not promoted:

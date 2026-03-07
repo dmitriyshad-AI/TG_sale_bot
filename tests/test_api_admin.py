@@ -349,6 +349,10 @@ class ApiAdminTests(unittest.TestCase):
             self.assertEqual(draft["status"], "approved")
             self.assertEqual(draft["last_error"], "manual_confirmation_required")
 
+            inbox_detail_ui = client.get(f"/admin/ui/inbox/{user_id}", auth=auth)
+            self.assertEqual(inbox_detail_ui.status_code, 200)
+            self.assertIn("Retry Send", inbox_detail_ui.text)
+
     def test_admin_send_returns_409_for_draft_in_sending_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin_send_conflict.db"
@@ -798,6 +802,143 @@ class ApiAdminTests(unittest.TestCase):
             self.assertEqual(len(items), 1)
             self.assertEqual(items[0]["thread_id"], "biz:bc-radar:88077")
 
+    def test_lead_radar_respects_cooldown_and_daily_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin_radar_limits.db"
+            settings = self._settings(
+                db_path,
+                enable_lead_radar=True,
+                lead_radar_scheduler_enabled=False,
+            )
+            settings.lead_radar_no_reply_hours = 1
+            settings.lead_radar_thread_cooldown_hours = 24
+            settings.lead_radar_daily_cap_per_thread = 2
+            app = create_app(settings)
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(conn, channel="telegram", external_id="radar-limit-u1")
+                thread_id = f"tg:{user_id}"
+                db.log_message(conn, user_id=user_id, direction="inbound", text="Подскажите программу", meta={})
+                conn.execute(
+                    "UPDATE messages SET created_at = datetime('now', '-3 hours') WHERE user_id = ?",
+                    (user_id,),
+                )
+                db.create_followup_task(
+                    conn,
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    priority="warm",
+                    reason="radar:stale_warm: уже был контакт",
+                    status="done",
+                    assigned_to="sales-1",
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            run_response = client.post("/admin/followups/run", auth=auth, json={"dry_run": False})
+            self.assertEqual(run_response.status_code, 200)
+            payload = run_response.json()
+            self.assertEqual(payload["created_followups"], 0)
+            self.assertGreaterEqual(payload["rules"]["radar:no_reply"]["skipped_cooldown"], 1)
+
+            # Disable cooldown to verify daily cap guard branch.
+            settings_no_cooldown = self._settings(
+                db_path,
+                enable_lead_radar=True,
+                lead_radar_scheduler_enabled=False,
+            )
+            settings_no_cooldown.lead_radar_no_reply_hours = 1
+            settings_no_cooldown.lead_radar_thread_cooldown_hours = 0
+            settings_no_cooldown.lead_radar_daily_cap_per_thread = 1
+            app_daily_cap = create_app(settings_no_cooldown)
+            client_daily_cap = build_test_client(app_daily_cap)
+
+            run_daily_cap = client_daily_cap.post("/admin/followups/run", auth=auth, json={"dry_run": False})
+            self.assertEqual(run_daily_cap.status_code, 200)
+            daily_payload = run_daily_cap.json()
+            self.assertEqual(daily_payload["created_followups"], 0)
+            self.assertGreaterEqual(daily_payload["rules"]["radar:no_reply"]["skipped_daily_cap"], 1)
+
+    def test_admin_filters_for_inbox_and_followups(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin_filters.db"
+            app = create_app(self._settings(db_path))
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(
+                    conn,
+                    channel="telegram",
+                    external_id="filter-u1",
+                    username="filter_user",
+                    first_name="Filter",
+                    last_name="Case",
+                )
+                thread_id = f"tg:{user_id}"
+                db.log_message(conn, user_id=user_id, direction="inbound", text="Нужен созвон", meta={})
+                draft_id = db.create_reply_draft(
+                    conn,
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    draft_text="Черновик",
+                    model_name="gpt-test",
+                    created_by="admin",
+                )
+                db.update_reply_draft_status(conn, draft_id=draft_id, status="approved", actor="admin")
+                db.create_followup_task(
+                    conn,
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    priority="hot",
+                    reason="radar:no_reply: followup для поиска",
+                    status="pending",
+                    assigned_to="sales-1",
+                )
+            finally:
+                conn.close()
+
+            inbox_response = client.get(
+                "/admin/inbox",
+                auth=auth,
+                params={"status": "ready_to_send", "search": "filter_user"},
+            )
+            self.assertEqual(inbox_response.status_code, 200)
+            inbox_items = inbox_response.json()["items"]
+            self.assertEqual(len(inbox_items), 1)
+            self.assertEqual(inbox_items[0]["workflow_status"], "ready_to_send")
+
+            followups_response = client.get(
+                "/admin/followups",
+                auth=auth,
+                params={"status": "pending", "priority": "hot", "radar_only": "true", "search": "поиска"},
+            )
+            self.assertEqual(followups_response.status_code, 200)
+            followups = followups_response.json()["items"]
+            self.assertEqual(len(followups), 1)
+            self.assertIn("radar:no_reply", followups[0]["reason"])
+
+            inbox_ui = client.get(
+                "/admin/ui/inbox",
+                auth=auth,
+                params={"status": "ready_to_send", "search": "filter_user"},
+            )
+            self.assertEqual(inbox_ui.status_code, 200)
+            self.assertIn("Применить фильтры", inbox_ui.text)
+
+            followups_ui = client.get(
+                "/admin/ui/followups",
+                auth=auth,
+                params={"priority": "hot", "radar_only": "true", "search": "поиска"},
+            )
+            self.assertEqual(followups_ui.status_code, 200)
+            self.assertIn("Применить фильтры", followups_ui.text)
+
     def test_admin_calls_upload_and_inbox_enrichment(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"
@@ -945,6 +1086,57 @@ class ApiAdminTests(unittest.TestCase):
             location = response.headers.get("location", "")
             self.assertTrue(location.startswith("/admin/ui/calls/"))
 
+    def test_admin_calls_cleanup_endpoints_remove_old_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            app = create_app(self._settings(db_path))
+            audio_file = Path(tmpdir) / "expired_audio.raw"
+            audio_file.write_bytes(b"old-audio")
+
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(conn, channel="telegram", external_id="cleanup-u1")
+                call_id = db.create_call_record(
+                    conn,
+                    user_id=user_id,
+                    thread_id=f"tg:{user_id}",
+                    source_type="upload",
+                    source_ref="cleanup-test",
+                    file_path=str(audio_file),
+                    status="done",
+                    created_by="test",
+                )
+                conn.execute(
+                    "UPDATE call_records SET created_at = datetime('now', '-72 hours') WHERE id = ?",
+                    (call_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            cleanup_response = client.post("/admin/calls/cleanup", auth=auth)
+            self.assertEqual(cleanup_response.status_code, 200)
+            cleanup_payload = cleanup_response.json()
+            self.assertTrue(cleanup_payload["ok"])
+            self.assertEqual(cleanup_payload["cleaned"], 1)
+            self.assertFalse(audio_file.exists())
+
+            conn_verify = db.get_connection(db_path)
+            try:
+                item = db.get_call_record(conn_verify, call_id=call_id)
+            finally:
+                conn_verify.close()
+            self.assertIsNotNone(item)
+            assert item is not None
+            self.assertIsNone(item["file_path"])
+
+            ui_cleanup_response = client.post("/admin/ui/calls/cleanup", auth=auth, follow_redirects=False)
+            self.assertEqual(ui_cleanup_response.status_code, 303)
+            self.assertEqual(ui_cleanup_response.headers.get("location"), "/admin/ui/calls")
+
     def test_admin_calls_endpoints_return_503_when_feature_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"
@@ -963,6 +1155,12 @@ class ApiAdminTests(unittest.TestCase):
                 data={"recording_url": "https://example.com/x"},
             )
             self.assertEqual(upload_response.status_code, 503)
+
+            cleanup_response = client.post("/admin/calls/cleanup", auth=auth)
+            self.assertEqual(cleanup_response.status_code, 503)
+
+            ui_cleanup_response = client.post("/admin/ui/calls/cleanup", auth=auth)
+            self.assertEqual(ui_cleanup_response.status_code, 503)
 
     def test_admin_copilot_import_returns_summary_and_draft(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

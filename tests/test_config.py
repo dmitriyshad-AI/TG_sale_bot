@@ -78,6 +78,8 @@ class ConfigTests(unittest.TestCase):
             "LEAD_RADAR_CALL_NO_NEXT_STEP_HOURS": "30",
             "LEAD_RADAR_STALE_WARM_DAYS": "10",
             "LEAD_RADAR_MAX_ITEMS_PER_RUN": "77",
+            "LEAD_RADAR_THREAD_COOLDOWN_HOURS": "36",
+            "LEAD_RADAR_DAILY_CAP_PER_THREAD": "4",
             "FAQ_LAB_SCHEDULER_ENABLED": "false",
             "FAQ_LAB_INTERVAL_SECONDS": "7200",
             "FAQ_LAB_WINDOW_DAYS": "45",
@@ -157,6 +159,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.lead_radar_call_no_next_step_hours, 30)
         self.assertEqual(settings.lead_radar_stale_warm_days, 10)
         self.assertEqual(settings.lead_radar_max_items_per_run, 77)
+        self.assertEqual(settings.lead_radar_thread_cooldown_hours, 36)
+        self.assertEqual(settings.lead_radar_daily_cap_per_thread, 4)
         self.assertFalse(settings.faq_lab_scheduler_enabled)
         self.assertEqual(settings.faq_lab_interval_seconds, 7200)
         self.assertEqual(settings.faq_lab_window_days, 45)
@@ -234,6 +238,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.lead_radar_call_no_next_step_hours, 24)
         self.assertEqual(settings.lead_radar_stale_warm_days, 7)
         self.assertEqual(settings.lead_radar_max_items_per_run, 50)
+        self.assertEqual(settings.lead_radar_thread_cooldown_hours, 24)
+        self.assertEqual(settings.lead_radar_daily_cap_per_thread, 2)
         self.assertTrue(settings.faq_lab_scheduler_enabled)
         self.assertEqual(settings.faq_lab_interval_seconds, 21600)
         self.assertEqual(settings.faq_lab_window_days, 90)
@@ -265,6 +271,8 @@ class ConfigTests(unittest.TestCase):
             "LEAD_RADAR_CALL_NO_NEXT_STEP_HOURS": "-2",
             "LEAD_RADAR_STALE_WARM_DAYS": "9999",
             "LEAD_RADAR_MAX_ITEMS_PER_RUN": "0",
+            "LEAD_RADAR_THREAD_COOLDOWN_HOURS": "9999",
+            "LEAD_RADAR_DAILY_CAP_PER_THREAD": "0",
             "FAQ_LAB_INTERVAL_SECONDS": "20",
             "FAQ_LAB_WINDOW_DAYS": "999",
             "FAQ_LAB_MIN_QUESTION_COUNT": "0",
@@ -290,6 +298,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.lead_radar_call_no_next_step_hours, 1)
         self.assertEqual(settings.lead_radar_stale_warm_days, 180)
         self.assertEqual(settings.lead_radar_max_items_per_run, 1)
+        self.assertEqual(settings.lead_radar_thread_cooldown_hours, 240)
+        self.assertEqual(settings.lead_radar_daily_cap_per_thread, 1)
         self.assertEqual(settings.faq_lab_interval_seconds, 300)
         self.assertEqual(settings.faq_lab_window_days, 365)
         self.assertEqual(settings.faq_lab_min_question_count, 1)

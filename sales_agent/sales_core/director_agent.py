@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 import sqlite3
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +19,7 @@ KEYWORD_TAGS = {
     "olympiad": {"олимпиад"},
     "reactivation": {"реактив", "верн", "застыв", "stale", "warm", "тепл"},
 }
+ALLOWED_ACTION_TYPES = {"reactivation", "manual_review", "followup"}
 
 
 @dataclass(frozen=True)
@@ -177,6 +177,10 @@ def build_campaign_plan(
     ]
     if "reactivation" in tags:
         assumptions.append("Фокус на реактивации warm/stale лидов.")
+    if "ege" in tags or "oge" in tags:
+        assumptions.append("Приоритет у лидов, где цель связана с экзаменационной подготовкой.")
+    if "camp" in tags:
+        assumptions.append("Уточнять сезон, формат и длительность смены перед оффером.")
 
     actions: list[Dict[str, Any]] = []
     for candidate in candidates[:action_limit]:
@@ -258,13 +262,35 @@ def apply_campaign_plan(
     created_drafts = 0
     created_actions = 0
     skipped = 0
+    skipped_by_reason = {
+        "invalid_action_shape": 0,
+        "unsupported_action_type": 0,
+        "missing_thread_or_user": 0,
+    }
 
     for index, action in enumerate(actions, start=1):
         if not isinstance(action, dict):
             skipped += 1
+            skipped_by_reason["invalid_action_shape"] += 1
             continue
 
         action_type = str(action.get("action_type") or "manual").strip().lower() or "manual"
+        if action_type not in ALLOWED_ACTION_TYPES:
+            db.create_campaign_action(
+                conn,
+                goal_id=goal_id,
+                plan_id=plan_id,
+                action_type=action_type,
+                status="skipped",
+                user_id=None,
+                thread_id=None,
+                priority="warm",
+                reason=f"unsupported_action_type:{action_type}",
+                payload={"index": index, "action": action, "source": "director_agent", "actor": actor},
+            )
+            skipped += 1
+            skipped_by_reason["unsupported_action_type"] += 1
+            continue
         thread_id = str(action.get("thread_id") or "").strip() or None
         user_id_value = action.get("user_id")
         if isinstance(user_id_value, int) and user_id_value > 0:
@@ -296,6 +322,7 @@ def apply_campaign_plan(
                 payload=action_payload,
             )
             skipped += 1
+            skipped_by_reason["missing_thread_or_user"] += 1
             continue
 
         draft_text = (
@@ -388,6 +415,7 @@ def apply_campaign_plan(
         "created_drafts": created_drafts,
         "created_followups": created_followups,
         "skipped": skipped,
+        "skipped_by_reason": skipped_by_reason,
     }
     db.create_campaign_report(
         conn,

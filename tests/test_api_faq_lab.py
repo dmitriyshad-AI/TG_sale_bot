@@ -132,14 +132,14 @@ class ApiFaqLabTests(unittest.TestCase):
             response = client.post(
                 "/admin/faq-lab/candidates/9999/promote",
                 auth=auth,
-                json={"answer_text": "test"},
+                json={"answer_text": "Уточняем цель ученика и даем персональный план следующего шага."},
             )
             self.assertEqual(response.status_code, 404)
 
             ui_response = client.post(
                 "/admin/ui/faq-lab/candidates/9999/promote",
                 auth=auth,
-                data={"answer_text": "test"},
+                data={"answer_text": "Уточняем цель ученика и даем персональный план следующего шага."},
             )
             self.assertEqual(ui_response.status_code, 404)
 
@@ -167,9 +167,33 @@ class ApiFaqLabTests(unittest.TestCase):
                 response = client.post(
                     f"/admin/faq-lab/candidates/{candidate_id}/promote",
                     auth=auth,
-                    json={"answer_text": "test"},
+                    json={"answer_text": "Уточняем цель ученика и даем персональный план следующего шага."},
                 )
             self.assertEqual(response.status_code, 500)
+
+    def test_promote_candidate_rejects_too_short_answer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "faq_api_short_answer.db"
+            app = create_app(self._settings(db_path))
+
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(conn, channel="telegram", external_id="faq-api-short")
+                db.log_message(conn, user_id, "inbound", "Как поступить в МФТИ?", {})
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            snapshot = client.get("/admin/faq-lab", auth=auth, params={"refresh": "true"})
+            candidate_id = int(snapshot.json()["candidates"][0]["id"])
+
+            response = client.post(
+                f"/admin/faq-lab/candidates/{candidate_id}/promote",
+                auth=auth,
+                json={"answer_text": "слишком коротко"},
+            )
+            self.assertEqual(response.status_code, 422)
 
     def test_faq_lab_scheduler_runs_on_startup(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

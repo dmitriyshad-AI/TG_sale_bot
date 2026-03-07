@@ -146,6 +146,7 @@ class DirectorAgentTests(unittest.TestCase):
         self.assertEqual(report["created_drafts"], 1)
         self.assertEqual(report["created_followups"], 1)
         self.assertEqual(report["skipped"], 1)
+        self.assertEqual(report["skipped_by_reason"]["missing_thread_or_user"], 1)
 
         actions = db.list_campaign_actions(self.conn, plan_id=plan_id, limit=20)
         self.assertEqual(len(actions), 2)
@@ -156,6 +157,48 @@ class DirectorAgentTests(unittest.TestCase):
         reports = db.list_campaign_reports(self.conn, plan_id=plan_id, limit=5)
         self.assertEqual(len(reports), 1)
         self.assertEqual(reports[0]["report"]["created_actions"], 1)
+
+    def test_apply_campaign_plan_skips_unsupported_action_types(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="u-unsupported")
+        goal_id = db.create_campaign_goal(
+            self.conn,
+            goal_text="Проверка unsupported actions",
+            created_by="admin",
+        )
+        plan = {
+            "actions": [
+                {
+                    "action_type": "outbound_spam",
+                    "thread_id": f"tg:{user_id}",
+                    "user_id": user_id,
+                    "priority": "hot",
+                    "reason": "not allowed",
+                }
+            ]
+        }
+        plan_id = db.create_campaign_plan(
+            self.conn,
+            goal_id=goal_id,
+            objective="Тест unsupported action",
+            actions=plan["actions"],
+            created_by="admin",
+        )
+
+        report = director_agent.apply_campaign_plan(
+            self.conn,
+            goal_id=goal_id,
+            plan_id=plan_id,
+            plan=plan,
+            actor="director:auto",
+        )
+        self.assertEqual(report["created_actions"], 0)
+        self.assertEqual(report["skipped"], 1)
+        self.assertEqual(report["skipped_by_reason"]["unsupported_action_type"], 1)
+
+        actions = db.list_campaign_actions(self.conn, plan_id=plan_id, limit=20)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["status"], "skipped")
+        self.assertIn("unsupported_action_type", str(actions[0]["reason"]))
 
     def test_apply_campaign_plan_handles_non_list_actions_and_non_dict_entries(self) -> None:
         goal_id = db.create_campaign_goal(
