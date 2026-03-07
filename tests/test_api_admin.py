@@ -939,6 +939,73 @@ class ApiAdminTests(unittest.TestCase):
             self.assertEqual(followups_ui.status_code, 200)
             self.assertIn("Применить фильтры", followups_ui.text)
 
+    def test_admin_ui_post_requires_origin_when_csrf_enabled_for_inbox_and_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin_csrf.db"
+            settings = self._settings(db_path)
+            settings.admin_ui_csrf_enabled = True
+            app = create_app(settings)
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            origin_headers = {"Origin": "http://testserver"}
+
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(conn, channel="telegram", external_id="csrf-u1")
+                audio_file = Path(tmpdir) / "expired_csrf_audio.raw"
+                audio_file.write_bytes(b"csrf-audio")
+                call_id = db.create_call_record(
+                    conn,
+                    user_id=user_id,
+                    thread_id=f"tg:{user_id}",
+                    source_type="upload",
+                    source_ref="csrf-test",
+                    file_path=str(audio_file),
+                    status="done",
+                    created_by="test",
+                )
+                conn.execute(
+                    "UPDATE call_records SET created_at = datetime('now', '-72 hours') WHERE id = ?",
+                    (call_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            missing_origin = client.post(
+                f"/admin/ui/inbox/{user_id}/drafts",
+                auth=auth,
+                data={"draft_text": "CSRF draft", "model_name": "gpt-test"},
+                follow_redirects=False,
+            )
+            self.assertEqual(missing_origin.status_code, 403)
+
+            with_origin = client.post(
+                f"/admin/ui/inbox/{user_id}/drafts",
+                auth=auth,
+                headers=origin_headers,
+                data={"draft_text": "CSRF draft", "model_name": "gpt-test"},
+                follow_redirects=False,
+            )
+            self.assertEqual(with_origin.status_code, 303)
+            self.assertEqual(with_origin.headers.get("location"), f"/admin/ui/inbox/{user_id}")
+
+            calls_cleanup_missing_origin = client.post(
+                "/admin/ui/calls/cleanup",
+                auth=auth,
+                follow_redirects=False,
+            )
+            self.assertEqual(calls_cleanup_missing_origin.status_code, 403)
+
+            calls_cleanup_with_origin = client.post(
+                "/admin/ui/calls/cleanup",
+                auth=auth,
+                headers=origin_headers,
+                follow_redirects=False,
+            )
+            self.assertEqual(calls_cleanup_with_origin.status_code, 303)
+            self.assertEqual(calls_cleanup_with_origin.headers.get("location"), "/admin/ui/calls")
+
     def test_admin_calls_upload_and_inbox_enrichment(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"

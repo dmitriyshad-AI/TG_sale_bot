@@ -471,13 +471,93 @@ def _migrate_sessions_uniqueness(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
+def _migration_20260307_001_sessions_uniqueness(conn: sqlite3.Connection) -> None:
+    _migrate_sessions_uniqueness(conn)
+
+
+def _migration_20260307_002_backfill_reply_draft_thread_ids(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        UPDATE reply_drafts
+        SET thread_id = 'tg:' || CAST(user_id AS TEXT)
+        WHERE TRIM(COALESCE(thread_id, '')) = ''
+          AND user_id IS NOT NULL
+        """
+    )
+
+
+def _migration_20260307_003_normalize_followup_priority_and_status(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        UPDATE followup_tasks
+        SET priority = 'warm'
+        WHERE LOWER(TRIM(COALESCE(priority, ''))) NOT IN ('hot', 'warm', 'cold')
+        """
+    )
+    conn.execute(
+        """
+        UPDATE followup_tasks
+        SET status = 'pending'
+        WHERE TRIM(COALESCE(status, '')) = ''
+        """
+    )
+
+
+def _migration_20260307_004_add_followup_reason_index(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_followup_tasks_reason_created
+        ON followup_tasks(reason, created_at DESC)
+        """
+    )
+
+
+SCHEMA_MIGRATION_STEPS: tuple[tuple[str, Any], ...] = (
+    ("20260307_001_sessions_uniqueness", _migration_20260307_001_sessions_uniqueness),
+    ("20260307_002_backfill_reply_draft_thread_ids", _migration_20260307_002_backfill_reply_draft_thread_ids),
+    ("20260307_003_normalize_followup_priority_and_status", _migration_20260307_003_normalize_followup_priority_and_status),
+    ("20260307_004_add_followup_reason_index", _migration_20260307_004_add_followup_reason_index),
+)
+
+
+def list_applied_migrations(conn: sqlite3.Connection) -> list[str]:
+    _ensure_schema_migrations_table(conn)
+    rows = conn.execute("SELECT version FROM schema_migrations ORDER BY version ASC").fetchall()
+    return [str(row["version"]) for row in rows]
+
+
+def apply_pending_migrations(conn: sqlite3.Connection) -> list[str]:
+    _ensure_schema_migrations_table(conn)
+    applied = set(list_applied_migrations(conn))
+    executed: list[str] = []
+    for version, step in SCHEMA_MIGRATION_STEPS:
+        if version in applied:
+            continue
+        step(conn)
+        conn.execute("INSERT INTO schema_migrations(version) VALUES (?)", (version,))
+        executed.append(version)
+    return executed
+
+
 def init_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         _apply_pragmas(conn)
+        conn.row_factory = sqlite3.Row
         for stmt in CREATE_TABLE_STATEMENTS:
             conn.execute(stmt)
-        _migrate_sessions_uniqueness(conn)
+        apply_pending_migrations(conn)
         for stmt in CREATE_INDEX_STATEMENTS:
             conn.execute(stmt)
         conn.commit()

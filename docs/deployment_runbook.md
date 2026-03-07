@@ -118,6 +118,7 @@ pip install -r requirements-dev.txt
 pytest -q
 python3 scripts/validate_catalog.py
 python3 scripts/preflight_audit.py
+python3 scripts/db_migrations_status.py
 ```
 
 Смысл `STARTUP_PREFLIGHT_MODE`:

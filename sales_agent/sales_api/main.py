@@ -105,6 +105,7 @@ from sales_agent.sales_core.telegram_business_sender import (
     send_business_message,
 )
 from sales_agent.sales_core.vector_store import load_vector_store_id
+from sales_agent.sales_api.routers.admin_core import build_admin_core_router
 from sales_agent.sales_api.routers.faq_lab import build_faq_lab_router
 from sales_agent.sales_api.routers.director import build_director_router
 from sales_agent.sales_api.services.draft_send import send_approved_draft
@@ -2511,36 +2512,103 @@ def create_app(settings: Settings | None = None) -> FastAPI:
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{html.escape(title)}</title>
   <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #1f2937; }}
-    h1, h2 {{ margin: 0 0 12px; }}
-    .muted {{ color: #6b7280; }}
-    nav {{ margin-bottom: 16px; }}
-    nav a {{ margin-right: 12px; }}
-    table {{ border-collapse: collapse; width: 100%; margin-top: 12px; }}
-    th, td {{ border: 1px solid #d1d5db; padding: 8px; text-align: left; vertical-align: top; }}
-    th {{ background: #f3f4f6; }}
-    .card {{ border: 1px solid #d1d5db; border-radius: 8px; padding: 12px; margin-bottom: 12px; }}
-    .badge {{ display: inline-block; padding: 2px 8px; border-radius: 999px; background: #eef2ff; }}
-    pre {{ white-space: pre-wrap; word-break: break-word; background: #f9fafb; padding: 10px; border-radius: 6px; }}
-    input, button {{ font-size: 14px; }}
-    button {{ padding: 8px 12px; cursor: pointer; }}
+    :root {{
+      --fg: #0f172a;
+      --muted: #475569;
+      --line: #cbd5e1;
+      --card: #f8fafc;
+      --bg: #eef2ff;
+      --nav: #0b1d35;
+      --nav-link: #e2e8f0;
+      --nav-link-active: #bfdbfe;
+      --btn: #1d4ed8;
+      --btn-text: #ffffff;
+    }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; color: var(--fg); background: var(--bg); }}
+    .shell {{ max-width: 1420px; margin: 0 auto; padding: 16px 20px 28px; }}
+    h1, h2 {{ margin: 0 0 12px; line-height: 1.25; }}
+    .muted {{ color: var(--muted); }}
+    nav {{
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: var(--nav);
+      border-bottom: 1px solid #0f2a49;
+      padding: 10px 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: -16px -20px 16px;
+    }}
+    nav a {{
+      color: var(--nav-link);
+      text-decoration: none;
+      padding: 7px 10px;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 13px;
+      line-height: 1;
+      white-space: nowrap;
+    }}
+    nav a:hover {{ background: #16355a; color: #ffffff; }}
+    nav a:focus {{ outline: 2px solid #93c5fd; outline-offset: 1px; }}
+    .current {{ color: var(--nav-link-active); background: #16355a; }}
+    .toolbar {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 0 0 12px;
+    }}
+    .toolbar a {{
+      text-decoration: none;
+      border: 1px solid #bfdbfe;
+      color: #1e3a8a;
+      background: #eff6ff;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 600;
+    }}
+    table {{ border-collapse: collapse; width: 100%; margin-top: 12px; background: #fff; }}
+    th, td {{ border: 1px solid var(--line); padding: 8px; text-align: left; vertical-align: top; }}
+    th {{ background: #f1f5f9; }}
+    .card {{ border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 12px; background: var(--card); }}
+    .badge {{ display: inline-block; padding: 2px 8px; border-radius: 999px; background: #dbeafe; color: #1e3a8a; font-weight: 600; }}
+    pre {{ white-space: pre-wrap; word-break: break-word; background: #f8fafc; border: 1px solid #e2e8f0; padding: 10px; border-radius: 6px; }}
+    input, textarea, select, button {{ font-size: 14px; }}
+    input, textarea, select {{ border: 1px solid #94a3b8; border-radius: 8px; padding: 7px 9px; }}
+    button {{ padding: 8px 12px; cursor: pointer; background: var(--btn); color: var(--btn-text); border: 1px solid #1e40af; border-radius: 8px; font-weight: 600; }}
+    button:hover {{ background: #1e40af; }}
+    @media (max-width: 900px) {{
+      .shell {{ padding: 12px; }}
+      nav {{ margin: -12px -12px 12px; }}
+    }}
   </style>
 </head>
 <body>
-  <nav>
-    <a href="/admin">Dashboard</a>
-    <a href="/admin/ui/inbox">Inbox</a>
-    <a href="/admin/ui/business-inbox">Business Inbox</a>
-    <a href="/admin/ui/followups">Followups</a>
-    <a href="/admin/ui/director">Director</a>
-    <a href="/admin/ui/calls">Calls</a>
-    <a href="/admin/ui/faq-lab">FAQ Lab</a>
-    <a href="/admin/ui/revenue-metrics">Revenue Metrics</a>
-    <a href="/admin/ui/leads">Leads</a>
-    <a href="/admin/ui/conversations">Conversations</a>
-    <a href="/admin/ui/copilot">Copilot</a>
-  </nav>
-  {body_html}
+  <div class="shell">
+    <nav>
+      <a href="/admin">Dashboard</a>
+      <a href="/admin/ui/inbox">Inbox</a>
+      <a href="/admin/ui/business-inbox">Business Inbox</a>
+      <a href="/admin/ui/followups">Followups</a>
+      <a href="/admin/ui/director">Director</a>
+      <a href="/admin/ui/calls">Calls</a>
+      <a href="/admin/ui/faq-lab">FAQ Lab</a>
+      <a href="/admin/ui/revenue-metrics">Revenue Metrics</a>
+      <a href="/admin/ui/leads">Leads</a>
+      <a href="/admin/ui/conversations">Conversations</a>
+      <a href="/admin/ui/copilot">Copilot</a>
+    </nav>
+    <div class="toolbar">
+      <a href="/admin/ui/inbox?status=new">Новые треды</a>
+      <a href="/admin/ui/inbox?status=failed">Ошибки отправки</a>
+      <a href="/admin/ui/followups?priority=hot&status=pending">Hot followups</a>
+      <a href="/admin/ui/calls">Последние звонки</a>
+      <a href="/admin/ui/director">Активные кампании</a>
+    </div>
+    {body_html}
+  </div>
 </body>
 </html>
 """
@@ -2569,152 +2637,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             enabled=cfg.enable_director_agent,
         )
     )
-
-    @app.get("/admin", response_class=HTMLResponse)
-    async def admin_home(_: str = Depends(require_admin)):
-        conn = get_connection(cfg.database_path)
-        try:
-            leads_count = int(conn.execute("SELECT COUNT(*) AS cnt FROM leads").fetchone()["cnt"])
-            users_count = int(conn.execute("SELECT COUNT(*) AS cnt FROM users").fetchone()["cnt"])
-            messages_count = int(conn.execute("SELECT COUNT(*) AS cnt FROM messages").fetchone()["cnt"])
-            recent_conversations = list_recent_conversations(conn, limit=5)
-        finally:
-            conn.close()
-
-        rows: list[str] = []
-        for item in recent_conversations:
-            user_id = int(item["user_id"])
-            rows.append(
-                "<tr>"
-                f"<td>{user_id}</td>"
-                f"<td>{html.escape(str(item.get('channel', '')))}</td>"
-                f"<td>{html.escape(str(item.get('external_id', '')))}</td>"
-                f"<td>{int(item.get('messages_count') or 0)}</td>"
-                f"<td>{html.escape(str(item.get('last_message_at') or '-'))}</td>"
-                f"<td><a href='/admin/ui/conversations/{user_id}'>Открыть</a></td>"
-                "</tr>"
-            )
-
-        body = (
-            "<h1>Sales Agent Admin</h1>"
-            "<p class='muted'>Оперативный контроль лидов и диалогов</p>"
-            "<div class='card'>"
-            f"<b>Users:</b> {users_count} &nbsp; | &nbsp; "
-            f"<b>Messages:</b> {messages_count} &nbsp; | &nbsp; "
-            f"<b>Leads:</b> {leads_count}"
-            "</div>"
-            "<h2>Последние диалоги</h2>"
-            "<table>"
-            "<thead><tr><th>User ID</th><th>Channel</th><th>External ID</th><th>Messages</th><th>Last Message</th><th></th></tr></thead>"
-            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=6>Нет данных</td></tr>'}</tbody>"
-            "</table>"
+    app.include_router(
+        build_admin_core_router(
+            db_path=cfg.database_path,
+            require_admin_dependency=require_admin,
+            enforce_ui_csrf=_enforce_admin_ui_csrf,
+            render_page=render_page,
+            run_copilot_from_file=run_copilot_from_file,
+            build_crm_client=build_crm_client,
+            settings=cfg,
+            mango_webhook_path=mango_webhook_path,
         )
-        return render_page("Sales Agent Admin", body)
-
-    @app.get("/admin/revenue-metrics")
-    async def admin_revenue_metrics(_: str = Depends(require_admin)):
-        conn = get_connection(cfg.database_path)
-        try:
-            metrics = get_revenue_metrics_snapshot(conn)
-        finally:
-            conn.close()
-        return {
-            "ok": True,
-            "metrics": metrics,
-            "feature_flags": {
-                "enable_business_inbox": cfg.enable_business_inbox,
-                "enable_call_copilot": cfg.enable_call_copilot,
-                "enable_tallanto_enrichment": cfg.enable_tallanto_enrichment,
-                "enable_director_agent": cfg.enable_director_agent,
-                "enable_lead_radar": cfg.enable_lead_radar,
-                "enable_faq_lab": cfg.enable_faq_lab,
-                "enable_mango_auto_ingest": cfg.enable_mango_auto_ingest,
-                "lead_radar_scheduler_enabled": cfg.lead_radar_scheduler_enabled,
-                "faq_lab_scheduler_enabled": cfg.faq_lab_scheduler_enabled,
-            },
-            "lead_radar": {
-                "interval_seconds": cfg.lead_radar_interval_seconds,
-                "no_reply_hours": cfg.lead_radar_no_reply_hours,
-                "call_no_next_step_hours": cfg.lead_radar_call_no_next_step_hours,
-                "stale_warm_days": cfg.lead_radar_stale_warm_days,
-                "max_items_per_run": cfg.lead_radar_max_items_per_run,
-                "thread_cooldown_hours": cfg.lead_radar_thread_cooldown_hours,
-                "daily_cap_per_thread": cfg.lead_radar_daily_cap_per_thread,
-            },
-            "faq_lab": {
-                "interval_seconds": cfg.faq_lab_interval_seconds,
-                "window_days": cfg.faq_lab_window_days,
-                "min_question_count": cfg.faq_lab_min_question_count,
-                "max_items_per_run": cfg.faq_lab_max_items_per_run,
-            },
-            "mango": {
-                "webhook_path": mango_webhook_path,
-                "polling_enabled": cfg.mango_polling_enabled,
-                "poll_interval_seconds": cfg.mango_poll_interval_seconds,
-                "poll_limit_per_run": cfg.mango_poll_limit_per_run,
-                "poll_retry_attempts": cfg.mango_poll_retry_attempts,
-                "poll_retry_backoff_seconds": cfg.mango_poll_retry_backoff_seconds,
-                "retry_failed_limit_per_run": cfg.mango_retry_failed_limit_per_run,
-                "recording_ttl_hours": cfg.mango_call_recording_ttl_hours,
-                "calls_path": cfg.mango_calls_path,
-            },
-        }
-
-    @app.get("/admin/ui/revenue-metrics", response_class=HTMLResponse)
-    async def admin_revenue_metrics_ui(_: str = Depends(require_admin)):
-        conn = get_connection(cfg.database_path)
-        try:
-            metrics = get_revenue_metrics_snapshot(conn)
-        finally:
-            conn.close()
-
-        lead_temperature = metrics.get("lead_temperature") if isinstance(metrics, dict) else {}
-        hot = int((lead_temperature or {}).get("hot") or 0)
-        warm = int((lead_temperature or {}).get("warm") or 0)
-        cold = int((lead_temperature or {}).get("cold") or 0)
-        body = (
-            "<h1>Revenue Metrics</h1>"
-            "<div class='card'>"
-            f"<b>Drafts Created Today:</b> {int(metrics.get('drafts_created_today') or 0)}<br/>"
-            f"<b>Drafts Approved Today:</b> {int(metrics.get('drafts_approved_today') or 0)}<br/>"
-            f"<b>Drafts Sent Today:</b> {int(metrics.get('drafts_sent_today') or 0)}<br/>"
-            f"<b>Followups Pending:</b> {int(metrics.get('followups_pending') or 0)}<br/>"
-            f"<b>Lead Temperature:</b> hot={hot}, warm={warm}, cold={cold}"
-            "</div>"
-            "<div class='card'>"
-            "<b>Feature Flags</b><br/>"
-            f"ENABLE_BUSINESS_INBOX={cfg.enable_business_inbox}<br/>"
-            f"ENABLE_CALL_COPILOT={cfg.enable_call_copilot}<br/>"
-            f"ENABLE_TALLANTO_ENRICHMENT={cfg.enable_tallanto_enrichment}<br/>"
-            f"ENABLE_DIRECTOR_AGENT={cfg.enable_director_agent}<br/>"
-            f"ENABLE_LEAD_RADAR={cfg.enable_lead_radar}<br/>"
-            f"ENABLE_FAQ_LAB={cfg.enable_faq_lab}<br/>"
-            f"ENABLE_MANGO_AUTO_INGEST={cfg.enable_mango_auto_ingest}<br/>"
-            f"LEAD_RADAR_SCHEDULER_ENABLED={cfg.lead_radar_scheduler_enabled}<br/>"
-            f"LEAD_RADAR_INTERVAL_SECONDS={cfg.lead_radar_interval_seconds}<br/>"
-            f"LEAD_RADAR_NO_REPLY_HOURS={cfg.lead_radar_no_reply_hours}<br/>"
-            f"LEAD_RADAR_CALL_NO_NEXT_STEP_HOURS={cfg.lead_radar_call_no_next_step_hours}<br/>"
-            f"LEAD_RADAR_STALE_WARM_DAYS={cfg.lead_radar_stale_warm_days}<br/>"
-            f"LEAD_RADAR_MAX_ITEMS_PER_RUN={cfg.lead_radar_max_items_per_run}<br/>"
-            f"LEAD_RADAR_THREAD_COOLDOWN_HOURS={cfg.lead_radar_thread_cooldown_hours}<br/>"
-            f"LEAD_RADAR_DAILY_CAP_PER_THREAD={cfg.lead_radar_daily_cap_per_thread}<br/>"
-            f"FAQ_LAB_SCHEDULER_ENABLED={cfg.faq_lab_scheduler_enabled}<br/>"
-            f"FAQ_LAB_INTERVAL_SECONDS={cfg.faq_lab_interval_seconds}<br/>"
-            f"FAQ_LAB_WINDOW_DAYS={cfg.faq_lab_window_days}<br/>"
-            f"FAQ_LAB_MIN_QUESTION_COUNT={cfg.faq_lab_min_question_count}<br/>"
-            f"FAQ_LAB_MAX_ITEMS_PER_RUN={cfg.faq_lab_max_items_per_run}<br/>"
-            f"MANGO_WEBHOOK_PATH={html.escape(mango_webhook_path)}<br/>"
-            f"MANGO_POLLING_ENABLED={cfg.mango_polling_enabled}<br/>"
-            f"MANGO_POLL_INTERVAL_SECONDS={cfg.mango_poll_interval_seconds}<br/>"
-            f"MANGO_POLL_LIMIT_PER_RUN={cfg.mango_poll_limit_per_run}<br/>"
-            f"MANGO_POLL_RETRY_ATTEMPTS={cfg.mango_poll_retry_attempts}<br/>"
-            f"MANGO_POLL_RETRY_BACKOFF_SECONDS={cfg.mango_poll_retry_backoff_seconds}<br/>"
-            f"MANGO_RETRY_FAILED_LIMIT_PER_RUN={cfg.mango_retry_failed_limit_per_run}<br/>"
-            f"MANGO_CALL_RECORDING_TTL_HOURS={cfg.mango_call_recording_ttl_hours}<br/>"
-            f"MANGO_CALLS_PATH={html.escape(cfg.mango_calls_path)}"
-            "</div>"
-        )
-        return render_page("Revenue Metrics", body)
+    )
 
     @app.get("/admin/inbox")
     async def admin_inbox(
@@ -5134,227 +5068,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not enqueue_result.get("is_new", False):
             logger.info("Ignoring duplicate Telegram update_id=%s", update_id)
         return {"ok": True, "queued": True}
-
-    @app.get("/admin/leads")
-    async def admin_leads(_: str = Depends(require_admin), limit: int = 100):
-        conn = get_connection(cfg.database_path)
-        try:
-            return {"items": list_recent_leads(conn, limit=max(1, min(limit, 500)))}
-        finally:
-            conn.close()
-
-    @app.get("/admin/ui/leads", response_class=HTMLResponse)
-    async def admin_leads_ui(_: str = Depends(require_admin), limit: int = 100):
-        conn = get_connection(cfg.database_path)
-        try:
-            items = list_recent_leads(conn, limit=max(1, min(limit, 500)))
-        finally:
-            conn.close()
-
-        rows: list[str] = []
-        for item in items:
-            contact = item.get("contact") if isinstance(item.get("contact"), dict) else {}
-            rows.append(
-                "<tr>"
-                f"<td>{int(item['lead_id'])}</td>"
-                f"<td>{int(item['user_id'])}</td>"
-                f"<td>{html.escape(str(item.get('status') or ''))}</td>"
-                f"<td>{html.escape(str(item.get('tallanto_entry_id') or '-'))}</td>"
-                f"<td>{html.escape(str(contact.get('phone') or '-'))}</td>"
-                f"<td>{html.escape(str(contact.get('source') or '-'))}</td>"
-                f"<td>{html.escape(str(item.get('created_at') or '-'))}</td>"
-                "</tr>"
-            )
-
-        body = (
-            "<h1>Leads</h1>"
-            "<table>"
-            "<thead><tr><th>Lead ID</th><th>User ID</th><th>Status</th><th>CRM ID</th><th>Phone</th><th>Source</th><th>Created At</th></tr></thead>"
-            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=7>Нет лидов</td></tr>'}</tbody>"
-            "</table>"
-        )
-        return render_page("Leads", body)
-
-    @app.get("/admin/conversations")
-    async def admin_conversations(_: str = Depends(require_admin), limit: int = 100):
-        conn = get_connection(cfg.database_path)
-        try:
-            return {"items": list_recent_conversations(conn, limit=max(1, min(limit, 500)))}
-        finally:
-            conn.close()
-
-    @app.get("/admin/ui/conversations", response_class=HTMLResponse)
-    async def admin_conversations_ui(_: str = Depends(require_admin), limit: int = 100):
-        conn = get_connection(cfg.database_path)
-        try:
-            items = list_recent_conversations(conn, limit=max(1, min(limit, 500)))
-        finally:
-            conn.close()
-
-        rows: list[str] = []
-        for item in items:
-            user_id = int(item["user_id"])
-            rows.append(
-                "<tr>"
-                f"<td>{user_id}</td>"
-                f"<td>{html.escape(str(item.get('channel') or ''))}</td>"
-                f"<td>{html.escape(str(item.get('external_id') or ''))}</td>"
-                f"<td>{int(item.get('messages_count') or 0)}</td>"
-                f"<td>{html.escape(str(item.get('last_message_at') or '-'))}</td>"
-                f"<td><a href='/admin/ui/conversations/{user_id}'>История</a></td>"
-                "</tr>"
-            )
-
-        body = (
-            "<h1>Conversations</h1>"
-            "<table>"
-            "<thead><tr><th>User ID</th><th>Channel</th><th>External ID</th><th>Messages</th><th>Last Message</th><th></th></tr></thead>"
-            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=6>Нет диалогов</td></tr>'}</tbody>"
-            "</table>"
-        )
-        return render_page("Conversations", body)
-
-    @app.get("/admin/conversations/{user_id}")
-    async def admin_conversation_history(user_id: int, _: str = Depends(require_admin), limit: int = 500):
-        conn = get_connection(cfg.database_path)
-        try:
-            messages = list_conversation_messages(conn, user_id=user_id, limit=max(1, min(limit, 2000)))
-            return {"user_id": user_id, "messages": messages}
-        finally:
-            conn.close()
-
-    @app.get("/admin/ui/conversations/{user_id}", response_class=HTMLResponse)
-    async def admin_conversation_history_ui(user_id: int, _: str = Depends(require_admin), limit: int = 500):
-        conn = get_connection(cfg.database_path)
-        try:
-            messages = list_conversation_messages(conn, user_id=user_id, limit=max(1, min(limit, 2000)))
-        finally:
-            conn.close()
-
-        rows: list[str] = []
-        for item in messages:
-            direction = str(item.get("direction") or "")
-            text = str(item.get("text") or "")
-            created_at = str(item.get("created_at") or "-")
-            meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
-            rows.append(
-                "<tr>"
-                f"<td><span class='badge'>{html.escape(direction)}</span></td>"
-                f"<td>{html.escape(created_at)}</td>"
-                f"<td><pre>{html.escape(text)}</pre></td>"
-                f"<td><pre>{html.escape(json.dumps(meta, ensure_ascii=False, indent=2))}</pre></td>"
-                "</tr>"
-            )
-
-        body = (
-            f"<h1>Conversation #{user_id}</h1>"
-            "<table>"
-            "<thead><tr><th>Direction</th><th>Created At</th><th>Text</th><th>Meta</th></tr></thead>"
-            f"<tbody>{''.join(rows) if rows else '<tr><td colspan=4>Нет сообщений</td></tr>'}</tbody>"
-            "</table>"
-        )
-        return render_page(f"Conversation {user_id}", body)
-
-    @app.get("/admin/ui/copilot", response_class=HTMLResponse)
-    async def admin_copilot_ui(_: str = Depends(require_admin)):
-        body = (
-            "<h1>Copilot Import</h1>"
-            "<p class='muted'>Загрузите WhatsApp .txt или Telegram export .json</p>"
-            "<form method='post' action='/admin/ui/copilot/import' enctype='multipart/form-data'>"
-            "<p><input type='file' name='file' required></p>"
-            "<p><label><input type='checkbox' name='create_task' value='true'> Создать задачу в CRM (если настроено)</label></p>"
-            "<p><button type='submit'>Импортировать</button></p>"
-            "</form>"
-        )
-        return render_page("Copilot", body)
-
-    @app.post("/admin/ui/copilot/import", response_class=HTMLResponse)
-    async def admin_copilot_import_ui(
-        request: Request,
-        _: str = Depends(require_admin),
-        file: UploadFile = File(...),
-        create_task: bool = Form(False),
-    ):
-        _enforce_admin_ui_csrf(request)
-        content = await file.read()
-        if not content:
-            return render_page("Copilot Error", "<h1>Ошибка</h1><p>Файл пустой.</p>")
-
-        try:
-            result = run_copilot_from_file(filename=file.filename or "dialog.txt", content=content)
-        except ValueError as exc:
-            return render_page("Copilot Error", f"<h1>Ошибка</h1><p>{html.escape(str(exc))}</p>")
-
-        task_html = ""
-        if create_task:
-            crm = build_crm_client(cfg)
-            task_result = crm.create_copilot_task(
-                summary=result.summary,
-                draft_reply=result.draft_reply,
-            )
-            task_html = (
-                "<h2>CRM Task</h2>"
-                f"<p><b>Success:</b> {html.escape(str(task_result.success))}</p>"
-                f"<p><b>Entry ID:</b> {html.escape(str(task_result.entry_id or '-'))}</p>"
-                f"<p><b>Error:</b> {html.escape(str(task_result.error or '-'))}</p>"
-            )
-
-        profile_json = html.escape(json.dumps(result.customer_profile, ensure_ascii=False, indent=2))
-        draft_text = html.escape(result.draft_reply)
-        body = (
-            "<h1>Copilot Result</h1>"
-            f"<p><b>Source format:</b> {html.escape(result.source_format)}</p>"
-            f"<p><b>Message count:</b> {int(result.message_count)}</p>"
-            "<h2>Summary</h2>"
-            f"<pre>{html.escape(result.summary)}</pre>"
-            "<h2>Customer profile</h2>"
-            f"<pre>{profile_json}</pre>"
-            "<h2>Draft reply</h2>"
-            f"<pre id='draft_reply'>{draft_text}</pre>"
-            "<button type='button' onclick='navigator.clipboard.writeText(document.getElementById(\"draft_reply\").innerText)'>Скопировать черновик</button>"
-            f"{task_html}"
-        )
-        return render_page("Copilot Result", body)
-
-    @app.post("/admin/copilot/import")
-    async def admin_copilot_import(
-        _: str = Depends(require_admin),
-        file: UploadFile = File(...),
-        create_task: bool = False,
-    ):
-        content = await file.read()
-        if not content:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Uploaded file is empty.",
-            )
-        try:
-            result = run_copilot_from_file(filename=file.filename or "dialog.txt", content=content)
-        except ValueError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-        response = {
-            "source_format": result.source_format,
-            "message_count": result.message_count,
-            "summary": result.summary,
-            "customer_profile": result.customer_profile,
-            "draft_reply": result.draft_reply,
-            "auto_send": False,
-        }
-
-        if create_task:
-            crm = build_crm_client(cfg)
-            task_result = crm.create_copilot_task(
-                summary=result.summary,
-                draft_reply=result.draft_reply,
-            )
-            response["task"] = {
-                "success": task_result.success,
-                "entry_id": task_result.entry_id,
-                "error": task_result.error,
-            }
-
-        return response
 
     return app
 

@@ -329,6 +329,11 @@ API/UI:
   python3 scripts/preflight_audit.py
   python3 scripts/preflight_audit.py --json
   ```
+- Проверка versioned миграций БД:
+  ```bash
+  python3 scripts/db_migrations_status.py
+  python3 scripts/db_migrations_status.py --json
+  ```
 - Smoke-проверка уже запущенного API (локально/Render):
   ```bash
   python3 scripts/release_smoke.py --base-url http://127.0.0.1:8000

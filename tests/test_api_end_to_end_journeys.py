@@ -262,6 +262,58 @@ class ApiEndToEndJourneyTests(unittest.TestCase):
         self.assertEqual(detail.get("code"), "rate_limited")
         self.assertEqual(detail.get("scope"), "assistant_user")
 
+    def test_e2e_admin_approval_send_flow_manual_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = root / "app.db"
+            catalog_path = root / "products.yaml"
+            _write_catalog(catalog_path)
+            cfg = _settings(db_path, catalog_path)
+            app = create_app(cfg)
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            conn = db_module.get_connection(db_path)
+            try:
+                user_id = db_module.get_or_create_user(
+                    conn,
+                    channel="telegram",
+                    external_id="e2e-admin-1",
+                    username="e2e_admin_1",
+                )
+                db_module.log_message(
+                    conn,
+                    user_id=user_id,
+                    direction="inbound",
+                    text="Нужна консультация по ЕГЭ",
+                    meta={},
+                )
+            finally:
+                conn.close()
+
+            create_draft = client.post(
+                f"/admin/inbox/{user_id}/drafts",
+                auth=auth,
+                json={"draft_text": "Предлагаю короткую консультацию", "model_name": "e2e-model"},
+            )
+            self.assertEqual(create_draft.status_code, 200)
+            draft = create_draft.json()["draft"]
+            draft_id = int(draft["id"])
+
+            approve = client.post(f"/admin/inbox/drafts/{draft_id}/approve", auth=auth)
+            self.assertEqual(approve.status_code, 200)
+            self.assertEqual(approve.json()["draft"]["status"], "approved")
+
+            send = client.post(
+                f"/admin/inbox/drafts/{draft_id}/send",
+                auth=auth,
+                json={"sent_message_id": "tg-manual-1001"},
+            )
+            self.assertEqual(send.status_code, 200)
+            sent = send.json()["draft"]
+            self.assertEqual(sent["status"], "sent")
+            self.assertEqual(sent["sent_message_id"], "tg-manual-1001")
+
 
 if __name__ == "__main__":
     unittest.main()

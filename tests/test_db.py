@@ -49,6 +49,7 @@ class DatabaseTests(unittest.TestCase):
                 "campaign_plans",
                 "campaign_actions",
                 "campaign_reports",
+                "schema_migrations",
             }.issubset(table_names)
         )
 
@@ -470,6 +471,67 @@ class DatabaseTests(unittest.TestCase):
                 )
         finally:
             conn.close()
+
+    def test_list_applied_migrations_contains_all_known_versions(self) -> None:
+        applied = db.list_applied_migrations(self.conn)
+        expected = [version for version, _ in db.SCHEMA_MIGRATION_STEPS]
+        self.assertEqual(applied, expected)
+
+    def test_apply_pending_migrations_is_idempotent_and_can_rerun_specific_version(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="migration-user")
+        draft_id = db.create_reply_draft(
+            self.conn,
+            user_id=user_id,
+            thread_id=f"tg:{user_id}",
+            draft_text="migration draft",
+            model_name="test-model",
+            created_by="test",
+        )
+        self.conn.execute("UPDATE reply_drafts SET thread_id = '' WHERE id = ?", (draft_id,))
+
+        task_id = db.create_followup_task(
+            self.conn,
+            user_id=user_id,
+            thread_id=f"tg:{user_id}",
+            priority="warm",
+            reason="migration test",
+            status="pending",
+            due_at=None,
+            assigned_to=None,
+        )
+        self.conn.execute(
+            "UPDATE followup_tasks SET priority = 'urgent', status = '' WHERE id = ?",
+            (task_id,),
+        )
+        self.conn.execute(
+            "DELETE FROM schema_migrations WHERE version IN (?, ?)",
+            (
+                "20260307_002_backfill_reply_draft_thread_ids",
+                "20260307_003_normalize_followup_priority_and_status",
+            ),
+        )
+        self.conn.commit()
+
+        executed = db.apply_pending_migrations(self.conn)
+        self.assertEqual(
+            executed,
+            [
+                "20260307_002_backfill_reply_draft_thread_ids",
+                "20260307_003_normalize_followup_priority_and_status",
+            ],
+        )
+
+        draft_row = self.conn.execute("SELECT thread_id FROM reply_drafts WHERE id = ?", (draft_id,)).fetchone()
+        self.assertIsNotNone(draft_row)
+        self.assertEqual(draft_row["thread_id"], f"tg:{user_id}")
+
+        task_row = self.conn.execute("SELECT priority, status FROM followup_tasks WHERE id = ?", (task_id,)).fetchone()
+        self.assertIsNotNone(task_row)
+        self.assertEqual(task_row["priority"], "warm")
+        self.assertEqual(task_row["status"], "pending")
+
+        second_run = db.apply_pending_migrations(self.conn)
+        self.assertEqual(second_run, [])
 
     def test_enqueue_webhook_update_deduplicates_by_update_id(self) -> None:
         first = db.enqueue_webhook_update(
