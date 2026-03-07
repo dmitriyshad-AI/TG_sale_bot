@@ -41,7 +41,34 @@ class DbMigrationsStatusScriptTests(unittest.TestCase):
         self.assertIn("Known migrations", output)
         self.assertIn("All migrations are applied.", output)
 
+    def test_main_text_mode_reports_pending_migrations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "status_pending.db"
+            settings = SimpleNamespace(database_path=db_path)
+            known_versions = [version for version, _ in db.SCHEMA_MIGRATION_STEPS]
+            original_list_applied = db_migrations_status.db.list_applied_migrations
+            calls = {"count": 0}
+
+            def _list_applied_side_effect(conn: object) -> list[str]:
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    return original_list_applied(conn)  # keep init_db migration path intact
+                return known_versions[:1]
+
+            with patch.object(db_migrations_status, "get_settings", return_value=settings), patch.object(
+                db_migrations_status.db,
+                "list_applied_migrations",
+                side_effect=_list_applied_side_effect,
+            ), patch("sys.stdout", new_callable=StringIO) as stdout:
+                code = db_migrations_status.main([])
+
+        self.assertEqual(code, 0)
+        output = stdout.getvalue()
+        self.assertIn("Pending migrations: ", output)
+        self.assertIn("Pending:", output)
+        for version in known_versions[1:]:
+            self.assertIn(version, output)
+
 
 if __name__ == "__main__":
     unittest.main()
-

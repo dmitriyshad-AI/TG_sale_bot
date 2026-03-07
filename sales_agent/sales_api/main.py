@@ -21,17 +21,11 @@ from telegram import Update
 
 from sales_agent.sales_bot import bot as bot_runtime
 from sales_agent.sales_core.catalog import CatalogValidationError, Product, SearchCriteria, explain_match, select_top_products
-from sales_agent.sales_core.call_copilot import (
-    build_call_insights,
-    build_transcript_fallback,
-    extract_transcript_from_file,
-)
 from sales_agent.sales_core import faq_lab as faq_lab_service
 from sales_agent.sales_core.config import Settings, get_settings, project_root
 from sales_agent.sales_core.copilot import run_copilot_from_file
 from sales_agent.sales_core.crm import build_crm_client
 from sales_agent.sales_core.db import (
-    clear_call_record_file_path,
     claim_webhook_update,
     count_mango_events,
     count_webhook_updates_by_status,
@@ -48,7 +42,6 @@ from sales_agent.sales_core.db import (
     get_conversation_outcome,
     get_conversation_context,
     get_connection,
-    get_call_record,
     get_or_create_user,
     get_crm_cache,
     get_inbox_thread_detail,
@@ -61,7 +54,6 @@ from sales_agent.sales_core.db import (
     list_approval_actions_for_thread,
     list_business_messages,
     list_call_records,
-    list_call_records_with_files_for_cleanup,
     list_followup_tasks,
     list_inbox_threads,
     list_mango_events,
@@ -73,13 +65,10 @@ from sales_agent.sales_core.db import (
     mark_webhook_update_done,
     mark_webhook_update_retry,
     requeue_stuck_webhook_updates,
-    update_call_record_status,
     update_mango_event_status,
     set_reply_draft_last_error,
     update_reply_draft_status,
     update_reply_draft_text,
-    upsert_call_summary,
-    upsert_call_transcript,
     upsert_conversation_outcome,
     upsert_conversation_context,
     upsert_crm_cache,
@@ -93,11 +82,6 @@ from sales_agent.sales_core.tallanto_readonly import (
     sanitize_tallanto_lookup_context,
 )
 from sales_agent.sales_core.mango_client import MangoCallEvent, MangoClient, MangoClientError
-from sales_agent.sales_core.mango_auto_ingest import (
-    event_from_mango_record,
-    extract_mango_user_and_thread,
-    fetch_mango_poll_events_with_retries,
-)
 from sales_agent.sales_core.telegram_webapp import verify_telegram_webapp_init_data
 from sales_agent.sales_core.llm_client import LLMClient
 from sales_agent.sales_core.telegram_business_sender import (
@@ -110,6 +94,8 @@ from sales_agent.sales_api.routers.admin_calls import build_admin_calls_router
 from sales_agent.sales_api.routers.admin_inbox import build_admin_inbox_router
 from sales_agent.sales_api.routers.faq_lab import build_faq_lab_router
 from sales_agent.sales_api.routers.director import build_director_router
+from sales_agent.sales_api.services.business_sender import send_business_draft_and_log as send_business_draft_and_log_service
+from sales_agent.sales_api.services.revenue_ops import RevenueOpsService
 
 
 security = HTTPBasic()
@@ -1206,30 +1192,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return None
         return business_connection_id, int(chat_token)
 
-    def _split_telegram_text_chunks(text: str, *, max_len: int = TELEGRAM_MAX_TEXT_CHARS) -> list[str]:
-        normalized = " ".join((text or "").split()).strip()
-        if not normalized:
-            return []
-        if len(normalized) <= max_len:
-            return [normalized]
-        chunks: list[str] = []
-        start = 0
-        while start < len(normalized):
-            hard_end = min(start + max_len, len(normalized))
-            end = hard_end
-            if hard_end < len(normalized):
-                split_at = normalized.rfind(" ", start, hard_end)
-                if split_at > start + max_len // 3:
-                    end = split_at
-            chunk = normalized[start:end].strip()
-            if not chunk:
-                chunk = normalized[start:hard_end].strip()
-                end = hard_end
-            chunks.append(chunk)
-            start = end
-            while start < len(normalized) and normalized[start].isspace():
-                start += 1
-        return chunks
+    def _require_user_exists(conn: Any, user_id: int) -> None:
+        row = conn.execute("SELECT id FROM users WHERE id = ? LIMIT 1", (int(user_id),)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User {user_id} not found.")
+
+    revenue_ops = RevenueOpsService(
+        settings=cfg,
+        db_path=cfg.database_path,
+        require_user_exists=_require_user_exists,
+        thread_id_from_user_id=_thread_id_from_user_id,
+        lead_radar_rule_no_reply=LEAD_RADAR_RULE_NO_REPLY,
+        lead_radar_rule_call_no_next_step=LEAD_RADAR_RULE_CALL_NO_NEXT_STEP,
+        lead_radar_rule_stale_warm=LEAD_RADAR_RULE_STALE_WARM,
+        lead_radar_model_name=LEAD_RADAR_MODEL_NAME,
+        call_copilot_model_name=CALL_COPILOT_MODEL_NAME,
+        mango_cleanup_batch_size=MANGO_CLEANUP_BATCH_SIZE,
+        logger=logger,
+    )
 
     async def _send_business_draft_and_log(
         conn: Any,
@@ -1237,225 +1217,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         draft: Dict[str, Any],
         actor: str,
     ) -> Dict[str, Any]:
-        parsed_thread = _parse_business_thread_key(str(draft.get("thread_id") or ""))
-        if parsed_thread is None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Draft thread is not Telegram Business. Use manual confirmation with sent_message_id.",
-            )
-
-        if not cfg.telegram_bot_token:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="TELEGRAM_BOT_TOKEN is empty. Business send is unavailable.",
-            )
-
-        business_connection_id, chat_id = parsed_thread
-        connection = get_business_connection(conn, business_connection_id=business_connection_id)
-        if not connection:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Business connection not found: {business_connection_id}",
-            )
-        if not bool(connection.get("is_enabled")):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Business connection is disabled: {business_connection_id}",
-            )
-        if not bool(connection.get("can_reply")):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Business connection cannot reply: {business_connection_id}",
-            )
-
-        message_text = str(draft.get("draft_text") or "").strip()
-        chunks = _split_telegram_text_chunks(message_text)
-        if not chunks:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Draft text is empty after normalization.",
-            )
-
-        message_ids: list[int] = []
-        for chunk in chunks:
-            try:
-                message_result = await asyncio.to_thread(
-                    send_business_message,
-                    bot_token=cfg.telegram_bot_token,
-                    business_connection_id=business_connection_id,
-                    chat_id=chat_id,
-                    text=chunk,
-                )
-            except TelegramBusinessSendError as exc:
-                set_reply_draft_last_error(conn, draft_id=int(draft["id"]), last_error=str(exc))
-                create_approval_action(
-                    conn,
-                    draft_id=int(draft["id"]),
-                    user_id=int(draft["user_id"]),
-                    thread_id=str(draft["thread_id"]),
-                    action="draft_send_failed",
-                    actor=actor,
-                    payload={"error": str(exc), "business_connection_id": business_connection_id, "chat_id": chat_id},
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Telegram Business send failed: {exc}",
-                ) from exc
-
-            message_id = int(message_result.get("message_id") or 0)
-            if message_id > 0:
-                message_ids.append(message_id)
-            log_business_message(
-                conn,
-                business_connection_id=business_connection_id,
-                chat_id=chat_id,
-                telegram_message_id=message_id if message_id > 0 else None,
-                direction="outbound",
-                text=chunk,
-                user_id=int(draft["user_id"]),
-                payload={
-                    "event_type": "business_message",
-                    "source": "admin_inbox_send",
-                    "draft_id": int(draft["id"]),
-                    "actor": actor,
-                },
-            )
-
-        sent_message_id = ",".join(str(item) for item in message_ids) if message_ids else None
-        return {
-            "transport": "telegram_business",
-            "business_connection_id": business_connection_id,
-            "chat_id": chat_id,
-            "message_ids": message_ids,
-            "sent_message_id": sent_message_id,
-        }
-
-    def _require_user_exists(conn: Any, user_id: int) -> None:
-        row = conn.execute("SELECT id FROM users WHERE id = ? LIMIT 1", (int(user_id),)).fetchone()
-        if row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User {user_id} not found.")
-
-    def _calls_storage_root() -> Path:
-        if cfg.persistent_data_root != Path():
-            return cfg.persistent_data_root / "calls_uploads"
-        return project_root() / "data" / "calls_uploads"
-
-    def _resolve_call_thread_and_user(
-        conn: Any,
-        *,
-        user_id_input: Optional[int],
-        thread_id_input: Optional[str],
-    ) -> tuple[int, str]:
-        normalized_thread = (thread_id_input or "").strip()
-        resolved_user_id: Optional[int] = None
-
-        if isinstance(user_id_input, int):
-            _require_user_exists(conn, user_id_input)
-            resolved_user_id = int(user_id_input)
-            if not normalized_thread:
-                normalized_thread = _thread_id_from_user_id(resolved_user_id)
-
-        if resolved_user_id is None and normalized_thread.startswith("tg:"):
-            user_token = normalized_thread[3:]
-            if user_token.isdigit():
-                candidate_user_id = int(user_token)
-                _require_user_exists(conn, candidate_user_id)
-                resolved_user_id = candidate_user_id
-
-        if resolved_user_id is None and normalized_thread.startswith("biz:"):
-            row = conn.execute(
-                """
-                SELECT user_id
-                FROM business_threads
-                WHERE thread_key = ?
-                LIMIT 1
-                """,
-                (normalized_thread,),
-            ).fetchone()
-            if row and row["user_id"] is not None:
-                resolved_user_id = int(row["user_id"])
-
-        if resolved_user_id is None:
-            external_id = f"call-import-{uuid4().hex[:12]}"
-            resolved_user_id = get_or_create_user(
-                conn,
-                channel="call_import",
-                external_id=external_id,
-            )
-            if not normalized_thread:
-                normalized_thread = _thread_id_from_user_id(resolved_user_id)
-
-        if not normalized_thread:
-            normalized_thread = _thread_id_from_user_id(resolved_user_id)
-        return resolved_user_id, normalized_thread
-
-    async def _store_call_upload_file(upload: UploadFile) -> Optional[Path]:
-        filename = (upload.filename or "").strip()
-        if not filename:
-            return None
-        suffix = Path(filename).suffix.lower()
-        if not suffix or len(suffix) > 12:
-            suffix = ".bin"
-        target_dir = _calls_storage_root()
-        target_dir.mkdir(parents=True, exist_ok=True)
-        file_path = target_dir / f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid4().hex}{suffix}"
-        content = await upload.read()
-        if not content:
-            return None
-        file_path.write_bytes(content)
-        return file_path
-
-    def _priority_from_warmth(value: str) -> str:
-        normalized = (value or "").strip().lower()
-        if normalized in {"hot", "warm", "cold"}:
-            return normalized
-        return "warm"
-
-    def _mango_ingest_enabled() -> bool:
-        return bool(cfg.enable_mango_auto_ingest and cfg.enable_call_copilot)
-
-    def _build_mango_client() -> MangoClient:
-        if not cfg.mango_api_base_url or not cfg.mango_api_token:
-            raise MangoClientError(
-                "Mango API is not configured. Fill MANGO_API_BASE_URL and MANGO_API_TOKEN."
-            )
-        return MangoClient(
-            base_url=cfg.mango_api_base_url,
-            token=cfg.mango_api_token,
-            calls_path=cfg.mango_calls_path,
-            timeout_seconds=12.0,
-            webhook_secret=cfg.mango_webhook_secret,
+        return await send_business_draft_and_log_service(
+            conn=conn,
+            draft=draft,
+            actor=actor,
+            telegram_bot_token=cfg.telegram_bot_token,
+            parse_business_thread_key=_parse_business_thread_key,
+            get_business_connection=get_business_connection,
+            send_business_message=send_business_message,
+            send_error_type=TelegramBusinessSendError,
+            set_reply_draft_last_error=set_reply_draft_last_error,
+            create_approval_action=create_approval_action,
+            log_business_message=log_business_message,
+            max_text_chars=TELEGRAM_MAX_TEXT_CHARS,
         )
 
+    def _mango_ingest_enabled() -> bool:
+        return revenue_ops.mango_ingest_enabled()
+
+    def _build_mango_client() -> MangoClient:
+        return revenue_ops.build_mango_client()
+
     def _cleanup_old_call_files() -> Dict[str, Any]:
-        conn = get_connection(cfg.database_path)
-        cleaned = 0
-        missing = 0
-        errors = 0
-        try:
-            rows = list_call_records_with_files_for_cleanup(
-                conn,
-                older_than_hours=max(1, int(cfg.mango_call_recording_ttl_hours)),
-                limit=MANGO_CLEANUP_BATCH_SIZE,
-            )
-            for row in rows:
-                call_id = int(row.get("id") or 0)
-                raw_path = str(row.get("file_path") or "").strip()
-                if not call_id or not raw_path:
-                    continue
-                file_path = Path(raw_path)
-                try:
-                    if file_path.exists():
-                        file_path.unlink()
-                        cleaned += 1
-                    else:
-                        missing += 1
-                    clear_call_record_file_path(conn, call_id=call_id)
-                except Exception:
-                    errors += 1
-            return {"ok": True, "checked": len(rows), "cleaned": cleaned, "missing": missing, "errors": errors}
-        finally:
-            conn.close()
+        return revenue_ops.cleanup_old_call_files()
 
     def _format_thread_display_name(item: Dict[str, Any]) -> str:
         first_name = str(item.get("first_name") or "").strip()
@@ -1505,542 +1289,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         label = html.escape(_inbox_workflow_status_label(normalized))
         return f"<span class='badge' style='background:{bg};'>{label}</span>"
 
-    def _pending_radar_followup_exists(conn: Any, *, thread_id: str, rule_key: str) -> bool:
-        row = conn.execute(
-            """
-            SELECT id
-            FROM followup_tasks
-            WHERE thread_id = ?
-              AND status = 'pending'
-              AND reason LIKE ?
-            LIMIT 1
-            """,
-            (thread_id, f"{rule_key}:%"),
-        ).fetchone()
-        return row is not None
-
-    def _count_recent_radar_followups(conn: Any, *, thread_id: str, hours: int) -> int:
-        normalized_hours = max(0, int(hours))
-        if normalized_hours <= 0:
-            return 0
-        row = conn.execute(
-            """
-            SELECT COUNT(*) AS cnt
-            FROM followup_tasks
-            WHERE thread_id = ?
-              AND reason LIKE 'radar:%'
-              AND created_at >= datetime('now', ?)
-            """,
-            (thread_id, f"-{normalized_hours} hours"),
-        ).fetchone()
-        return int(row["cnt"]) if row else 0
-
-    def _count_today_radar_followups(conn: Any, *, thread_id: str) -> int:
-        row = conn.execute(
-            """
-            SELECT COUNT(*) AS cnt
-            FROM followup_tasks
-            WHERE thread_id = ?
-              AND reason LIKE 'radar:%'
-              AND created_at >= date('now')
-            """,
-            (thread_id,),
-        ).fetchone()
-        return int(row["cnt"]) if row else 0
-
-    def _lead_radar_guard(
-        conn: Any,
-        *,
-        thread_id: str,
-        rule_key: str,
-    ) -> tuple[bool, str]:
-        if _pending_radar_followup_exists(conn, thread_id=thread_id, rule_key=rule_key):
-            return (False, "pending_rule")
-        if cfg.lead_radar_thread_cooldown_hours > 0:
-            recent_count = _count_recent_radar_followups(
-                conn,
-                thread_id=thread_id,
-                hours=cfg.lead_radar_thread_cooldown_hours,
-            )
-            if recent_count > 0:
-                return (False, "cooldown")
-        today_count = _count_today_radar_followups(conn, thread_id=thread_id)
-        if today_count >= int(cfg.lead_radar_daily_cap_per_thread):
-            return (False, "daily_cap")
-        return (True, "ok")
-
-    def _collect_no_reply_candidates(conn: Any, *, no_reply_hours: int, limit: int) -> list[Dict[str, Any]]:
-        cursor = conn.execute(
-            """
-            WITH last_inbound AS (
-                SELECT m.user_id, m.id AS inbound_message_id, m.created_at AS inbound_at, m.text AS inbound_text
-                FROM messages m
-                JOIN (
-                    SELECT user_id, MAX(id) AS max_id
-                    FROM messages
-                    WHERE direction = 'inbound'
-                    GROUP BY user_id
-                ) latest ON latest.max_id = m.id
-            ),
-            last_outbound AS (
-                SELECT user_id, MAX(id) AS outbound_message_id
-                FROM messages
-                WHERE direction = 'outbound'
-                GROUP BY user_id
-            )
-            SELECT li.user_id, ('tg:' || li.user_id) AS thread_id, li.inbound_message_id, li.inbound_at, li.inbound_text
-            FROM last_inbound li
-            LEFT JOIN last_outbound lo ON lo.user_id = li.user_id
-            WHERE (lo.outbound_message_id IS NULL OR lo.outbound_message_id < li.inbound_message_id)
-              AND julianday(li.inbound_at) <= julianday('now') - (? / 24.0)
-            ORDER BY li.inbound_message_id DESC
-            LIMIT ?
-            """,
-            (max(1, int(no_reply_hours)), max(1, int(limit))),
-        )
-        return [dict(row) for row in cursor.fetchall()]
-
-    def _collect_business_no_reply_candidates(conn: Any, *, no_reply_hours: int, limit: int) -> list[Dict[str, Any]]:
-        cursor = conn.execute(
-            """
-            WITH last_inbound AS (
-                SELECT
-                    bm.thread_key,
-                    bm.user_id,
-                    bm.id AS inbound_message_id,
-                    bm.created_at AS inbound_at,
-                    bm.text AS inbound_text
-                FROM business_messages bm
-                JOIN (
-                    SELECT thread_key, MAX(id) AS max_id
-                    FROM business_messages
-                    WHERE direction = 'inbound' AND is_deleted = 0
-                    GROUP BY thread_key
-                ) latest ON latest.max_id = bm.id
-            ),
-            last_outbound AS (
-                SELECT thread_key, MAX(id) AS outbound_message_id
-                FROM business_messages
-                WHERE direction = 'outbound' AND is_deleted = 0
-                GROUP BY thread_key
-            )
-            SELECT
-                li.user_id,
-                li.thread_key AS thread_id,
-                li.inbound_message_id,
-                li.inbound_at,
-                li.inbound_text
-            FROM last_inbound li
-            LEFT JOIN last_outbound lo ON lo.thread_key = li.thread_key
-            WHERE li.user_id IS NOT NULL
-              AND (lo.outbound_message_id IS NULL OR lo.outbound_message_id < li.inbound_message_id)
-              AND julianday(li.inbound_at) <= julianday('now') - (? / 24.0)
-            ORDER BY li.inbound_message_id DESC
-            LIMIT ?
-            """,
-            (max(1, int(no_reply_hours)), max(1, int(limit))),
-        )
-        return [dict(row) for row in cursor.fetchall()]
-
-    def _collect_call_no_next_step_candidates(
-        conn: Any,
-        *,
-        call_no_next_step_hours: int,
-        limit: int,
-    ) -> list[Dict[str, Any]]:
-        cursor = conn.execute(
-            """
-            WITH call_actions AS (
-                SELECT thread_id, MAX(id) AS max_id
-                FROM approval_actions
-                WHERE action = 'manual_action'
-                  AND (
-                    LOWER(COALESCE(payload_json, '')) LIKE '%call%'
-                    OR LOWER(COALESCE(payload_json, '')) LIKE '%звон%'
-                  )
-                GROUP BY thread_id
-            )
-            SELECT aa.id AS action_id, aa.user_id, aa.thread_id, aa.created_at, aa.payload_json
-            FROM approval_actions aa
-            JOIN call_actions ca ON ca.max_id = aa.id
-            WHERE julianday(aa.created_at) <= julianday('now') - (? / 24.0)
-            ORDER BY aa.id DESC
-            LIMIT ?
-            """,
-            (max(1, int(call_no_next_step_hours)), max(1, int(limit))),
-        )
-        rows: list[Dict[str, Any]] = []
-        for row in cursor.fetchall():
-            item = dict(row)
-            raw_payload = item.pop("payload_json", None)
-            try:
-                payload = json.loads(raw_payload) if isinstance(raw_payload, str) else {}
-            except json.JSONDecodeError:
-                payload = {}
-            item["payload"] = payload if isinstance(payload, dict) else {}
-            rows.append(item)
-        return rows
-
-    def _collect_stale_warm_candidates(conn: Any, *, stale_warm_days: int, limit: int) -> list[Dict[str, Any]]:
-        cursor = conn.execute(
-            """
-            WITH latest_scores AS (
-                SELECT thread_id, MAX(id) AS max_id
-                FROM lead_scores
-                GROUP BY thread_id
-            )
-            SELECT ls.id AS score_id, ls.user_id, ls.thread_id, ls.score, ls.temperature, ls.created_at
-            FROM lead_scores ls
-            JOIN latest_scores latest ON latest.max_id = ls.id
-            WHERE LOWER(ls.temperature) = 'warm'
-              AND julianday(ls.created_at) <= julianday('now') - ?
-            ORDER BY ls.id DESC
-            LIMIT ?
-            """,
-            (max(1, int(stale_warm_days)), max(1, int(limit))),
-        )
-        return [dict(row) for row in cursor.fetchall()]
-
-    def _safe_thread_id(value: object) -> str:
-        if not isinstance(value, str):
-            return ""
-        return value.strip()
-
-    def _build_radar_idempotency_key(*, rule_key: str, thread_id: str, source_token: str) -> str:
-        cleaned_rule = rule_key.replace(":", "_").strip("_")
-        cleaned_thread = _safe_thread_id(thread_id).replace(":", "_").replace("/", "_")
-        cleaned_token = (source_token or "").strip().replace(":", "_").replace("/", "_")
-        key = f"lr:{cleaned_rule}:{cleaned_thread}:{cleaned_token}"
-        return key[:120]
-
-    def _create_radar_artifacts(
-        conn: Any,
-        *,
-        user_id: int,
-        thread_id: str,
-        rule_key: str,
-        priority: str,
-        reason_human: str,
-        draft_text: str,
-        source_token: str,
-        trigger: str,
-    ) -> Dict[str, Any]:
-        task_id = create_followup_task(
-            conn,
-            user_id=user_id,
-            thread_id=thread_id,
-            priority=priority,
-            reason=f"{rule_key}: {reason_human}",
-            status="pending",
-            due_at=None,
-            assigned_to="lead_radar:auto",
-            related_draft_id=None,
-        )
-        create_approval_action(
-            conn,
-            draft_id=None,
-            user_id=user_id,
-            thread_id=thread_id,
-            action="followup_created",
-            actor="lead_radar:auto",
-            payload={
-                "source": "lead_radar",
-                "rule": rule_key,
-                "trigger": trigger,
-                "followup_task_id": task_id,
-            },
-        )
-
-        draft_id = create_reply_draft(
-            conn,
-            user_id=user_id,
-            thread_id=thread_id,
-            source_message_id=None,
-            draft_text=draft_text.strip(),
-            model_name=LEAD_RADAR_MODEL_NAME,
-            quality={"source": "lead_radar", "rule": rule_key, "trigger": trigger},
-            created_by="lead_radar:auto",
-            status="created",
-            idempotency_key=_build_radar_idempotency_key(
-                rule_key=rule_key,
-                thread_id=thread_id,
-                source_token=source_token,
-            ),
-        )
-        create_approval_action(
-            conn,
-            draft_id=draft_id,
-            user_id=user_id,
-            thread_id=thread_id,
-            action="draft_created",
-            actor="lead_radar:auto",
-            payload={
-                "source": "lead_radar",
-                "rule": rule_key,
-                "trigger": trigger,
-                "followup_task_id": task_id,
-            },
-        )
-        return {"task_id": int(task_id), "draft_id": int(draft_id)}
-
-    def _resolve_radar_limit(limit_override: Optional[int]) -> int:
-        max_cfg = max(1, int(cfg.lead_radar_max_items_per_run))
-        if limit_override is None:
-            return max_cfg
-        return max(1, min(int(limit_override), max_cfg))
-
-    lead_radar_lock: Optional[asyncio.Lock] = None
-
     async def run_lead_radar_once(
         *,
         trigger: str,
         dry_run: bool = False,
         limit_override: Optional[int] = None,
     ) -> Dict[str, Any]:
-        effective_limit = _resolve_radar_limit(limit_override)
-        if not cfg.enable_lead_radar:
-            return {
-                "ok": False,
-                "enabled": False,
-                "trigger": trigger,
-                "dry_run": bool(dry_run),
-                "limit": effective_limit,
-                "created_followups": 0,
-                "created_drafts": 0,
-                "scanned": 0,
-                "rules": {},
-            }
-
-        nonlocal lead_radar_lock
-        if lead_radar_lock is None:
-            lead_radar_lock = asyncio.Lock()
-
-        async with lead_radar_lock:
-            conn = get_connection(cfg.database_path)
-            try:
-                no_reply_candidates = _collect_no_reply_candidates(
-                    conn,
-                    no_reply_hours=cfg.lead_radar_no_reply_hours,
-                    limit=effective_limit,
-                )
-                business_no_reply_candidates = _collect_business_no_reply_candidates(
-                    conn,
-                    no_reply_hours=cfg.lead_radar_no_reply_hours,
-                    limit=effective_limit,
-                )
-                call_candidates = _collect_call_no_next_step_candidates(
-                    conn,
-                    call_no_next_step_hours=cfg.lead_radar_call_no_next_step_hours,
-                    limit=effective_limit,
-                )
-                stale_warm_candidates = _collect_stale_warm_candidates(
-                    conn,
-                    stale_warm_days=cfg.lead_radar_stale_warm_days,
-                    limit=effective_limit,
-                )
-
-                result: Dict[str, Any] = {
-                    "ok": True,
-                    "enabled": True,
-                    "trigger": trigger,
-                    "dry_run": bool(dry_run),
-                    "limit": effective_limit,
-                    "created_followups": 0,
-                    "created_drafts": 0,
-                    "scanned": len(no_reply_candidates)
-                    + len(business_no_reply_candidates)
-                    + len(call_candidates)
-                    + len(stale_warm_candidates),
-                    "rules": {
-                        LEAD_RADAR_RULE_NO_REPLY: {
-                            "candidates": len(no_reply_candidates) + len(business_no_reply_candidates),
-                            "created": 0,
-                            "skipped_pending_rule": 0,
-                            "skipped_outcome": 0,
-                            "skipped_cooldown": 0,
-                            "skipped_daily_cap": 0,
-                        },
-                        LEAD_RADAR_RULE_CALL_NO_NEXT_STEP: {
-                            "candidates": len(call_candidates),
-                            "created": 0,
-                            "skipped_pending_rule": 0,
-                            "skipped_outcome": 0,
-                            "skipped_cooldown": 0,
-                            "skipped_daily_cap": 0,
-                        },
-                        LEAD_RADAR_RULE_STALE_WARM: {
-                            "candidates": len(stale_warm_candidates),
-                            "created": 0,
-                            "skipped_pending_rule": 0,
-                            "skipped_outcome": 0,
-                            "skipped_cooldown": 0,
-                            "skipped_daily_cap": 0,
-                        },
-                    },
-                }
-
-                remaining = effective_limit
-                no_reply_all_candidates = [*no_reply_candidates, *business_no_reply_candidates]
-                for candidate in no_reply_all_candidates:
-                    if remaining <= 0:
-                        break
-                    user_id = int(candidate.get("user_id") or 0)
-                    if user_id <= 0:
-                        continue
-                    thread_id = _safe_thread_id(candidate.get("thread_id")) or _thread_id_from_user_id(user_id)
-                    if get_conversation_outcome(conn, thread_id=thread_id) is not None:
-                        result["rules"][LEAD_RADAR_RULE_NO_REPLY]["skipped_outcome"] += 1
-                        continue
-                    allowed, skip_reason = _lead_radar_guard(
-                        conn,
-                        thread_id=thread_id,
-                        rule_key=LEAD_RADAR_RULE_NO_REPLY,
-                    )
-                    if not allowed:
-                        if skip_reason == "pending_rule":
-                            result["rules"][LEAD_RADAR_RULE_NO_REPLY]["skipped_pending_rule"] += 1
-                        elif skip_reason == "cooldown":
-                            result["rules"][LEAD_RADAR_RULE_NO_REPLY]["skipped_cooldown"] += 1
-                        elif skip_reason == "daily_cap":
-                            result["rules"][LEAD_RADAR_RULE_NO_REPLY]["skipped_daily_cap"] += 1
-                        continue
-                    inbound_text = str(candidate.get("inbound_text") or "").strip()
-                    reason_human = f"Нет ответа менеджера после входящего сообщения более {cfg.lead_radar_no_reply_hours} ч."
-                    draft_text = (
-                        "Здравствуйте! Спасибо за ожидание. Возвращаюсь к вашему запросу.\n\n"
-                        "Хочу уточнить 1-2 детали и сразу предложить конкретный следующий шаг под вашу цель.\n\n"
-                        f"Последний запрос клиента: {inbound_text or 'без текста'}"
-                    )
-                    if dry_run:
-                        result["rules"][LEAD_RADAR_RULE_NO_REPLY]["created"] += 1
-                        remaining -= 1
-                        continue
-                    created = _create_radar_artifacts(
-                        conn,
-                        user_id=user_id,
-                        thread_id=thread_id,
-                        rule_key=LEAD_RADAR_RULE_NO_REPLY,
-                        priority="hot",
-                        reason_human=reason_human,
-                        draft_text=draft_text,
-                        source_token=str(candidate.get("inbound_message_id") or "na"),
-                        trigger=trigger,
-                    )
-                    result["rules"][LEAD_RADAR_RULE_NO_REPLY]["created"] += 1
-                    result["created_followups"] += 1
-                    result["created_drafts"] += 1 if created.get("draft_id") else 0
-                    remaining -= 1
-
-                for candidate in call_candidates:
-                    if remaining <= 0:
-                        break
-                    user_id = int(candidate.get("user_id") or 0)
-                    thread_id = _safe_thread_id(candidate.get("thread_id"))
-                    if user_id <= 0 or not thread_id:
-                        continue
-                    if get_conversation_outcome(conn, thread_id=thread_id) is not None:
-                        result["rules"][LEAD_RADAR_RULE_CALL_NO_NEXT_STEP]["skipped_outcome"] += 1
-                        continue
-                    allowed, skip_reason = _lead_radar_guard(
-                        conn,
-                        thread_id=thread_id,
-                        rule_key=LEAD_RADAR_RULE_CALL_NO_NEXT_STEP,
-                    )
-                    if not allowed:
-                        if skip_reason == "pending_rule":
-                            result["rules"][LEAD_RADAR_RULE_CALL_NO_NEXT_STEP]["skipped_pending_rule"] += 1
-                        elif skip_reason == "cooldown":
-                            result["rules"][LEAD_RADAR_RULE_CALL_NO_NEXT_STEP]["skipped_cooldown"] += 1
-                        elif skip_reason == "daily_cap":
-                            result["rules"][LEAD_RADAR_RULE_CALL_NO_NEXT_STEP]["skipped_daily_cap"] += 1
-                        continue
-                    action_time = str(candidate.get("created_at") or "").strip()
-                    reason_human = (
-                        "После звонка не зафиксирован следующий шаг "
-                        f"более {cfg.lead_radar_call_no_next_step_hours} ч."
-                    )
-                    draft_text = (
-                        "Спасибо за разговор. Подтверждаю, что зафиксировал ваш запрос.\n\n"
-                        "Предлагаю согласовать удобное время короткого follow-up, "
-                        "чтобы закрыть оставшиеся вопросы и выбрать следующий шаг.\n\n"
-                        f"Контекст звонка (время события): {action_time or 'не указано'}"
-                    )
-                    if dry_run:
-                        result["rules"][LEAD_RADAR_RULE_CALL_NO_NEXT_STEP]["created"] += 1
-                        remaining -= 1
-                        continue
-                    created = _create_radar_artifacts(
-                        conn,
-                        user_id=user_id,
-                        thread_id=thread_id,
-                        rule_key=LEAD_RADAR_RULE_CALL_NO_NEXT_STEP,
-                        priority="hot",
-                        reason_human=reason_human,
-                        draft_text=draft_text,
-                        source_token=str(candidate.get("action_id") or "na"),
-                        trigger=trigger,
-                    )
-                    result["rules"][LEAD_RADAR_RULE_CALL_NO_NEXT_STEP]["created"] += 1
-                    result["created_followups"] += 1
-                    result["created_drafts"] += 1 if created.get("draft_id") else 0
-                    remaining -= 1
-
-                for candidate in stale_warm_candidates:
-                    if remaining <= 0:
-                        break
-                    user_id = int(candidate.get("user_id") or 0)
-                    thread_id = _safe_thread_id(candidate.get("thread_id"))
-                    if user_id <= 0 or not thread_id:
-                        continue
-                    if get_conversation_outcome(conn, thread_id=thread_id) is not None:
-                        result["rules"][LEAD_RADAR_RULE_STALE_WARM]["skipped_outcome"] += 1
-                        continue
-                    allowed, skip_reason = _lead_radar_guard(
-                        conn,
-                        thread_id=thread_id,
-                        rule_key=LEAD_RADAR_RULE_STALE_WARM,
-                    )
-                    if not allowed:
-                        if skip_reason == "pending_rule":
-                            result["rules"][LEAD_RADAR_RULE_STALE_WARM]["skipped_pending_rule"] += 1
-                        elif skip_reason == "cooldown":
-                            result["rules"][LEAD_RADAR_RULE_STALE_WARM]["skipped_cooldown"] += 1
-                        elif skip_reason == "daily_cap":
-                            result["rules"][LEAD_RADAR_RULE_STALE_WARM]["skipped_daily_cap"] += 1
-                        continue
-                    score = float(candidate.get("score") or 0.0)
-                    score_created_at = str(candidate.get("created_at") or "").strip()
-                    reason_human = (
-                        f"Теплый лид без активности более {cfg.lead_radar_stale_warm_days} дней "
-                        "(нужна реактивация)."
-                    )
-                    draft_text = (
-                        "Возвращаюсь к вашему запросу и подготовил обновленный следующий шаг.\n\n"
-                        "Если вам удобно, можем быстро сверить текущую цель и выбрать оптимальную программу.\n\n"
-                        f"Текущий warm-score: {score:.1f}; дата оценки: {score_created_at or 'не указана'}."
-                    )
-                    if dry_run:
-                        result["rules"][LEAD_RADAR_RULE_STALE_WARM]["created"] += 1
-                        remaining -= 1
-                        continue
-                    created = _create_radar_artifacts(
-                        conn,
-                        user_id=user_id,
-                        thread_id=thread_id,
-                        rule_key=LEAD_RADAR_RULE_STALE_WARM,
-                        priority="warm",
-                        reason_human=reason_human,
-                        draft_text=draft_text,
-                        source_token=str(candidate.get("score_id") or "na"),
-                        trigger=trigger,
-                    )
-                    result["rules"][LEAD_RADAR_RULE_STALE_WARM]["created"] += 1
-                    result["created_followups"] += 1
-                    result["created_drafts"] += 1 if created.get("draft_id") else 0
-                    remaining -= 1
-            finally:
-                conn.close()
-        return result
+        return await revenue_ops.run_lead_radar_once(
+            trigger=trigger,
+            dry_run=dry_run,
+            limit_override=limit_override,
+        )
 
     async def lead_radar_loop(app_instance: FastAPI) -> None:
         event = getattr(app_instance.state, "lead_radar_event", None)
@@ -2141,280 +1400,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             finally:
                 event.clear()
 
-    def _extract_mango_user_and_thread(
-        conn: Any,
-        *,
-        event: MangoCallEvent,
-    ) -> tuple[Optional[int], Optional[str]]:
-        return extract_mango_user_and_thread(conn, event=event)
-
-    mango_ingest_lock: Optional[asyncio.Lock] = None
-
     async def ingest_mango_event(
         *,
         event: MangoCallEvent,
         source: str,
         existing_event_row_id: Optional[int] = None,
     ) -> Dict[str, Any]:
-        nonlocal mango_ingest_lock
-        if mango_ingest_lock is None:
-            mango_ingest_lock = asyncio.Lock()
-
-        async with mango_ingest_lock:
-            conn = get_connection(cfg.database_path)
-            try:
-                if isinstance(existing_event_row_id, int) and existing_event_row_id > 0:
-                    event_row_id = int(existing_event_row_id)
-                    updated = update_mango_event_status(
-                        conn,
-                        event_row_id=event_row_id,
-                        status="processing",
-                        error_text=None,
-                    )
-                    if not updated:
-                        raise ValueError(f"Mango event row {event_row_id} not found.")
-                else:
-                    state = create_or_get_mango_event(
-                        conn,
-                        event_id=event.event_id,
-                        call_external_id=event.call_id,
-                        source=source,
-                        payload=event.payload,
-                    )
-                    event_row_id = int(state.get("id") or 0)
-                    if not bool(state.get("is_new")):
-                        return {
-                            "ok": True,
-                            "duplicate": True,
-                            "event_row_id": event_row_id,
-                            "event_id": event.event_id,
-                            "call_external_id": event.call_id,
-                        }
-                    update_mango_event_status(conn, event_row_id=event_row_id, status="processing")
-                user_id, thread_id = _extract_mango_user_and_thread(conn, event=event)
-            finally:
-                conn.close()
-
-            try:
-                recording_url = event.recording_url or ""
-                transcript_hint = event.transcript_hint or ""
-                if not recording_url and not transcript_hint:
-                    transcript_hint = (
-                        "Звонок импортирован из Mango. Нет ссылки на запись, нужен ручной конспект менеджера."
-                    )
-                process_result = await _process_manual_call_upload(
-                    user_id=user_id,
-                    thread_id=thread_id,
-                    recording_url=recording_url,
-                    transcript_hint=transcript_hint,
-                    audio_file=None,
-                    source_type_override="mango",
-                    source_ref_override=event.call_id or event.event_id,
-                    created_by="mango:auto",
-                    action_source="mango_auto_ingest",
-                    assigned_to="mango:auto",
-                )
-                conn_done = get_connection(cfg.database_path)
-                try:
-                    update_mango_event_status(conn_done, event_row_id=event_row_id, status="done")
-                finally:
-                    conn_done.close()
-                return {
-                    "ok": True,
-                    "duplicate": False,
-                    "retried": isinstance(existing_event_row_id, int) and existing_event_row_id > 0,
-                    "event_row_id": event_row_id,
-                    "event_id": event.event_id,
-                    "call_external_id": event.call_id,
-                    "call": process_result.get("item"),
-                }
-            except Exception as exc:
-                conn_failed = get_connection(cfg.database_path)
-                try:
-                    update_mango_event_status(
-                        conn_failed,
-                        event_row_id=event_row_id,
-                        status="failed",
-                        error_text=str(exc)[:700],
-                    )
-                finally:
-                    conn_failed.close()
-                raise
-
-    async def _fetch_mango_poll_events_with_retries(
-        *,
-        client: MangoClient,
-        since: str,
-        limit: int,
-    ) -> tuple[list[MangoCallEvent], int]:
-        return await fetch_mango_poll_events_with_retries(
-            client=client,
-            since=since,
-            limit=limit,
-            attempts=cfg.mango_poll_retry_attempts,
-            base_backoff_seconds=cfg.mango_poll_retry_backoff_seconds,
+        return await revenue_ops.ingest_mango_event(
+            event=event,
+            source=source,
+            existing_event_row_id=existing_event_row_id,
         )
 
-    def _event_from_mango_record(item: Dict[str, Any]) -> Optional[MangoCallEvent]:
-        return event_from_mango_record(item)
-
     async def run_mango_poll_once(*, trigger: str, limit_override: Optional[int] = None) -> Dict[str, Any]:
-        if not _mango_ingest_enabled():
-            return {
-                "ok": False,
-                "enabled": False,
-                "trigger": trigger,
-                "processed": 0,
-                "created": 0,
-                "duplicates": 0,
-                "failed": 0,
-                "attempts": 0,
-                "cleanup": _cleanup_old_call_files(),
-            }
-
-        try:
-            client = _build_mango_client()
-        except MangoClientError as exc:
-            return {
-                "ok": False,
-                "enabled": True,
-                "trigger": trigger,
-                "error": str(exc),
-                "processed": 0,
-                "created": 0,
-                "duplicates": 0,
-                "failed": 0,
-                "attempts": 0,
-                "cleanup": _cleanup_old_call_files(),
-            }
-
-        conn = get_connection(cfg.database_path)
-        try:
-            since = get_latest_mango_event_created_at(conn)
-        finally:
-            conn.close()
-
-        effective_limit = max(1, min(int(limit_override or cfg.mango_poll_limit_per_run), 500))
-        try:
-            events, attempts_used = await _fetch_mango_poll_events_with_retries(
-                client=client,
-                since=since,
-                limit=effective_limit,
-            )
-        except MangoClientError as exc:
-            return {
-                "ok": False,
-                "enabled": True,
-                "trigger": trigger,
-                "error": str(exc),
-                "processed": 0,
-                "created": 0,
-                "duplicates": 0,
-                "failed": 0,
-                "attempts": max(1, int(cfg.mango_poll_retry_attempts)),
-                "cleanup": _cleanup_old_call_files(),
-            }
-
-        processed = 0
-        created = 0
-        duplicates = 0
-        failed = 0
-        for event in events:
-            processed += 1
-            try:
-                result = await ingest_mango_event(event=event, source=f"poll:{trigger}")
-                if result.get("duplicate"):
-                    duplicates += 1
-                else:
-                    created += 1
-            except Exception:
-                failed += 1
-                logger.exception("Mango poll event processing failed (event_id=%s)", event.event_id)
-
-        cleanup_result = _cleanup_old_call_files()
-        return {
-            "ok": failed == 0,
-            "enabled": True,
-            "trigger": trigger,
-            "since": since,
-            "limit": effective_limit,
-            "attempts": attempts_used,
-            "fetched": len(events),
-            "processed": processed,
-            "created": created,
-            "duplicates": duplicates,
-            "failed": failed,
-            "cleanup": cleanup_result,
-        }
+        return await revenue_ops.run_mango_poll_once(trigger=trigger, limit_override=limit_override)
 
     async def run_mango_retry_failed_once(*, trigger: str, limit_override: Optional[int] = None) -> Dict[str, Any]:
-        if not _mango_ingest_enabled():
-            return {
-                "ok": False,
-                "enabled": False,
-                "trigger": trigger,
-                "processed": 0,
-                "retried": 0,
-                "failed": 0,
-                "duplicates": 0,
-                "cleanup": _cleanup_old_call_files(),
-            }
-
-        effective_limit = max(1, min(int(limit_override or cfg.mango_retry_failed_limit_per_run), 500))
-        conn = get_connection(cfg.database_path)
-        try:
-            items = list_mango_events(conn, status="failed", limit=effective_limit, newest_first=False)
-        finally:
-            conn.close()
-
-        processed = 0
-        retried = 0
-        failed = 0
-        duplicates = 0
-        for item in items:
-            processed += 1
-            event_row_id = int(item.get("id") or 0)
-            event = _event_from_mango_record(item)
-            if event is None:
-                failed += 1
-                conn_failed = get_connection(cfg.database_path)
-                try:
-                    update_mango_event_status(
-                        conn_failed,
-                        event_row_id=event_row_id,
-                        status="failed",
-                        error_text="retry_parse_failed",
-                    )
-                finally:
-                    conn_failed.close()
-                continue
-            try:
-                result = await ingest_mango_event(
-                    event=event,
-                    source=f"retry:{trigger}",
-                    existing_event_row_id=event_row_id,
-                )
-                if result.get("duplicate"):
-                    duplicates += 1
-                else:
-                    retried += 1
-            except Exception:
-                failed += 1
-                logger.exception("Mango retry-failed event processing failed (event_id=%s)", event.event_id)
-
-        cleanup_result = _cleanup_old_call_files()
-        return {
-            "ok": failed == 0,
-            "enabled": True,
-            "trigger": trigger,
-            "limit": effective_limit,
-            "fetched": len(items),
-            "processed": processed,
-            "retried": retried,
-            "duplicates": duplicates,
-            "failed": failed,
-            "cleanup": cleanup_result,
-        }
+        return await revenue_ops.run_mango_retry_failed_once(trigger=trigger, limit_override=limit_override)
 
     async def mango_poll_loop(app_instance: FastAPI) -> None:
         event = getattr(app_instance.state, "mango_poll_event", None)
@@ -2604,167 +1606,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         action_source: str = "call_copilot",
         assigned_to: str = "sales:manual",
     ) -> Dict[str, Any]:
-        has_file = audio_file is not None and bool((audio_file.filename or "").strip())
-        has_url = bool((recording_url or "").strip())
-        has_hint = bool((transcript_hint or "").strip())
-        if not has_file and not has_url and not has_hint:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Provide audio_file, recording_url or transcript_hint.",
-            )
-
-        stored_file_path: Optional[Path] = None
-        transcript_text = ""
-        source_type = (source_type_override or "").strip() or ("url" if has_url and not has_file else "upload")
-        source_ref = (source_ref_override or "").strip() or (recording_url or "").strip() or None
-        if has_file and audio_file is not None:
-            stored_file_path = await _store_call_upload_file(audio_file)
-            if stored_file_path is None:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Uploaded file is empty.",
-                )
-            transcript_text = extract_transcript_from_file(stored_file_path)
-            if not source_ref:
-                source_ref = (audio_file.filename or "").strip() or None
-
-        conn = get_connection(cfg.database_path)
-        try:
-            actor_name = f"{(action_source or 'call_copilot').strip()}:auto"
-            resolved_user_id, resolved_thread_id = _resolve_call_thread_and_user(
-                conn,
-                user_id_input=user_id,
-                thread_id_input=thread_id,
-            )
-            call_id = create_call_record(
-                conn,
-                user_id=resolved_user_id,
-                thread_id=resolved_thread_id,
-                source_type=source_type,
-                source_ref=source_ref,
-                file_path=str(stored_file_path) if stored_file_path else None,
-                status="queued",
-                created_by=created_by,
-            )
-            update_call_record_status(conn, call_id=call_id, status="processing")
-
-            effective_transcript = transcript_text or build_transcript_fallback(
-                source_type=source_type,
-                source_ref=source_ref,
-                transcript_hint=transcript_hint,
-            )
-            upsert_call_transcript(
-                conn,
-                call_id=call_id,
-                provider="heuristic",
-                transcript_text=effective_transcript,
-                language="ru",
-                confidence=0.55 if transcript_text else 0.4,
-            )
-
-            insights = build_call_insights(effective_transcript)
-            upsert_call_summary(
-                conn,
-                call_id=call_id,
-                summary_text=insights.summary_text,
-                interests=insights.interests,
-                objections=insights.objections,
-                next_best_action=insights.next_best_action,
-                warmth=insights.warmth,
-                confidence=insights.confidence,
-                model_name=CALL_COPILOT_MODEL_NAME,
-            )
-
-            lead_score_id = create_lead_score(
-                conn,
-                user_id=resolved_user_id,
-                thread_id=resolved_thread_id,
-                score=insights.score,
-                temperature=insights.warmth,
-                confidence=insights.confidence,
-                factors={
-                    "source": action_source,
-                    "interests": insights.interests,
-                    "objections": insights.objections,
-                },
-            )
-            followup_id = create_followup_task(
-                conn,
-                user_id=resolved_user_id,
-                thread_id=resolved_thread_id,
-                priority=_priority_from_warmth(insights.warmth),
-                reason=f"{action_source}: {insights.next_best_action}",
-                status="pending",
-                due_at=None,
-                assigned_to=assigned_to,
-                related_draft_id=None,
-            )
-            create_approval_action(
-                conn,
-                draft_id=None,
-                user_id=resolved_user_id,
-                thread_id=resolved_thread_id,
-                action="manual_action",
-                actor=actor_name,
-                payload={
-                    "source": action_source,
-                    "call_id": call_id,
-                    "followup_task_id": followup_id,
-                    "lead_score_id": lead_score_id,
-                    "next_best_action": insights.next_best_action,
-                },
-            )
-            create_approval_action(
-                conn,
-                draft_id=None,
-                user_id=resolved_user_id,
-                thread_id=resolved_thread_id,
-                action="followup_created",
-                actor=actor_name,
-                payload={
-                    "source": action_source,
-                    "call_id": call_id,
-                    "followup_task_id": followup_id,
-                },
-            )
-            create_approval_action(
-                conn,
-                draft_id=None,
-                user_id=resolved_user_id,
-                thread_id=resolved_thread_id,
-                action="lead_scored",
-                actor=actor_name,
-                payload={
-                    "source": action_source,
-                    "call_id": call_id,
-                    "lead_score_id": lead_score_id,
-                    "temperature": insights.warmth,
-                    "score": insights.score,
-                },
-            )
-            update_call_record_status(conn, call_id=call_id, status="done")
-            item = get_call_record(conn, call_id=call_id)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            if "call_id" in locals():
-                update_call_record_status(
-                    conn,
-                    call_id=int(call_id),
-                    status="failed",
-                    error_text=str(exc),
-                )
-            logger.exception("Call copilot processing failed")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Call processing failed: {exc}",
-            ) from exc
-        finally:
-            conn.close()
-            if audio_file is not None:
-                await audio_file.close()
-
-        return {"ok": True, "item": item}
+        return await revenue_ops.process_manual_call_upload(
+            user_id=user_id,
+            thread_id=thread_id,
+            recording_url=recording_url,
+            transcript_hint=transcript_hint,
+            audio_file=audio_file,
+            source_type_override=source_type_override,
+            source_ref_override=source_ref_override,
+            created_by=created_by,
+            action_source=action_source,
+            assigned_to=assigned_to,
+        )
 
     app.include_router(
         build_admin_inbox_router(

@@ -1089,12 +1089,35 @@ def build_admin_inbox_router(
                         "</div>"
                     )
                 else:
-                    crm_context_html = (
-                        "<div class='card'>"
-                        "<b>Match:</b> no<br/>"
-                        "<span class='muted'>Контакт не найден в CRM по доступным safe-полям.</span>"
-                        "</div>"
-                    )
+                    crm_error = str(crm_context.get("error") or "").strip().lower()
+                    if crm_error == "tallanto_read_only_disabled":
+                        crm_context_html = (
+                            "<div class='card'>"
+                            "<b>CRM error:</b> Tallanto read-only mode отключен.<br/>"
+                            "<span class='muted'>Включите TALLANTO_READ_ONLY=1 для безопасного enrichment.</span>"
+                            "</div>"
+                        )
+                    elif crm_error == "tallanto_not_configured":
+                        crm_context_html = (
+                            "<div class='card'>"
+                            "<b>CRM error:</b> Tallanto не настроен.<br/>"
+                            "<span class='muted'>Заполните TALLANTO_API_URL и TALLANTO_API_TOKEN.</span>"
+                            "</div>"
+                        )
+                    elif crm_error == "lookup_candidates_empty":
+                        crm_context_html = (
+                            "<div class='card'>"
+                            "<b>CRM note:</b> Недостаточно данных для поиска контакта.<br/>"
+                            "<span class='muted'>Нужен telegram_id/username или другой идентификатор.</span>"
+                            "</div>"
+                        )
+                    else:
+                        crm_context_html = (
+                            "<div class='card'>"
+                            "<b>Match:</b> no<br/>"
+                            "<span class='muted'>Контакт не найден в CRM по доступным safe-полям.</span>"
+                            "</div>"
+                        )
             else:
                 crm_context_html = (
                     "<div class='card'>"
