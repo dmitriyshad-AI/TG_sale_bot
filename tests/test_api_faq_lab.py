@@ -195,6 +195,33 @@ class ApiFaqLabTests(unittest.TestCase):
 
             self.assertGreaterEqual(refresh_mock.call_count, 1)
 
+    def test_faq_lab_ui_post_requires_origin_when_csrf_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "faq_csrf.db"
+            settings = self._settings(db_path)
+            settings.admin_ui_csrf_enabled = True
+            app = create_app(settings)
+
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(conn, channel="telegram", external_id="faq-csrf-user")
+                db.log_message(conn, user_id, "inbound", "Как поступить в МФТИ?", {})
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            no_origin = client.post("/admin/ui/faq-lab/run", auth=auth, data={"limit": 10})
+            self.assertEqual(no_origin.status_code, 403)
+
+            with_origin = client.post(
+                "/admin/ui/faq-lab/run",
+                auth=auth,
+                data={"limit": 10},
+                headers={"Origin": "http://testserver"},
+            )
+            self.assertIn(with_origin.status_code, {200, 303})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -702,6 +702,37 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(len(drafts), 1)
         self.assertEqual(drafts[0]["draft_text"], "Первый вариант")
 
+    def test_claim_reply_draft_for_send_is_atomic_and_sets_sending(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="rev-claim")
+        thread_id = f"tg:{user_id}"
+        draft_id = db.create_reply_draft(
+            self.conn,
+            user_id=user_id,
+            thread_id=thread_id,
+            draft_text="Черновик для отправки",
+            model_name="gpt-test",
+        )
+        self.assertTrue(db.update_reply_draft_status(self.conn, draft_id=draft_id, status="approved", actor="admin"))
+
+        claimed = db.claim_reply_draft_for_send(self.conn, draft_id=draft_id, actor="sender-1")
+        self.assertIsNotNone(claimed)
+        assert claimed is not None
+        self.assertEqual(claimed["status"], "sending")
+        self.assertEqual(claimed["sent_by"], "sender-1")
+
+        second_claim = db.claim_reply_draft_for_send(self.conn, draft_id=draft_id, actor="sender-2")
+        self.assertIsNone(second_claim)
+
+    def test_claim_reply_draft_for_send_returns_none_for_non_approved_draft(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="rev-claim-2")
+        draft_id = db.create_reply_draft(
+            self.conn,
+            user_id=user_id,
+            thread_id=f"tg:{user_id}",
+            draft_text="Неаппрувнутый черновик",
+        )
+        self.assertIsNone(db.claim_reply_draft_for_send(self.conn, draft_id=draft_id, actor="sender"))
+
     def test_business_tables_roundtrip_with_delete_marker(self) -> None:
         owner_id = db.get_or_create_user(self.conn, channel="telegram", external_id="owner-1")
         lead_user_id = db.get_or_create_user(

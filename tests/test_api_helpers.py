@@ -1,9 +1,11 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 try:
     from sales_agent.sales_api.main import (
         AssistantCriteriaPayload,
+        _build_rate_limiter,
         _assistant_mode,
         _criteria_from_payload,
         _extract_bearer_token,
@@ -14,6 +16,7 @@ try:
         _safe_user_payload,
     )
     from sales_agent.sales_core.catalog import SearchCriteria
+    from sales_agent.sales_core.rate_limit import InMemoryRateLimiter
 
     HAS_API = True
 except ModuleNotFoundError:
@@ -91,6 +94,36 @@ class ApiHelpersTests(unittest.TestCase):
         self.assertEqual(_request_client_ip(request_forwarded), "203.0.113.10")
         self.assertEqual(_request_client_ip(request_client), "127.0.0.2")
         self.assertEqual(_request_client_ip(request_unknown), "unknown")
+
+    def test_build_rate_limiter_uses_memory_backend(self) -> None:
+        limiter = _build_rate_limiter(
+            backend="memory",
+            window_seconds=60,
+            redis_url="redis://localhost:6379/0",
+            key_prefix="assistant",
+        )
+        self.assertIsInstance(limiter, InMemoryRateLimiter)
+
+    def test_build_rate_limiter_falls_back_to_memory_when_redis_fails(self) -> None:
+        with patch("sales_agent.sales_api.main.RedisRateLimiter", side_effect=RuntimeError("redis down")):
+            limiter = _build_rate_limiter(
+                backend="redis",
+                window_seconds=60,
+                redis_url="redis://localhost:6379/0",
+                key_prefix="assistant",
+            )
+        self.assertIsInstance(limiter, InMemoryRateLimiter)
+
+    def test_build_rate_limiter_returns_redis_when_available(self) -> None:
+        fake_limiter = object()
+        with patch("sales_agent.sales_api.main.RedisRateLimiter", return_value=fake_limiter):
+            limiter = _build_rate_limiter(
+                backend="redis",
+                window_seconds=60,
+                redis_url="redis://localhost:6379/0",
+                key_prefix="assistant",
+            )
+        self.assertIs(limiter, fake_limiter)
 
 
 if __name__ == "__main__":

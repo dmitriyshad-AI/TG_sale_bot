@@ -10,7 +10,7 @@ import secrets
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional
 from uuid import uuid4
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,6 +32,7 @@ from sales_agent.sales_core.copilot import run_copilot_from_file
 from sales_agent.sales_core.crm import build_crm_client
 from sales_agent.sales_core.db import (
     clear_call_record_file_path,
+    claim_reply_draft_for_send,
     claim_webhook_update,
     count_mango_events,
     count_webhook_updates_by_status,
@@ -87,7 +88,7 @@ from sales_agent.sales_core.db import (
     upsert_crm_cache,
 )
 from sales_agent.sales_core.runtime_diagnostics import build_runtime_diagnostics
-from sales_agent.sales_core.rate_limit import InMemoryRateLimiter
+from sales_agent.sales_core.rate_limit import InMemoryRateLimiter, RateLimiter, RedisRateLimiter
 from sales_agent.sales_core.tallanto_readonly import (
     TallantoReadOnlyClient,
     normalize_tallanto_fields,
@@ -664,17 +665,45 @@ def _format_next_start_text(product: object) -> str:
     return target.strftime("%d.%m.%Y")
 
 
+def _build_rate_limiter(
+    *,
+    backend: str,
+    window_seconds: int,
+    redis_url: str,
+    key_prefix: str,
+) -> RateLimiter:
+    normalized_backend = (backend or "").strip().lower()
+    if normalized_backend == "redis":
+        try:
+            return RedisRateLimiter(
+                redis_url=redis_url,
+                window_seconds=window_seconds,
+                key_prefix=key_prefix,
+            )
+        except Exception as exc:
+            logger.warning("Redis rate limiter fallback to in-memory (%s)", exc)
+    return InMemoryRateLimiter(window_seconds=window_seconds)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or get_settings()
     init_db(cfg.database_path)
+    if cfg.app_env == "production" and cfg.telegram_mode == "webhook" and not cfg.telegram_webhook_secret:
+        raise RuntimeError("TELEGRAM_WEBHOOK_SECRET is required in production when TELEGRAM_MODE=webhook.")
     webhook_path = cfg.telegram_webhook_path if cfg.telegram_webhook_path.startswith("/") else f"/{cfg.telegram_webhook_path}"
     mango_webhook_path = cfg.mango_webhook_path if cfg.mango_webhook_path.startswith("/") else f"/{cfg.mango_webhook_path}"
     telegram_application = None
-    assistant_rate_limiter = InMemoryRateLimiter(
+    assistant_rate_limiter = _build_rate_limiter(
+        backend=cfg.rate_limit_backend,
         window_seconds=cfg.assistant_rate_limit_window_seconds,
+        redis_url=cfg.redis_url,
+        key_prefix="assistant_rate_limit",
     )
-    crm_rate_limiter = InMemoryRateLimiter(
+    crm_rate_limiter = _build_rate_limiter(
+        backend=cfg.rate_limit_backend,
         window_seconds=cfg.crm_rate_limit_window_seconds,
+        redis_url=cfg.redis_url,
+        key_prefix="crm_rate_limit",
     )
     user_webapp_dist = Path(cfg.webapp_dist_path)
     user_webapp_index = user_webapp_dist / "index.html"
@@ -947,10 +976,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return credentials.username
 
+    def _enforce_admin_ui_csrf(request: Request) -> None:
+        if not cfg.admin_ui_csrf_enabled:
+            return
+        origin = request.headers.get("Origin", "").strip()
+        referer = request.headers.get("Referer", "").strip()
+        source = origin or referer
+        if not source:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Missing Origin/Referer for admin UI POST request.",
+            )
+
+        parsed = urlparse(source)
+        source_host = (parsed.hostname or "").strip().lower()
+        if not source_host:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid Origin/Referer host for admin UI POST request.",
+            )
+
+        allowed_hosts: set[str] = set()
+        request_host = (request.url.hostname or "").strip().lower()
+        if request_host:
+            allowed_hosts.add(request_host)
+        app_host = (urlparse(str(request.base_url)).hostname or "").strip().lower()
+        if app_host:
+            allowed_hosts.add(app_host)
+        if cfg.admin_webapp_url:
+            allowed_hosts.add((urlparse(cfg.admin_webapp_url).hostname or "").strip().lower())
+
+        if source_host not in {host for host in allowed_hosts if host}:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="CSRF check failed for admin UI POST request.",
+            )
+
     def _enforce_rate_limit(
         *,
         request: Request,
-        limiter: InMemoryRateLimiter,
+        limiter: RateLimiter,
         key: str,
         limit: int,
         scope: str,
@@ -1229,11 +1294,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> Dict[str, Any]:
         parsed_thread = _parse_business_thread_key(str(draft.get("thread_id") or ""))
         if parsed_thread is None:
-            return {
-                "transport": "manual",
-                "sent_message_id": None,
-                "message_ids": [],
-            }
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Draft thread is not Telegram Business. Use manual confirmation with sent_message_id.",
+            )
 
         if not cfg.telegram_bot_token:
             raise HTTPException(
@@ -2407,6 +2471,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         build_faq_lab_router(
             db_path=cfg.database_path,
             require_admin_dependency=require_admin,
+            enforce_ui_csrf=_enforce_admin_ui_csrf,
             render_page=render_page,
             enabled=cfg.enable_faq_lab,
             scheduler_enabled=cfg.faq_lab_scheduler_enabled,
@@ -2420,6 +2485,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         build_director_router(
             db_path=cfg.database_path,
             require_admin_dependency=require_admin,
+            enforce_ui_csrf=_enforce_admin_ui_csrf,
             render_page=render_page,
             enabled=cfg.enable_director_agent,
         )
@@ -3147,17 +3213,64 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             current_status = str(draft.get("status") or "")
             if current_status == "sent":
                 return {"ok": True, "already_sent": True, "draft": draft}
+            if current_status == "sending":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Draft {draft_id} is already being sent by another request.",
+                )
             if current_status != "approved":
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=f"Draft {draft_id} must be approved before send.",
                 )
 
-            delivery = await _send_business_draft_and_log(
-                conn,
-                draft=draft,
-                actor=admin_username,
-            )
+            claimed = claim_reply_draft_for_send(conn, draft_id=draft_id, actor=admin_username)
+            if claimed is None:
+                latest = get_reply_draft(conn, draft_id)
+                if latest and str(latest.get("status") or "") == "sent":
+                    return {"ok": True, "already_sent": True, "draft": latest}
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Draft {draft_id} was modified by another request. Retry.",
+                )
+
+            parsed_thread = _parse_business_thread_key(str(claimed.get("thread_id") or ""))
+            if parsed_thread is None:
+                manual_sent_message_id = (payload.sent_message_id or "").strip()
+                if not manual_sent_message_id:
+                    update_reply_draft_status(
+                        conn,
+                        draft_id=draft_id,
+                        status="approved",
+                        actor=admin_username,
+                        last_error="manual_confirmation_required",
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Manual send requires sent_message_id for non-business threads.",
+                    )
+                delivery = {
+                    "transport": "manual_confirmed",
+                    "sent_message_id": manual_sent_message_id,
+                    "message_ids": [],
+                }
+            else:
+                try:
+                    delivery = await _send_business_draft_and_log(
+                        conn,
+                        draft=claimed,
+                        actor=admin_username,
+                    )
+                except HTTPException as exc:
+                    update_reply_draft_status(
+                        conn,
+                        draft_id=draft_id,
+                        status="approved",
+                        actor=admin_username,
+                        last_error=str(exc.detail),
+                    )
+                    raise
+
             resolved_sent_message_id = (
                 (delivery.get("sent_message_id") if isinstance(delivery, dict) else None)
                 or (payload.sent_message_id or "").strip()
@@ -3504,9 +3617,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/admin/ui/calls/mango/poll")
     async def admin_calls_ui_mango_poll(
+        request: Request,
         _: str = Depends(require_admin),
         limit: int = Form(50),
     ):
+        _enforce_admin_ui_csrf(request)
         if not _mango_ingest_enabled():
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -3517,9 +3632,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/admin/ui/calls/mango/retry-failed")
     async def admin_calls_ui_mango_retry_failed(
+        request: Request,
         _: str = Depends(require_admin),
         limit: int = Form(25),
     ):
+        _enforce_admin_ui_csrf(request)
         if not _mango_ingest_enabled():
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -3530,6 +3647,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/admin/ui/calls/upload")
     async def admin_calls_ui_upload(
+        request: Request,
         _: str = Depends(require_admin),
         user_id: Optional[int] = Form(default=None),
         thread_id: Optional[str] = Form(default=None),
@@ -3537,6 +3655,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         transcript_hint: Optional[str] = Form(default=None),
         audio_file: Optional[UploadFile] = File(default=None),
     ):
+        _enforce_admin_ui_csrf(request)
         if not cfg.enable_call_copilot:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -3804,6 +3923,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "<button type='submit'>Approve</button>"
                 "</form>"
                 f"<form method='post' action='/admin/ui/inbox/drafts/{draft_id}/send' style='display:inline-block;margin-right:8px;'>"
+                "<input name='sent_message_id' placeholder='sent_message_id (manual non-business)' style='margin-bottom:6px;' />"
+                "<br/>"
                 "<button type='submit'>Send</button>"
                 "</form>"
                 f"<form method='post' action='/admin/ui/inbox/drafts/{draft_id}/reject' style='display:inline-block;'>"
@@ -3947,11 +4068,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/admin/ui/inbox/{user_id}/drafts")
     async def admin_inbox_create_draft_ui(
+        request: Request,
         user_id: int,
         draft_text: str = Form(...),
         draft_model: str = Form("", alias="model_name"),
         admin_username: str = Depends(require_admin),
     ):
+        _enforce_admin_ui_csrf(request)
         conn = get_connection(cfg.database_path)
         try:
             _require_user_exists(conn, user_id)
@@ -3981,11 +4104,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/admin/ui/inbox/drafts/{draft_id}/edit")
     async def admin_inbox_edit_draft_ui(
+        request: Request,
         draft_id: int,
         draft_text: str = Form(...),
         draft_model: str = Form("", alias="model_name"),
         admin_username: str = Depends(require_admin),
     ):
+        _enforce_admin_ui_csrf(request)
         conn = get_connection(cfg.database_path)
         try:
             draft = get_reply_draft(conn, draft_id)
@@ -4014,7 +4139,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RedirectResponse(url=f"/admin/ui/inbox/{user_id}", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.post("/admin/ui/inbox/drafts/{draft_id}/approve")
-    async def admin_inbox_approve_draft_ui(draft_id: int, admin_username: str = Depends(require_admin)):
+    async def admin_inbox_approve_draft_ui(
+        request: Request,
+        draft_id: int,
+        admin_username: str = Depends(require_admin),
+    ):
+        _enforce_admin_ui_csrf(request)
         conn = get_connection(cfg.database_path)
         try:
             draft = get_reply_draft(conn, draft_id)
@@ -4037,7 +4167,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RedirectResponse(url=f"/admin/ui/inbox/{user_id}", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.post("/admin/ui/inbox/drafts/{draft_id}/send")
-    async def admin_inbox_send_draft_ui(draft_id: int, admin_username: str = Depends(require_admin)):
+    async def admin_inbox_send_draft_ui(
+        request: Request,
+        draft_id: int,
+        sent_message_id: str = Form(""),
+        admin_username: str = Depends(require_admin),
+    ):
+        _enforce_admin_ui_csrf(request)
         conn = get_connection(cfg.database_path)
         try:
             draft = get_reply_draft(conn, draft_id)
@@ -4047,19 +4183,66 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if current_status == "sent":
                 user_id = int(draft["user_id"])
                 return RedirectResponse(url=f"/admin/ui/inbox/{user_id}", status_code=status.HTTP_303_SEE_OTHER)
+            if current_status == "sending":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Draft {draft_id} is already being sent by another request.",
+                )
             if current_status != "approved":
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=f"Draft {draft_id} must be approved before send.",
                 )
 
-            delivery = await _send_business_draft_and_log(
-                conn,
-                draft=draft,
-                actor=admin_username,
-            )
+            claimed = claim_reply_draft_for_send(conn, draft_id=draft_id, actor=admin_username)
+            if claimed is None:
+                latest = get_reply_draft(conn, draft_id)
+                if latest and str(latest.get("status") or "") == "sent":
+                    user_id = int(latest["user_id"])
+                    return RedirectResponse(url=f"/admin/ui/inbox/{user_id}", status_code=status.HTTP_303_SEE_OTHER)
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Draft {draft_id} was modified by another request. Retry.",
+                )
+            parsed_thread = _parse_business_thread_key(str(claimed.get("thread_id") or ""))
+            if parsed_thread is None:
+                manual_sent_message_id = sent_message_id.strip()
+                if not manual_sent_message_id:
+                    update_reply_draft_status(
+                        conn,
+                        draft_id=draft_id,
+                        status="approved",
+                        actor=admin_username,
+                        last_error="manual_confirmation_required",
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Manual send requires sent_message_id for non-business threads.",
+                    )
+                delivery = {
+                    "transport": "manual_confirmed",
+                    "sent_message_id": manual_sent_message_id,
+                    "message_ids": [],
+                }
+            else:
+                try:
+                    delivery = await _send_business_draft_and_log(
+                        conn,
+                        draft=claimed,
+                        actor=admin_username,
+                    )
+                except HTTPException as exc:
+                    update_reply_draft_status(
+                        conn,
+                        draft_id=draft_id,
+                        status="approved",
+                        actor=admin_username,
+                        last_error=str(exc.detail),
+                    )
+                    raise
             resolved_sent_message_id = (
                 (delivery.get("sent_message_id") if isinstance(delivery, dict) else None)
+                or sent_message_id.strip()
                 or None
             )
             update_reply_draft_status(
@@ -4087,7 +4270,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RedirectResponse(url=f"/admin/ui/inbox/{user_id}", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.post("/admin/ui/inbox/drafts/{draft_id}/reject")
-    async def admin_inbox_reject_draft_ui(draft_id: int, admin_username: str = Depends(require_admin)):
+    async def admin_inbox_reject_draft_ui(
+        request: Request,
+        draft_id: int,
+        admin_username: str = Depends(require_admin),
+    ):
+        _enforce_admin_ui_csrf(request)
         conn = get_connection(cfg.database_path)
         try:
             draft = get_reply_draft(conn, draft_id)
@@ -4111,11 +4299,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/admin/ui/inbox/{user_id}/outcome")
     async def admin_inbox_set_outcome_ui(
+        request: Request,
         user_id: int,
         outcome: str = Form(...),
         note: str = Form(""),
         admin_username: str = Depends(require_admin),
     ):
+        _enforce_admin_ui_csrf(request)
         conn = get_connection(cfg.database_path)
         try:
             _require_user_exists(conn, user_id)
@@ -4143,6 +4333,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/admin/ui/inbox/{user_id}/followups")
     async def admin_inbox_followup_ui(
+        request: Request,
         user_id: int,
         priority: str = Form("warm"),
         reason: str = Form(...),
@@ -4150,6 +4341,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         assigned_to: str = Form(""),
         admin_username: str = Depends(require_admin),
     ):
+        _enforce_admin_ui_csrf(request)
         normalized_priority = priority.strip().lower()
         if normalized_priority not in {"hot", "warm", "cold"}:
             normalized_priority = "warm"
@@ -4182,12 +4374,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/admin/ui/inbox/{user_id}/lead-score")
     async def admin_inbox_lead_score_ui(
+        request: Request,
         user_id: int,
         score: float = Form(...),
         temperature: str = Form("warm"),
         confidence: str = Form(""),
         admin_username: str = Depends(require_admin),
     ):
+        _enforce_admin_ui_csrf(request)
         normalized_temperature = temperature.strip().lower()
         if normalized_temperature not in {"hot", "warm", "cold"}:
             normalized_temperature = "warm"
@@ -4987,10 +5181,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/admin/ui/copilot/import", response_class=HTMLResponse)
     async def admin_copilot_import_ui(
+        request: Request,
         _: str = Depends(require_admin),
         file: UploadFile = File(...),
         create_task: bool = Form(False),
     ):
+        _enforce_admin_ui_csrf(request)
         content = await file.read()
         if not content:
             return render_page("Copilot Error", "<h1>Ошибка</h1><p>Файл пустой.</p>")

@@ -53,7 +53,11 @@ class ConfigTests(unittest.TestCase):
             "MINIAPP_ADVISOR_NAME": "Гид",
             "SALES_MANAGER_LABEL": "Старший менеджер",
             "SALES_MANAGER_CHAT_URL": "https://t.me/kmipt_sales_manager",
+            "APP_ENV": "production",
             "STARTUP_PREFLIGHT_MODE": "strict",
+            "RATE_LIMIT_BACKEND": "redis",
+            "REDIS_URL": "redis://localhost:6379/0",
+            "ADMIN_UI_CSRF_ENABLED": "true",
             "ASSISTANT_API_TOKEN": "assist-token",
             "ASSISTANT_RATE_LIMIT_WINDOW_SECONDS": "90",
             "ASSISTANT_RATE_LIMIT_USER_REQUESTS": "33",
@@ -128,7 +132,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.miniapp_advisor_name, "Гид")
         self.assertEqual(settings.sales_manager_label, "Старший менеджер")
         self.assertEqual(settings.sales_manager_chat_url, "https://t.me/kmipt_sales_manager")
+        self.assertEqual(settings.app_env, "production")
         self.assertEqual(settings.startup_preflight_mode, "strict")
+        self.assertEqual(settings.rate_limit_backend, "redis")
+        self.assertEqual(settings.redis_url, "redis://localhost:6379/0")
+        self.assertTrue(settings.admin_ui_csrf_enabled)
         self.assertEqual(settings.assistant_api_token, "assist-token")
         self.assertEqual(settings.assistant_rate_limit_window_seconds, 90)
         self.assertEqual(settings.assistant_rate_limit_user_requests, 33)
@@ -196,7 +204,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.miniapp_advisor_name, "Гид")
         self.assertEqual(settings.sales_manager_label, "Менеджер")
         self.assertEqual(settings.sales_manager_chat_url, "")
+        self.assertEqual(settings.app_env, "development")
         self.assertEqual(settings.startup_preflight_mode, "fail")
+        self.assertEqual(settings.rate_limit_backend, "memory")
+        self.assertEqual(settings.redis_url, "")
+        self.assertFalse(settings.admin_ui_csrf_enabled)
         self.assertEqual(settings.assistant_api_token, "")
         self.assertEqual(settings.assistant_rate_limit_window_seconds, 60)
         self.assertEqual(settings.assistant_rate_limit_user_requests, 24)
@@ -311,6 +323,23 @@ class ConfigTests(unittest.TestCase):
     def test_invalid_preflight_mode_falls_back_to_fail(self) -> None:
         settings = get_settings()
         self.assertEqual(settings.startup_preflight_mode, "fail")
+
+    @patch.dict(
+        os.environ,
+        {"APP_ENV": "invalid", "RATE_LIMIT_BACKEND": "bad-backend", "ADMIN_UI_CSRF_ENABLED": "0"},
+        clear=True,
+    )
+    def test_invalid_app_env_and_rate_backend_fall_back_to_defaults(self) -> None:
+        settings = get_settings()
+        self.assertEqual(settings.app_env, "development")
+        self.assertEqual(settings.rate_limit_backend, "memory")
+        self.assertFalse(settings.admin_ui_csrf_enabled)
+
+    @patch.dict(os.environ, {"APP_ENV": "production"}, clear=True)
+    def test_admin_ui_csrf_enabled_by_default_in_production(self) -> None:
+        settings = get_settings()
+        self.assertEqual(settings.app_env, "production")
+        self.assertTrue(settings.admin_ui_csrf_enabled)
 
     @patch.dict(os.environ, {"TELEGRAM_MODE": "webhook", "TELEGRAM_WEBHOOK_SECRET": ""}, clear=True)
     def test_webhook_mode_allows_empty_secret(self) -> None:

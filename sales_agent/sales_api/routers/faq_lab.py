@@ -4,7 +4,7 @@ import html
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,7 @@ def build_faq_lab_router(
     *,
     db_path: Path,
     require_admin_dependency: Callable[..., str],
+    enforce_ui_csrf: Callable[[Request], None],
     render_page: Callable[[str, str], HTMLResponse],
     enabled: bool,
     scheduler_enabled: bool,
@@ -264,10 +265,12 @@ def build_faq_lab_router(
 
     @router.post("/admin/ui/faq-lab/run")
     async def admin_faq_lab_ui_run(
+        request: Request,
         _: str = Depends(require_admin_dependency),
         limit: int = Form(default=100),
     ):
         _ensure_enabled()
+        enforce_ui_csrf(request)
         conn = get_connection(db_path)
         try:
             faq_lab.refresh_faq_lab(
@@ -283,11 +286,13 @@ def build_faq_lab_router(
 
     @router.post("/admin/ui/faq-lab/candidates/{candidate_id}/promote")
     async def admin_faq_lab_ui_promote(
+        request: Request,
         candidate_id: int,
         _: str = Depends(require_admin_dependency),
         answer_text: str = Form(default=""),
     ):
         _ensure_enabled()
+        enforce_ui_csrf(request)
         conn = get_connection(db_path)
         try:
             promoted = promote_faq_candidate_to_canonical(

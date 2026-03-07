@@ -4,7 +4,7 @@ import html
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -37,6 +37,7 @@ def build_director_router(
     *,
     db_path: Path,
     require_admin_dependency: Callable[..., str],
+    enforce_ui_csrf: Callable[[Request], None],
     render_page: Callable[[str, str], HTMLResponse],
     enabled: bool,
 ) -> APIRouter:
@@ -323,11 +324,13 @@ def build_director_router(
 
     @router.post("/admin/ui/director/plan")
     async def admin_director_ui_create_plan(
+        request: Request,
         actor: str = Depends(require_admin_dependency),
         goal_text: str = Form(...),
         max_actions: int = Form(default=20),
     ):
         _ensure_enabled()
+        enforce_ui_csrf(request)
         conn = get_connection(db_path)
         try:
             _build_plan(
@@ -342,10 +345,12 @@ def build_director_router(
 
     @router.post("/admin/ui/director/plans/{plan_id}/approve")
     async def admin_director_ui_approve_plan(
+        request: Request,
         plan_id: int,
         actor: str = Depends(require_admin_dependency),
     ):
         _ensure_enabled()
+        enforce_ui_csrf(request)
         conn = get_connection(db_path)
         try:
             plan = get_campaign_plan(conn, plan_id=plan_id)
@@ -359,10 +364,12 @@ def build_director_router(
 
     @router.post("/admin/ui/director/plans/{plan_id}/apply")
     async def admin_director_ui_apply_plan(
+        request: Request,
         plan_id: int,
         actor: str = Depends(require_admin_dependency),
     ):
         _ensure_enabled()
+        enforce_ui_csrf(request)
         conn = get_connection(db_path)
         try:
             plan = get_campaign_plan(conn, plan_id=plan_id)

@@ -1111,7 +1111,7 @@ def update_reply_draft_status(
     last_error: Optional[str] = None,
 ) -> bool:
     normalized_status = (status or "").strip().lower()
-    if normalized_status not in {"created", "approved", "sent", "rejected"}:
+    if normalized_status not in {"created", "approved", "sending", "sent", "rejected"}:
         raise ValueError(f"Unsupported draft status: {status}")
 
     row = conn.execute(
@@ -1128,6 +1128,10 @@ def update_reply_draft_status(
     if normalized_status == "approved":
         approved_by = actor
         approved_at_sql = "CURRENT_TIMESTAMP"
+        sent_at_sql = "sent_at"
+    elif normalized_status == "sending":
+        sent_by = actor
+        approved_at_sql = "approved_at"
         sent_at_sql = "sent_at"
     elif normalized_status == "sent":
         sent_by = actor
@@ -1162,6 +1166,37 @@ def update_reply_draft_status(
     )
     conn.commit()
     return True
+
+
+def claim_reply_draft_for_send(
+    conn: sqlite3.Connection,
+    *,
+    draft_id: int,
+    actor: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Atomically transitions a draft from approved -> sending.
+
+    Returns updated draft when claim succeeded, otherwise None.
+    """
+    normalized_actor = (actor or "").strip() or None
+    cursor = conn.execute(
+        """
+        UPDATE reply_drafts
+        SET
+            status = 'sending',
+            sent_by = COALESCE(?, sent_by),
+            last_error = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+          AND status = 'approved'
+        """,
+        (normalized_actor, draft_id),
+    )
+    conn.commit()
+    if int(cursor.rowcount or 0) <= 0:
+        return None
+    return get_reply_draft(conn, draft_id=draft_id)
 
 
 def set_reply_draft_last_error(

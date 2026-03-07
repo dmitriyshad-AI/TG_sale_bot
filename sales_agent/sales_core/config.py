@@ -43,9 +43,13 @@ class Settings:
     miniapp_advisor_name: str = "Гид"
     sales_manager_label: str = "Менеджер"
     sales_manager_chat_url: str = ""
+    app_env: str = "development"
     startup_preflight_mode: str = "off"
     running_on_render: bool = False
     persistent_data_root: Path = Path()
+    rate_limit_backend: str = "memory"
+    redis_url: str = ""
+    admin_ui_csrf_enabled: bool = False
     assistant_api_token: str = ""
     assistant_rate_limit_window_seconds: int = 60
     assistant_rate_limit_user_requests: int = 24
@@ -174,6 +178,17 @@ def get_settings() -> Settings:
     startup_preflight_mode = os.getenv("STARTUP_PREFLIGHT_MODE", "fail").strip().lower()
     if startup_preflight_mode not in {"off", "fail", "strict"}:
         startup_preflight_mode = "fail"
+    app_env = os.getenv("APP_ENV", "development").strip().lower()
+    if app_env not in {"development", "staging", "production"}:
+        app_env = "development"
+    rate_limit_backend = os.getenv("RATE_LIMIT_BACKEND", "memory").strip().lower()
+    if rate_limit_backend not in {"memory", "redis"}:
+        rate_limit_backend = "memory"
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    admin_ui_csrf_enabled = _parse_bool_env(
+        "ADMIN_UI_CSRF_ENABLED",
+        default=(app_env == "production"),
+    )
     assistant_rate_limit_window_seconds = _parse_int_env(
         "ASSISTANT_RATE_LIMIT_WINDOW_SECONDS",
         60,
@@ -354,9 +369,13 @@ def get_settings() -> Settings:
         miniapp_advisor_name=os.getenv("MINIAPP_ADVISOR_NAME", "Гид").strip() or "Гид",
         sales_manager_label=os.getenv("SALES_MANAGER_LABEL", "Менеджер").strip() or "Менеджер",
         sales_manager_chat_url=os.getenv("SALES_MANAGER_CHAT_URL", "").strip(),
+        app_env=app_env,
         startup_preflight_mode=startup_preflight_mode,
         running_on_render=running_on_render,
         persistent_data_root=persistent_data_root,
+        rate_limit_backend=rate_limit_backend,
+        redis_url=redis_url,
+        admin_ui_csrf_enabled=admin_ui_csrf_enabled,
         assistant_api_token=os.getenv("ASSISTANT_API_TOKEN", "").strip(),
         assistant_rate_limit_window_seconds=assistant_rate_limit_window_seconds,
         assistant_rate_limit_user_requests=assistant_rate_limit_user_requests,

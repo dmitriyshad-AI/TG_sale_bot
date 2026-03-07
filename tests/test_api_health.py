@@ -74,6 +74,31 @@ products:
         self.assertNotIn("openai_api_key", str(payload).lower())
         self.assertNotIn("telegram_bot_token", str(payload).lower())
 
+    def test_create_app_requires_webhook_secret_in_production(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = Settings(
+                telegram_bot_token="token",
+                openai_api_key="sk-test",
+                openai_model="gpt-4.1",
+                tallanto_api_url="",
+                tallanto_api_key="",
+                brand_default="kmipt",
+                database_path=root / "data" / "sales_agent.db",
+                catalog_path=Path("catalog/products.yaml"),
+                knowledge_path=Path("knowledge"),
+                vector_store_meta_path=root / "data" / "vector_store.json",
+                openai_vector_store_id="",
+                admin_user="admin",
+                admin_pass="secret",
+                app_env="production",
+                telegram_mode="webhook",
+                telegram_webhook_secret="",
+            )
+            cfg.database_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.assertRaises(RuntimeError):
+                create_app(cfg)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,22 @@ class DirectorAgentTests(unittest.TestCase):
         self.assertIn("ege", tags)
         self.assertIn("informatics", tags)
 
+    def test_text_helpers_and_empty_goal_tags(self) -> None:
+        self.assertEqual(director_agent._normalize_text(None), "")
+        self.assertEqual(director_agent._compact_text(None), "")
+        self.assertEqual(director_agent.extract_goal_tags("   "), [])
+        compacted = director_agent._compact_text("a" * 400, max_len=25)
+        self.assertTrue(compacted.endswith("..."))
+        self.assertLessEqual(len(compacted), 25)
+
+    def test_score_text_against_tags_handles_empty_values(self) -> None:
+        self.assertEqual(director_agent._score_text_against_tags("", ["ege"]), 0)
+        self.assertEqual(director_agent._score_text_against_tags("   ", ["ege"]), 0)
+        self.assertGreaterEqual(
+            director_agent._score_text_against_tags("Подготовка к ЕГЭ по математике", ["ege", "math"]),
+            3,
+        )
+
     def test_discover_thread_candidates_and_plan_build(self) -> None:
         user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="u-1")
         db.log_message(self.conn, user_id, "inbound", "Нужна стратегия ЕГЭ по информатике", {})
@@ -73,6 +89,16 @@ class DirectorAgentTests(unittest.TestCase):
         )
         self.assertEqual(len(plan["actions"]), 1)
         self.assertEqual(plan["actions"][0]["action_type"], "manual_review")
+
+    def test_build_campaign_plan_requires_non_empty_goal(self) -> None:
+        with self.assertRaises(ValueError):
+            director_agent.build_campaign_plan(goal_text="   ", candidates=[], max_actions=5)
+
+    def test_infer_user_id_from_thread_id(self) -> None:
+        self.assertEqual(director_agent._infer_user_id_from_thread_id("tg:42"), 42)
+        self.assertIsNone(director_agent._infer_user_id_from_thread_id("biz:bc:42"))
+        self.assertIsNone(director_agent._infer_user_id_from_thread_id("tg:not-number"))
+        self.assertIsNone(director_agent._infer_user_id_from_thread_id(None))
 
     def test_apply_campaign_plan_creates_artifacts(self) -> None:
         user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="u-apply")
@@ -130,6 +156,40 @@ class DirectorAgentTests(unittest.TestCase):
         reports = db.list_campaign_reports(self.conn, plan_id=plan_id, limit=5)
         self.assertEqual(len(reports), 1)
         self.assertEqual(reports[0]["report"]["created_actions"], 1)
+
+    def test_apply_campaign_plan_handles_non_list_actions_and_non_dict_entries(self) -> None:
+        goal_id = db.create_campaign_goal(
+            self.conn,
+            goal_text="Нормализация actions",
+            created_by="admin",
+        )
+        plan_id = db.create_campaign_plan(
+            self.conn,
+            goal_id=goal_id,
+            objective="Проверка edge cases",
+            actions=[],
+            created_by="admin",
+        )
+
+        report_from_non_list = director_agent.apply_campaign_plan(
+            self.conn,
+            goal_id=goal_id,
+            plan_id=plan_id,
+            plan={"actions": "bad-type"},
+            actor="director:auto",
+        )
+        self.assertEqual(report_from_non_list["created_actions"], 0)
+        self.assertEqual(report_from_non_list["skipped"], 0)
+
+        report_from_non_dict = director_agent.apply_campaign_plan(
+            self.conn,
+            goal_id=goal_id,
+            plan_id=plan_id,
+            plan={"actions": ["bad-item"]},
+            actor="director:auto",
+        )
+        self.assertEqual(report_from_non_dict["created_actions"], 0)
+        self.assertEqual(report_from_non_dict["skipped"], 1)
 
 
 if __name__ == "__main__":

@@ -117,6 +117,66 @@ class ApiDirectorTests(unittest.TestCase):
             response = client.get("/admin/director", auth=("admin", "secret"))
             self.assertEqual(response.status_code, 404)
 
+    def test_director_ui_post_requires_origin_when_csrf_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "director_csrf.db"
+            settings = self._settings(db_path)
+            settings.admin_ui_csrf_enabled = True
+            app = create_app(settings)
+
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(conn, channel="telegram", external_id="director-csrf-user")
+                db.log_message(conn, user_id, "inbound", "Нужен план поступления в МФТИ", {})
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            no_origin = client.post(
+                "/admin/ui/director/plan",
+                auth=auth,
+                data={"goal_text": "Верни 5 лидов", "max_actions": 5},
+            )
+            self.assertEqual(no_origin.status_code, 403)
+
+            wrong_origin = client.post(
+                "/admin/ui/director/plan",
+                auth=auth,
+                data={"goal_text": "Верни 5 лидов", "max_actions": 5},
+                headers={"Origin": "https://evil.example"},
+            )
+            self.assertEqual(wrong_origin.status_code, 403)
+
+            with_origin = client.post(
+                "/admin/ui/director/plan",
+                auth=auth,
+                data={"goal_text": "Верни 5 лидов", "max_actions": 5},
+                headers={"Origin": "http://testserver"},
+            )
+            self.assertIn(with_origin.status_code, {200, 303})
+
+            overview = client.get("/admin/director", auth=auth)
+            self.assertEqual(overview.status_code, 200)
+            plans = overview.json()["plans"]
+            self.assertGreaterEqual(len(plans), 1)
+            plan_id = int(plans[0]["id"])
+
+            approve = client.post(
+                f"/admin/ui/director/plans/{plan_id}/approve",
+                auth=auth,
+                headers={"Origin": "http://testserver"},
+            )
+            self.assertIn(approve.status_code, {200, 303})
+
+            apply = client.post(
+                f"/admin/ui/director/plans/{plan_id}/apply",
+                auth=auth,
+                headers={"Origin": "http://testserver"},
+            )
+            self.assertIn(apply.status_code, {200, 303})
+
 
 if __name__ == "__main__":
     unittest.main()

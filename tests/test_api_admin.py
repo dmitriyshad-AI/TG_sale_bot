@@ -310,6 +310,75 @@ class ApiAdminTests(unittest.TestCase):
             self.assertEqual(crm_context.get("interests"), ["ege", "math"])
             self.assertNotIn("phone", crm_context)
 
+    def test_admin_send_non_business_draft_requires_manual_sent_message_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin_manual_send.db"
+            app = create_app(self._settings(db_path))
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(conn, channel="telegram", external_id="manual-send-user")
+                thread_id = f"tg:{user_id}"
+                draft_id = db.create_reply_draft(
+                    conn,
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    draft_text="Проверка ручной отправки",
+                    model_name="gpt-test",
+                    created_by="manager",
+                )
+                db.update_reply_draft_status(conn, draft_id=draft_id, status="approved", actor="manager")
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            response = client.post(
+                f"/admin/inbox/drafts/{draft_id}/send",
+                auth=auth,
+                json={},
+            )
+            self.assertEqual(response.status_code, 409)
+            self.assertIn("sent_message_id", response.json()["detail"])
+
+            conn = db.get_connection(db_path)
+            try:
+                draft = db.get_reply_draft(conn, draft_id)
+            finally:
+                conn.close()
+            self.assertIsNotNone(draft)
+            self.assertEqual(draft["status"], "approved")
+            self.assertEqual(draft["last_error"], "manual_confirmation_required")
+
+    def test_admin_send_returns_409_for_draft_in_sending_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin_send_conflict.db"
+            app = create_app(self._settings(db_path))
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(conn, channel="telegram", external_id="send-conflict-user")
+                thread_id = f"tg:{user_id}"
+                draft_id = db.create_reply_draft(
+                    conn,
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    draft_text="Конфликт отправки",
+                    model_name="gpt-test",
+                    created_by="manager",
+                )
+                db.update_reply_draft_status(conn, draft_id=draft_id, status="approved", actor="manager")
+                db.update_reply_draft_status(conn, draft_id=draft_id, status="sending", actor="manager")
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            response = client.post(
+                f"/admin/inbox/drafts/{draft_id}/send",
+                auth=("admin", "secret"),
+                json={"sent_message_id": "manual-1"},
+            )
+            self.assertEqual(response.status_code, 409)
+            self.assertIn("already being sent", str(response.json()["detail"]))
+
     def test_admin_business_inbox_api_and_ui(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"
