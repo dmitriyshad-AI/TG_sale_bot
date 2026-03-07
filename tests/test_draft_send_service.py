@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Dict
+from unittest.mock import patch
 
 from fastapi import HTTPException
 
@@ -135,10 +136,101 @@ class DraftSendServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(draft["status"], "approved")
         self.assertIn("mock send failed", str(draft["last_error"]))
 
+    async def test_business_partial_delivery_requires_manual_confirmation(self) -> None:
+        draft_id = self._create_approved_draft(thread_id="biz:bc-test:125")
+        db.update_reply_draft_status(
+            self.conn,
+            draft_id=draft_id,
+            status="approved",
+            actor="admin",
+            last_error="partial_delivery|sent_message_ids=701,702|error=timeout",
+        )
+
+        with self.assertRaises(HTTPException) as context:
+            await send_approved_draft(
+                self.conn,
+                draft_id=draft_id,
+                actor="admin",
+                manual_sent_message_id="",
+                is_business_thread=lambda _thread_id: True,
+                business_sender=lambda _draft, _actor: self._unreachable_sender(),
+            )
+        self.assertEqual(context.exception.status_code, 409)
+        self.assertIn("partial Telegram Business delivery", str(context.exception.detail))
+
+        draft = db.get_reply_draft(self.conn, draft_id)
+        self.assertIsNotNone(draft)
+        assert draft is not None
+        self.assertEqual(draft["status"], "approved")
+        self.assertIn("partial_delivery|sent_message_ids=701,702|error=timeout", str(draft["last_error"]))
+
+    async def test_business_partial_delivery_manual_recovery_marks_sent_without_sender(self) -> None:
+        draft_id = self._create_approved_draft(thread_id="biz:bc-test:126")
+        db.update_reply_draft_status(
+            self.conn,
+            draft_id=draft_id,
+            status="approved",
+            actor="admin",
+            last_error="partial_delivery|sent_message_ids=801,802|error=timeout",
+        )
+
+        result = await send_approved_draft(
+            self.conn,
+            draft_id=draft_id,
+            actor="admin",
+            manual_sent_message_id="manual-confirm-900",
+            is_business_thread=lambda _thread_id: True,
+            business_sender=lambda _draft, _actor: self._unreachable_sender(),
+        )
+        self.assertFalse(result.already_sent)
+        self.assertEqual(result.draft["status"], "sent")
+        self.assertEqual(result.draft["sent_message_id"], "manual-confirm-900")
+        self.assertEqual(result.delivery["transport"], "manual_partial_recovery")
+        self.assertEqual(result.delivery["partial_message_ids"], ["801", "802"])
+
+    async def test_business_partial_delivery_manual_recovery_supports_legacy_error_format(self) -> None:
+        draft_id = self._create_approved_draft(thread_id="biz:bc-test:127")
+        db.update_reply_draft_status(
+            self.conn,
+            draft_id=draft_id,
+            status="approved",
+            actor="admin",
+            last_error=(
+                "Partial Telegram Business delivery detected: sent_message_ids=901,902. "
+                "Проверьте чат."
+            ),
+        )
+
+        result = await send_approved_draft(
+            self.conn,
+            draft_id=draft_id,
+            actor="admin",
+            manual_sent_message_id="manual-confirm-legacy",
+            is_business_thread=lambda _thread_id: True,
+            business_sender=lambda _draft, _actor: self._unreachable_sender(),
+        )
+        self.assertEqual(result.draft["status"], "sent")
+        self.assertEqual(result.delivery["transport"], "manual_partial_recovery")
+        self.assertEqual(result.delivery["partial_message_ids"], ["901", "902"])
+
+    async def test_claim_conflict_raises_retry_conflict(self) -> None:
+        draft_id = self._create_approved_draft(thread_id="tg:8")
+        with patch("sales_agent.sales_api.services.draft_send.claim_reply_draft_for_send", return_value=None):
+            with self.assertRaises(HTTPException) as context:
+                await send_approved_draft(
+                    self.conn,
+                    draft_id=draft_id,
+                    actor="admin",
+                    manual_sent_message_id="manual-8",
+                    is_business_thread=lambda _thread_id: False,
+                    business_sender=lambda _draft, _actor: self._unreachable_sender(),
+                )
+        self.assertEqual(context.exception.status_code, 409)
+        self.assertIn("modified by another request", str(context.exception.detail))
+
     async def _unreachable_sender(self) -> Dict[str, Any]:
         raise AssertionError("business sender should not be called in this scenario")
 
 
 if __name__ == "__main__":
     unittest.main()
-

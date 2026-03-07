@@ -255,12 +255,48 @@ class RevenueOpsServiceTests(unittest.IsolatedAsyncioTestCase):
         service._collect_stale_warm_candidates = lambda conn, stale_warm_days, limit: [  # type: ignore[assignment]
             {"user_id": 1, "thread_id": "tg:1", "score_id": 1, "score": 50, "created_at": "x"},
         ]
-        service._lead_radar_guard = lambda conn, thread_id, rule_key: (False, "daily_cap")  # type: ignore[assignment]
+        service._lead_radar_guard = (  # type: ignore[assignment]
+            lambda conn, thread_id, rule_key, source_token: (False, "daily_cap")
+        )
 
         result = await service.run_lead_radar_once(trigger="skip-test")
         self.assertTrue(result["ok"])
         self.assertEqual(result["rules"]["radar:call_no_next_step"]["skipped_daily_cap"], 1)
         self.assertEqual(result["rules"]["radar:stale_warm"]["skipped_daily_cap"], 1)
+
+    async def test_run_lead_radar_skips_duplicate_trigger(self) -> None:
+        service = self._service(self._settings(lead_radar_thread_cooldown_hours=0, lead_radar_daily_cap_per_thread=10))
+        conn = db.get_connection(self.db_path)
+        try:
+            user_id = db.get_or_create_user(conn, channel="telegram", external_id="u-radar-dup")
+            thread_id = f"tg:{user_id}"
+            db.log_message(conn, user_id=user_id, direction="inbound", text="есть вопрос", meta={})
+            inbound_id_row = conn.execute(
+                "SELECT MAX(id) AS inbound_id FROM messages WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            inbound_id = int(inbound_id_row["inbound_id"]) if inbound_id_row and inbound_id_row["inbound_id"] else 0
+            conn.execute(
+                "UPDATE messages SET created_at = datetime('now', '-3 hours') WHERE user_id = ?",
+                (user_id,),
+            )
+            db.create_followup_task(
+                conn,
+                user_id=user_id,
+                thread_id=thread_id,
+                priority="warm",
+                reason=f"radar:no_reply [source=msg:{inbound_id}] :: уже был follow-up",
+                status="done",
+                assigned_to="lead_radar:auto",
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = await service.run_lead_radar_once(trigger="dup-test")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["created_followups"], 0)
+        self.assertGreaterEqual(result["rules"]["radar:no_reply"]["skipped_duplicate_trigger"], 1)
 
     async def test_process_manual_call_upload_validation_and_error_path(self) -> None:
         service = self._service(self._settings())

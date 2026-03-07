@@ -20,6 +20,28 @@ class DraftSendResult:
     already_sent: bool = False
 
 
+def _parse_partial_delivery_message_ids(last_error: object) -> list[str]:
+    raw = str(last_error or "").strip()
+    marker = "sent_message_ids="
+    if raw.startswith("partial_delivery|"):
+        index = raw.find(marker)
+        if index < 0:
+            return []
+        tail = raw[index + len(marker) :]
+        pipe_index = tail.find("|")
+        token = tail if pipe_index < 0 else tail[:pipe_index]
+    elif "Partial Telegram Business delivery" in raw and marker in raw:
+        index = raw.find(marker)
+        tail = raw[index + len(marker) :]
+        punctuation_positions = [pos for pos in (tail.find("."), tail.find("|")) if pos >= 0]
+        cutoff = min(punctuation_positions) if punctuation_positions else -1
+        token = tail if cutoff < 0 else tail[:cutoff]
+    else:
+        return []
+    parts = [part.strip() for part in token.split(",")]
+    return [part for part in parts if part]
+
+
 async def send_approved_draft(
     conn: Any,
     *,
@@ -47,6 +69,19 @@ async def send_approved_draft(
             detail=f"Draft {draft_id} must be approved before send.",
         )
 
+    thread_id = str(draft.get("thread_id") or "")
+    is_business = is_business_thread(thread_id)
+    partial_message_ids = _parse_partial_delivery_message_ids(draft.get("last_error"))
+    if is_business and partial_message_ids and not manual_sent_message_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Draft has partial Telegram Business delivery. "
+                f"Already sent message_ids={','.join(partial_message_ids)}. "
+                "Provide sent_message_id to confirm manual recovery and avoid duplicate sends."
+            ),
+        )
+
     claimed = claim_reply_draft_for_send(conn, draft_id=draft_id, actor=actor)
     if claimed is None:
         latest = get_reply_draft(conn, draft_id)
@@ -57,7 +92,7 @@ async def send_approved_draft(
             detail=f"Draft {draft_id} was modified by another request. Retry.",
         )
 
-    if not is_business_thread(str(claimed.get("thread_id") or "")):
+    if not is_business:
         if not manual_sent_message_id:
             update_reply_draft_status(
                 conn,
@@ -76,17 +111,40 @@ async def send_approved_draft(
             "message_ids": [],
         }
     else:
-        try:
-            delivery = await business_sender(claimed, actor)
-        except HTTPException as exc:
-            update_reply_draft_status(
+        if partial_message_ids and manual_sent_message_id:
+            delivery = {
+                "transport": "manual_partial_recovery",
+                "sent_message_id": manual_sent_message_id,
+                "message_ids": [],
+                "partial_message_ids": partial_message_ids,
+            }
+            create_approval_action(
                 conn,
                 draft_id=draft_id,
-                status="approved",
+                user_id=int(draft["user_id"]),
+                thread_id=str(draft["thread_id"]),
+                action="draft_partial_recovery_confirmed",
                 actor=actor,
-                last_error=str(exc.detail),
+                payload={
+                    "manual_sent_message_id": manual_sent_message_id,
+                    "partial_message_ids": partial_message_ids,
+                },
             )
-            raise
+        else:
+            try:
+                delivery = await business_sender(claimed, actor)
+            except HTTPException as exc:
+                existing = get_reply_draft(conn, draft_id=draft_id) or {}
+                existing_last_error = str(existing.get("last_error") or "").strip()
+                next_last_error = existing_last_error if existing_last_error.startswith("partial_delivery|") else str(exc.detail)
+                update_reply_draft_status(
+                    conn,
+                    draft_id=draft_id,
+                    status="approved",
+                    actor=actor,
+                    last_error=next_last_error,
+                )
+                raise
 
     resolved_sent_message_id = (
         (delivery.get("sent_message_id") if isinstance(delivery, dict) else None)
@@ -118,4 +176,3 @@ async def send_approved_draft(
         delivery=delivery if isinstance(delivery, dict) else {},
         already_sent=False,
     )
-

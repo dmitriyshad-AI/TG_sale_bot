@@ -624,6 +624,87 @@ class ApiAdminTests(unittest.TestCase):
             self.assertIn("mock send failure", str(draft.get("last_error") or ""))
             self.assertTrue(any(item.get("action") == "draft_send_failed" for item in actions))
 
+    def test_admin_business_draft_partial_delivery_requires_manual_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            app = create_app(self._settings(db_path, telegram_bot_token="token-123"))
+            conn = db.get_connection(db_path)
+            try:
+                business_user_id = db.get_or_create_user(
+                    conn,
+                    channel="telegram_business",
+                    external_id="client-send-partial",
+                )
+                db.upsert_business_connection(
+                    conn,
+                    business_connection_id="bc-partial",
+                    can_reply=True,
+                    is_enabled=True,
+                )
+                thread_key = db.upsert_business_thread(
+                    conn,
+                    business_connection_id="bc-partial",
+                    chat_id=99222,
+                    user_id=business_user_id,
+                    direction="inbound",
+                )
+                draft_id = db.create_reply_draft(
+                    conn,
+                    user_id=business_user_id,
+                    thread_id=thread_key,
+                    draft_text=("x " * 2505).strip(),
+                    created_by="manager",
+                )
+                db.update_reply_draft_status(conn, draft_id=draft_id, status="approved", actor="manager")
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            with patch(
+                "sales_agent.sales_api.main.send_business_message",
+                side_effect=[{"message_id": 911, "date": 1700000000}, TelegramBusinessSendError("chunk-2 failed")],
+            ):
+                send_response = client.post(
+                    f"/admin/inbox/drafts/{draft_id}/send",
+                    auth=auth,
+                    json={},
+                )
+            self.assertEqual(send_response.status_code, 409)
+            self.assertIn("Partial Telegram Business delivery", str(send_response.json()["detail"]))
+
+            conn = db.get_connection(db_path)
+            try:
+                failed_draft = db.get_reply_draft(conn, draft_id)
+                actions_after_fail = db.list_approval_actions_for_thread(conn, thread_id=thread_key, limit=30)
+            finally:
+                conn.close()
+            self.assertIsNotNone(failed_draft)
+            self.assertEqual(failed_draft["status"], "approved")
+            self.assertIn("partial_delivery|sent_message_ids=911|error=chunk-2 failed", str(failed_draft["last_error"]))
+            self.assertTrue(any(item.get("action") == "draft_send_partial" for item in actions_after_fail))
+
+            with patch("sales_agent.sales_api.main.send_business_message") as mocked_send:
+                recover_response = client.post(
+                    f"/admin/inbox/drafts/{draft_id}/send",
+                    auth=auth,
+                    json={"sent_message_id": "manual-911"},
+                )
+            self.assertEqual(recover_response.status_code, 200)
+            recover_payload = recover_response.json()
+            self.assertEqual(recover_payload["draft"]["status"], "sent")
+            self.assertEqual(recover_payload["draft"]["sent_message_id"], "manual-911")
+            self.assertEqual(recover_payload["delivery"]["transport"], "manual_partial_recovery")
+            self.assertEqual(mocked_send.call_count, 0)
+
+            conn = db.get_connection(db_path)
+            try:
+                actions_after_recover = db.list_approval_actions_for_thread(conn, thread_id=thread_key, limit=50)
+            finally:
+                conn.close()
+            self.assertTrue(any(item.get("action") == "draft_partial_recovery_confirmed" for item in actions_after_recover))
+            self.assertTrue(any(item.get("action") == "draft_sent" for item in actions_after_recover))
+
     def test_admin_followups_and_lead_radar_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"

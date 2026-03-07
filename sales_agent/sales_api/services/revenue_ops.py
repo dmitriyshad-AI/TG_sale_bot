@@ -211,7 +211,30 @@ class RevenueOpsService:
               AND reason LIKE ?
             LIMIT 1
             """,
-            (thread_id, f"{rule_key}:%"),
+            (thread_id, f"{rule_key}%"),
+        ).fetchone()
+        return row is not None
+
+    def _radar_followup_exists_for_source_token(
+        self,
+        conn: Any,
+        *,
+        thread_id: str,
+        rule_key: str,
+        source_token: str,
+    ) -> bool:
+        normalized_source = (source_token or "").strip()
+        if not normalized_source:
+            return False
+        row = conn.execute(
+            """
+            SELECT id
+            FROM followup_tasks
+            WHERE thread_id = ?
+              AND reason LIKE ?
+            LIMIT 1
+            """,
+            (thread_id, f"{rule_key}%[source={normalized_source}]%"),
         ).fetchone()
         return row is not None
 
@@ -250,9 +273,17 @@ class RevenueOpsService:
         *,
         thread_id: str,
         rule_key: str,
+        source_token: str,
     ) -> tuple[bool, str]:
         if self._pending_radar_followup_exists(conn, thread_id=thread_id, rule_key=rule_key):
             return (False, "pending_rule")
+        if self._radar_followup_exists_for_source_token(
+            conn,
+            thread_id=thread_id,
+            rule_key=rule_key,
+            source_token=source_token,
+        ):
+            return (False, "duplicate_trigger")
         if self.settings.lead_radar_thread_cooldown_hours > 0:
             recent_count = self._count_recent_radar_followups(
                 conn,
@@ -429,7 +460,7 @@ class RevenueOpsService:
             user_id=user_id,
             thread_id=thread_id,
             priority=priority,
-            reason=f"{rule_key}: {reason_human}",
+            reason=f"{rule_key} [source={source_token}] :: {reason_human}",
             status="pending",
             due_at=None,
             assigned_to="lead_radar:auto",
@@ -553,6 +584,7 @@ class RevenueOpsService:
                             "candidates": len(no_reply_candidates) + len(business_no_reply_candidates),
                             "created": 0,
                             "skipped_pending_rule": 0,
+                            "skipped_duplicate_trigger": 0,
                             "skipped_outcome": 0,
                             "skipped_cooldown": 0,
                             "skipped_daily_cap": 0,
@@ -561,6 +593,7 @@ class RevenueOpsService:
                             "candidates": len(call_candidates),
                             "created": 0,
                             "skipped_pending_rule": 0,
+                            "skipped_duplicate_trigger": 0,
                             "skipped_outcome": 0,
                             "skipped_cooldown": 0,
                             "skipped_daily_cap": 0,
@@ -569,6 +602,7 @@ class RevenueOpsService:
                             "candidates": len(stale_warm_candidates),
                             "created": 0,
                             "skipped_pending_rule": 0,
+                            "skipped_duplicate_trigger": 0,
                             "skipped_outcome": 0,
                             "skipped_cooldown": 0,
                             "skipped_daily_cap": 0,
@@ -592,10 +626,13 @@ class RevenueOpsService:
                         conn,
                         thread_id=thread_id,
                         rule_key=self.lead_radar_rule_no_reply,
+                        source_token=f"msg:{str(candidate.get('inbound_message_id') or 'na')}",
                     )
                     if not allowed:
                         if skip_reason == "pending_rule":
                             result["rules"][self.lead_radar_rule_no_reply]["skipped_pending_rule"] += 1
+                        elif skip_reason == "duplicate_trigger":
+                            result["rules"][self.lead_radar_rule_no_reply]["skipped_duplicate_trigger"] += 1
                         elif skip_reason == "cooldown":
                             result["rules"][self.lead_radar_rule_no_reply]["skipped_cooldown"] += 1
                         elif skip_reason == "daily_cap":
@@ -622,7 +659,7 @@ class RevenueOpsService:
                         priority="hot",
                         reason_human=reason_human,
                         draft_text=draft_text,
-                        source_token=str(candidate.get("inbound_message_id") or "na"),
+                        source_token=f"msg:{str(candidate.get('inbound_message_id') or 'na')}",
                         trigger=trigger,
                     )
                     result["rules"][self.lead_radar_rule_no_reply]["created"] += 1
@@ -644,10 +681,13 @@ class RevenueOpsService:
                         conn,
                         thread_id=thread_id,
                         rule_key=self.lead_radar_rule_call_no_next_step,
+                        source_token=f"action:{str(candidate.get('action_id') or 'na')}",
                     )
                     if not allowed:
                         if skip_reason == "pending_rule":
                             result["rules"][self.lead_radar_rule_call_no_next_step]["skipped_pending_rule"] += 1
+                        elif skip_reason == "duplicate_trigger":
+                            result["rules"][self.lead_radar_rule_call_no_next_step]["skipped_duplicate_trigger"] += 1
                         elif skip_reason == "cooldown":
                             result["rules"][self.lead_radar_rule_call_no_next_step]["skipped_cooldown"] += 1
                         elif skip_reason == "daily_cap":
@@ -676,7 +716,7 @@ class RevenueOpsService:
                         priority="hot",
                         reason_human=reason_human,
                         draft_text=draft_text,
-                        source_token=str(candidate.get("action_id") or "na"),
+                        source_token=f"action:{str(candidate.get('action_id') or 'na')}",
                         trigger=trigger,
                     )
                     result["rules"][self.lead_radar_rule_call_no_next_step]["created"] += 1
@@ -698,10 +738,13 @@ class RevenueOpsService:
                         conn,
                         thread_id=thread_id,
                         rule_key=self.lead_radar_rule_stale_warm,
+                        source_token=f"score:{str(candidate.get('score_id') or 'na')}",
                     )
                     if not allowed:
                         if skip_reason == "pending_rule":
                             result["rules"][self.lead_radar_rule_stale_warm]["skipped_pending_rule"] += 1
+                        elif skip_reason == "duplicate_trigger":
+                            result["rules"][self.lead_radar_rule_stale_warm]["skipped_duplicate_trigger"] += 1
                         elif skip_reason == "cooldown":
                             result["rules"][self.lead_radar_rule_stale_warm]["skipped_cooldown"] += 1
                         elif skip_reason == "daily_cap":
@@ -730,7 +773,7 @@ class RevenueOpsService:
                         priority="warm",
                         reason_human=reason_human,
                         draft_text=draft_text,
-                        source_token=str(candidate.get("score_id") or "na"),
+                        source_token=f"score:{str(candidate.get('score_id') or 'na')}",
                         trigger=trigger,
                     )
                     result["rules"][self.lead_radar_rule_stale_warm]["created"] += 1

@@ -228,6 +228,40 @@ class BusinessSenderServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("boom", errors[0][1])
         self.assertEqual(approval_events[0]["action"], "draft_send_failed")
 
+    async def test_send_business_draft_and_log_partial_delivery_sets_conflict(self) -> None:
+        errors = []
+        approval_events = []
+        calls = {"count": 0}
+
+        def send_message(**kwargs):
+            _ = kwargs
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return {"message_id": 501}
+            raise _SendError("chunk failed")
+
+        with self.assertRaises(HTTPException) as exc:
+            await send_business_draft_and_log(
+                conn=object(),
+                draft={"id": 100, "user_id": 77, "thread_id": "biz:bc:1", "draft_text": "a b c d e f"},
+                actor="admin",
+                telegram_bot_token="token",
+                parse_business_thread_key=lambda _: ("bc", 1),
+                get_business_connection=lambda *args, **kwargs: {"is_enabled": True, "can_reply": True},
+                send_business_message=send_message,
+                send_error_type=_SendError,
+                set_reply_draft_last_error=lambda conn, draft_id, last_error: errors.append((draft_id, last_error)),
+                create_approval_action=lambda conn, **kwargs: approval_events.append(kwargs),
+                log_business_message=lambda *args, **kwargs: None,
+                max_text_chars=3,
+            )
+        self.assertEqual(exc.exception.status_code, 409)
+        self.assertIn("Partial Telegram Business delivery detected", str(exc.exception.detail))
+        self.assertEqual(errors[0][0], 100)
+        self.assertIn("partial_delivery|sent_message_ids=501|error=chunk failed", errors[0][1])
+        self.assertEqual(approval_events[0]["action"], "draft_send_partial")
+        self.assertEqual(approval_events[0]["payload"]["sent_message_ids"], [501])
+
 
 if __name__ == "__main__":
     unittest.main()

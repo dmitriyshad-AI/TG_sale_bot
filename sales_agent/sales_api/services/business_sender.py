@@ -88,6 +88,7 @@ async def send_business_draft_and_log(
         )
 
     message_ids: list[int] = []
+    total_chunks = len(chunks)
     for chunk in chunks:
         try:
             message_result = await asyncio.to_thread(
@@ -98,6 +99,35 @@ async def send_business_draft_and_log(
                 text=chunk,
             )
         except send_error_type as exc:
+            if message_ids:
+                sent_ids = ",".join(str(item) for item in message_ids)
+                partial_error = f"partial_delivery|sent_message_ids={sent_ids}|error={str(exc)}"
+                set_reply_draft_last_error(conn, draft_id=int(draft["id"]), last_error=partial_error)
+                create_approval_action(
+                    conn,
+                    draft_id=int(draft["id"]),
+                    user_id=int(draft["user_id"]),
+                    thread_id=str(draft["thread_id"]),
+                    action="draft_send_partial",
+                    actor=actor,
+                    payload={
+                        "error": str(exc),
+                        "business_connection_id": business_connection_id,
+                        "chat_id": chat_id,
+                        "sent_message_ids": message_ids,
+                        "delivered_chunks": len(message_ids),
+                        "total_chunks": total_chunks,
+                    },
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"Partial Telegram Business delivery detected: sent_message_ids={sent_ids}. "
+                        "Проверьте чат и подтвердите отправку через sent_message_id, чтобы избежать дублей. "
+                        f"Original error: {exc}"
+                    ),
+                ) from exc
+
             set_reply_draft_last_error(conn, draft_id=int(draft["id"]), last_error=str(exc))
             create_approval_action(
                 conn,
