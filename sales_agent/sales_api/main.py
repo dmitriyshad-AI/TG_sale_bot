@@ -58,6 +58,7 @@ from sales_agent.sales_core.db import (
     get_reply_draft,
     get_latest_lead_score,
     init_db,
+    log_business_message,
     list_approval_actions_for_thread,
     list_business_messages,
     list_call_records,
@@ -76,6 +77,7 @@ from sales_agent.sales_core.db import (
     resolve_preferred_thread_for_user,
     update_call_record_status,
     update_mango_event_status,
+    set_reply_draft_last_error,
     update_reply_draft_status,
     update_reply_draft_text,
     upsert_call_summary,
@@ -95,6 +97,10 @@ from sales_agent.sales_core.tallanto_readonly import (
 from sales_agent.sales_core.mango_client import MangoCallEvent, MangoClient, MangoClientError
 from sales_agent.sales_core.telegram_webapp import verify_telegram_webapp_init_data
 from sales_agent.sales_core.llm_client import LLMClient
+from sales_agent.sales_core.telegram_business_sender import (
+    TelegramBusinessSendError,
+    send_business_message,
+)
 from sales_agent.sales_core.vector_store import load_vector_store_id
 from sales_agent.sales_api.routers.faq_lab import build_faq_lab_router
 from sales_agent.sales_api.routers.director import build_director_router
@@ -115,6 +121,7 @@ ASSISTANT_RECENT_HISTORY_TEXT_LIMIT = 350
 ASSISTANT_CONTEXT_RECENT_REQUESTS_LIMIT = 8
 ASSISTANT_CONTEXT_INTENTS_LIMIT = 12
 ASSISTANT_CONTEXT_SUMMARY_MAX = 1200
+TELEGRAM_MAX_TEXT_CHARS = 4000
 LEAD_RADAR_RULE_NO_REPLY = "radar:no_reply"
 LEAD_RADAR_RULE_CALL_NO_NEXT_STEP = "radar:call_no_next_step"
 LEAD_RADAR_RULE_STALE_WARM = "radar:stale_warm"
@@ -1068,8 +1075,251 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             code = status.HTTP_502_BAD_GATEWAY
         return HTTPException(status_code=code, detail=message)
 
+    def _build_thread_crm_context(user_item: Dict[str, Any]) -> Dict[str, Any]:
+        context: Dict[str, Any] = {
+            "enabled": bool(cfg.enable_tallanto_enrichment and cfg.crm_provider == "tallanto"),
+            "found": False,
+            "tags": [],
+            "interests": [],
+            "last_touch_days": None,
+        }
+        if not context["enabled"]:
+            return context
+
+        if not cfg.tallanto_read_only:
+            context["error"] = "tallanto_read_only_disabled"
+            return context
+        token = cfg.tallanto_api_token or cfg.tallanto_api_key
+        if not cfg.tallanto_api_url or not token:
+            context["error"] = "tallanto_not_configured"
+            return context
+
+        module = (cfg.tallanto_default_contact_module or "contacts").strip() or "contacts"
+        external_id = str(user_item.get("external_id") or "").strip()
+        username = str(user_item.get("username") or "").strip()
+        lookup_candidates: list[tuple[str, str]] = []
+        if external_id:
+            lookup_candidates.extend(
+                [
+                    ("telegram_id", external_id),
+                    ("telegram", external_id),
+                    ("external_id", external_id),
+                ]
+            )
+        if username:
+            lookup_candidates.extend(
+                [
+                    ("username", username),
+                    ("telegram_username", username),
+                    ("telegram_username", f"@{username}"),
+                ]
+            )
+
+        deduped: list[tuple[str, str]] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for field_name, field_value in lookup_candidates:
+            key = (field_name.strip(), field_value.strip())
+            if not key[0] or not key[1] or key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            deduped.append(key)
+
+        if not deduped:
+            context["error"] = "lookup_candidates_empty"
+            return context
+
+        client = TallantoReadOnlyClient(base_url=cfg.tallanto_api_url, token=token)
+        for field_name, field_value in deduped:
+            cache_key = _crm_cache_key(
+                "thread_context",
+                {"module": module, "field": field_name, "value": field_value},
+            )
+            cached = _read_crm_cache(cache_key)
+            if isinstance(cached, dict):
+                cached_context = {
+                    "enabled": True,
+                    "found": bool(cached.get("found")),
+                    "tags": list(cached.get("tags") or []),
+                    "interests": list(cached.get("interests") or []),
+                    "last_touch_days": cached.get("last_touch_days"),
+                    "lookup_field": field_name,
+                }
+                if cached_context["found"]:
+                    return cached_context
+
+            try:
+                primary = client.call(
+                    "entry_by_fields",
+                    {"module": module, "fields_values": {field_name: field_value}},
+                )
+                payload = sanitize_tallanto_lookup_context(primary)
+                if not payload.get("found"):
+                    fallback = client.call(
+                        "get_entry_list",
+                        {"module": module, "fields_values": {field_name: field_value}},
+                    )
+                    payload = sanitize_tallanto_lookup_context(fallback)
+            except RuntimeError:
+                continue
+
+            response_payload = {
+                "found": bool(payload.get("found")),
+                "tags": list(payload.get("tags") or []),
+                "interests": list(payload.get("interests") or []),
+                "last_touch_days": payload.get("last_touch_days"),
+            }
+            _write_crm_cache(cache_key, response_payload)
+            if response_payload["found"]:
+                return {
+                    "enabled": True,
+                    **response_payload,
+                    "lookup_field": field_name,
+                }
+
+        return context
+
     def _thread_id_from_user_id(user_id: int) -> str:
         return f"tg:{int(user_id)}"
+
+    def _parse_business_thread_key(thread_id: str) -> Optional[tuple[str, int]]:
+        raw = (thread_id or "").strip()
+        if not raw.startswith("biz:"):
+            return None
+        parts = raw.split(":", 2)
+        if len(parts) != 3:
+            return None
+        business_connection_id = parts[1].strip()
+        chat_token = parts[2].strip()
+        if not business_connection_id:
+            return None
+        if not chat_token or not chat_token.lstrip("-").isdigit():
+            return None
+        return business_connection_id, int(chat_token)
+
+    def _split_telegram_text_chunks(text: str, *, max_len: int = TELEGRAM_MAX_TEXT_CHARS) -> list[str]:
+        normalized = " ".join((text or "").split()).strip()
+        if not normalized:
+            return []
+        if len(normalized) <= max_len:
+            return [normalized]
+        chunks: list[str] = []
+        start = 0
+        while start < len(normalized):
+            hard_end = min(start + max_len, len(normalized))
+            end = hard_end
+            if hard_end < len(normalized):
+                split_at = normalized.rfind(" ", start, hard_end)
+                if split_at > start + max_len // 3:
+                    end = split_at
+            chunk = normalized[start:end].strip()
+            if not chunk:
+                chunk = normalized[start:hard_end].strip()
+                end = hard_end
+            chunks.append(chunk)
+            start = end
+            while start < len(normalized) and normalized[start].isspace():
+                start += 1
+        return chunks
+
+    async def _send_business_draft_and_log(
+        conn: Any,
+        *,
+        draft: Dict[str, Any],
+        actor: str,
+    ) -> Dict[str, Any]:
+        parsed_thread = _parse_business_thread_key(str(draft.get("thread_id") or ""))
+        if parsed_thread is None:
+            return {
+                "transport": "manual",
+                "sent_message_id": None,
+                "message_ids": [],
+            }
+
+        if not cfg.telegram_bot_token:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="TELEGRAM_BOT_TOKEN is empty. Business send is unavailable.",
+            )
+
+        business_connection_id, chat_id = parsed_thread
+        connection = get_business_connection(conn, business_connection_id=business_connection_id)
+        if not connection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Business connection not found: {business_connection_id}",
+            )
+        if not bool(connection.get("is_enabled")):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Business connection is disabled: {business_connection_id}",
+            )
+        if not bool(connection.get("can_reply")):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Business connection cannot reply: {business_connection_id}",
+            )
+
+        message_text = str(draft.get("draft_text") or "").strip()
+        chunks = _split_telegram_text_chunks(message_text)
+        if not chunks:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Draft text is empty after normalization.",
+            )
+
+        message_ids: list[int] = []
+        for chunk in chunks:
+            try:
+                message_result = await asyncio.to_thread(
+                    send_business_message,
+                    bot_token=cfg.telegram_bot_token,
+                    business_connection_id=business_connection_id,
+                    chat_id=chat_id,
+                    text=chunk,
+                )
+            except TelegramBusinessSendError as exc:
+                set_reply_draft_last_error(conn, draft_id=int(draft["id"]), last_error=str(exc))
+                create_approval_action(
+                    conn,
+                    draft_id=int(draft["id"]),
+                    user_id=int(draft["user_id"]),
+                    thread_id=str(draft["thread_id"]),
+                    action="draft_send_failed",
+                    actor=actor,
+                    payload={"error": str(exc), "business_connection_id": business_connection_id, "chat_id": chat_id},
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Telegram Business send failed: {exc}",
+                ) from exc
+
+            message_id = int(message_result.get("message_id") or 0)
+            if message_id > 0:
+                message_ids.append(message_id)
+            log_business_message(
+                conn,
+                business_connection_id=business_connection_id,
+                chat_id=chat_id,
+                telegram_message_id=message_id if message_id > 0 else None,
+                direction="outbound",
+                text=chunk,
+                user_id=int(draft["user_id"]),
+                payload={
+                    "event_type": "business_message",
+                    "source": "admin_inbox_send",
+                    "draft_id": int(draft["id"]),
+                    "actor": actor,
+                },
+            )
+
+        sent_message_id = ",".join(str(item) for item in message_ids) if message_ids else None
+        return {
+            "transport": "telegram_business",
+            "business_connection_id": business_connection_id,
+            "chat_id": chat_id,
+            "message_ids": message_ids,
+            "sent_message_id": sent_message_id,
+        }
 
     def _require_user_exists(conn: Any, user_id: int) -> None:
         row = conn.execute("SELECT id FROM users WHERE id = ? LIMIT 1", (int(user_id),)).fetchone()
@@ -1249,10 +1499,52 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 WHERE direction = 'outbound'
                 GROUP BY user_id
             )
-            SELECT li.user_id, li.inbound_message_id, li.inbound_at, li.inbound_text
+            SELECT li.user_id, ('tg:' || li.user_id) AS thread_id, li.inbound_message_id, li.inbound_at, li.inbound_text
             FROM last_inbound li
             LEFT JOIN last_outbound lo ON lo.user_id = li.user_id
             WHERE (lo.outbound_message_id IS NULL OR lo.outbound_message_id < li.inbound_message_id)
+              AND julianday(li.inbound_at) <= julianday('now') - (? / 24.0)
+            ORDER BY li.inbound_message_id DESC
+            LIMIT ?
+            """,
+            (max(1, int(no_reply_hours)), max(1, int(limit))),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def _collect_business_no_reply_candidates(conn: Any, *, no_reply_hours: int, limit: int) -> list[Dict[str, Any]]:
+        cursor = conn.execute(
+            """
+            WITH last_inbound AS (
+                SELECT
+                    bm.thread_key,
+                    bm.user_id,
+                    bm.id AS inbound_message_id,
+                    bm.created_at AS inbound_at,
+                    bm.text AS inbound_text
+                FROM business_messages bm
+                JOIN (
+                    SELECT thread_key, MAX(id) AS max_id
+                    FROM business_messages
+                    WHERE direction = 'inbound' AND is_deleted = 0
+                    GROUP BY thread_key
+                ) latest ON latest.max_id = bm.id
+            ),
+            last_outbound AS (
+                SELECT thread_key, MAX(id) AS outbound_message_id
+                FROM business_messages
+                WHERE direction = 'outbound' AND is_deleted = 0
+                GROUP BY thread_key
+            )
+            SELECT
+                li.user_id,
+                li.thread_key AS thread_id,
+                li.inbound_message_id,
+                li.inbound_at,
+                li.inbound_text
+            FROM last_inbound li
+            LEFT JOIN last_outbound lo ON lo.thread_key = li.thread_key
+            WHERE li.user_id IS NOT NULL
+              AND (lo.outbound_message_id IS NULL OR lo.outbound_message_id < li.inbound_message_id)
               AND julianday(li.inbound_at) <= julianday('now') - (? / 24.0)
             ORDER BY li.inbound_message_id DESC
             LIMIT ?
@@ -1442,6 +1734,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     no_reply_hours=cfg.lead_radar_no_reply_hours,
                     limit=effective_limit,
                 )
+                business_no_reply_candidates = _collect_business_no_reply_candidates(
+                    conn,
+                    no_reply_hours=cfg.lead_radar_no_reply_hours,
+                    limit=effective_limit,
+                )
                 call_candidates = _collect_call_no_next_step_candidates(
                     conn,
                     call_no_next_step_hours=cfg.lead_radar_call_no_next_step_hours,
@@ -1461,22 +1758,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "limit": effective_limit,
                     "created_followups": 0,
                     "created_drafts": 0,
-                    "scanned": len(no_reply_candidates) + len(call_candidates) + len(stale_warm_candidates),
+                    "scanned": len(no_reply_candidates)
+                    + len(business_no_reply_candidates)
+                    + len(call_candidates)
+                    + len(stale_warm_candidates),
                     "rules": {
-                        LEAD_RADAR_RULE_NO_REPLY: {"candidates": len(no_reply_candidates), "created": 0},
+                        LEAD_RADAR_RULE_NO_REPLY: {
+                            "candidates": len(no_reply_candidates) + len(business_no_reply_candidates),
+                            "created": 0,
+                        },
                         LEAD_RADAR_RULE_CALL_NO_NEXT_STEP: {"candidates": len(call_candidates), "created": 0},
                         LEAD_RADAR_RULE_STALE_WARM: {"candidates": len(stale_warm_candidates), "created": 0},
                     },
                 }
 
                 remaining = effective_limit
-                for candidate in no_reply_candidates:
+                no_reply_all_candidates = [*no_reply_candidates, *business_no_reply_candidates]
+                for candidate in no_reply_all_candidates:
                     if remaining <= 0:
                         break
                     user_id = int(candidate.get("user_id") or 0)
                     if user_id <= 0:
                         continue
-                    thread_id = _thread_id_from_user_id(user_id)
+                    thread_id = _safe_thread_id(candidate.get("thread_id")) or _thread_id_from_user_id(user_id)
                     if _pending_radar_followup_exists(conn, thread_id=thread_id, rule_key=LEAD_RADAR_RULE_NO_REPLY):
                         continue
                     if get_conversation_outcome(conn, thread_id=thread_id) is not None:
@@ -2682,7 +2986,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             conn.close()
         if detail.get("user") is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User {user_id} not found.")
-        return {"ok": True, **detail}
+        user_item = detail.get("user") if isinstance(detail.get("user"), dict) else {}
+        crm_context = _build_thread_crm_context(user_item)
+        return {"ok": True, **detail, "crm_context": crm_context}
 
     @app.post("/admin/inbox/{user_id}/drafts")
     async def admin_inbox_create_draft(
@@ -2847,12 +3153,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     detail=f"Draft {draft_id} must be approved before send.",
                 )
 
+            delivery = await _send_business_draft_and_log(
+                conn,
+                draft=draft,
+                actor=admin_username,
+            )
+            resolved_sent_message_id = (
+                (delivery.get("sent_message_id") if isinstance(delivery, dict) else None)
+                or (payload.sent_message_id or "").strip()
+                or None
+            )
             update_reply_draft_status(
                 conn,
                 draft_id=draft_id,
                 status="sent",
                 actor=admin_username,
-                sent_message_id=payload.sent_message_id,
+                sent_message_id=resolved_sent_message_id,
             )
             create_approval_action(
                 conn,
@@ -2861,12 +3177,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 thread_id=str(draft["thread_id"]),
                 action="draft_sent",
                 actor=admin_username,
-                payload={"sent_message_id": payload.sent_message_id},
+                payload={
+                    "sent_message_id": resolved_sent_message_id,
+                    "delivery": delivery,
+                },
             )
             updated_draft = get_reply_draft(conn, draft_id)
         finally:
             conn.close()
-        return {"ok": True, "draft": updated_draft}
+        return {"ok": True, "draft": updated_draft, "delivery": delivery}
 
     @app.post("/admin/inbox/{user_id}/outcome")
     async def admin_inbox_set_outcome(
@@ -3453,6 +3772,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             detail.get("latest_call_insights") if isinstance(detail.get("latest_call_insights"), dict) else None
         )
         user_item = detail.get("user") if isinstance(detail.get("user"), dict) else {}
+        crm_context = _build_thread_crm_context(user_item)
 
         message_rows: list[str] = []
         for item in messages[-80:]:
@@ -3542,11 +3862,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 f"<b>Objections:</b> {html.escape(objections or '-')}"
                 "</div>"
             )
+        crm_context_html = "<p class='muted'>CRM контекст недоступен.</p>"
+        if isinstance(crm_context, dict):
+            if bool(crm_context.get("enabled")):
+                if bool(crm_context.get("found")):
+                    tags = ", ".join(str(item) for item in (crm_context.get("tags") or [])) or "-"
+                    interests = ", ".join(str(item) for item in (crm_context.get("interests") or [])) or "-"
+                    crm_context_html = (
+                        "<div class='card'>"
+                        f"<b>Match:</b> yes<br/>"
+                        f"<b>Lookup field:</b> {html.escape(str(crm_context.get('lookup_field') or '-'))}<br/>"
+                        f"<b>Tags:</b> {html.escape(tags)}<br/>"
+                        f"<b>Interests:</b> {html.escape(interests)}<br/>"
+                        f"<b>Last touch (days):</b> {html.escape(str(crm_context.get('last_touch_days') or '-'))}"
+                        "</div>"
+                    )
+                else:
+                    crm_context_html = (
+                        "<div class='card'>"
+                        "<b>Match:</b> no<br/>"
+                        "<span class='muted'>Контакт не найден в CRM по доступным safe-полям.</span>"
+                        "</div>"
+                    )
+            else:
+                crm_context_html = (
+                    "<div class='card'>"
+                    "<span class='muted'>CRM enrichment выключен feature-flag или провайдером.</span>"
+                    "</div>"
+                )
 
         body = (
             f"<h1>Inbox Thread #{user_id}</h1>"
             f"<p class='muted'>Клиент: {customer_name}</p>"
             "<p><a href='/admin/ui/inbox'>← Назад к списку</a></p>"
+            "<h2>CRM Context (read-only)</h2>"
+            f"{crm_context_html}"
             "<h2>Latest Call Insights</h2>"
             f"{call_insights_html}"
             "<h2>Lead Score</h2>"
@@ -3694,28 +4044,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if draft is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Draft {draft_id} not found.")
             current_status = str(draft.get("status") or "")
-            if current_status != "sent":
-                if current_status != "approved":
-                    update_reply_draft_status(conn, draft_id=draft_id, status="approved", actor=admin_username)
-                    create_approval_action(
-                        conn,
-                        draft_id=draft_id,
-                        user_id=int(draft["user_id"]),
-                        thread_id=str(draft["thread_id"]),
-                        action="draft_approved",
-                        actor=admin_username,
-                        payload={},
-                    )
-                update_reply_draft_status(conn, draft_id=draft_id, status="sent", actor=admin_username)
-                create_approval_action(
-                    conn,
-                    draft_id=draft_id,
-                    user_id=int(draft["user_id"]),
-                    thread_id=str(draft["thread_id"]),
-                    action="draft_sent",
-                    actor=admin_username,
-                    payload={},
+            if current_status == "sent":
+                user_id = int(draft["user_id"])
+                return RedirectResponse(url=f"/admin/ui/inbox/{user_id}", status_code=status.HTTP_303_SEE_OTHER)
+            if current_status != "approved":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Draft {draft_id} must be approved before send.",
                 )
+
+            delivery = await _send_business_draft_and_log(
+                conn,
+                draft=draft,
+                actor=admin_username,
+            )
+            resolved_sent_message_id = (
+                (delivery.get("sent_message_id") if isinstance(delivery, dict) else None)
+                or None
+            )
+            update_reply_draft_status(
+                conn,
+                draft_id=draft_id,
+                status="sent",
+                actor=admin_username,
+                sent_message_id=resolved_sent_message_id,
+            )
+            create_approval_action(
+                conn,
+                draft_id=draft_id,
+                user_id=int(draft["user_id"]),
+                thread_id=str(draft["thread_id"]),
+                action="draft_sent",
+                actor=admin_username,
+                payload={
+                    "sent_message_id": resolved_sent_message_id,
+                    "delivery": delivery,
+                },
+            )
             user_id = int(draft["user_id"])
         finally:
             conn.close()

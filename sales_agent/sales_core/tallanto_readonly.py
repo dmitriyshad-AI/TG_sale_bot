@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_METHODS = {
     "list_possible_modules",
@@ -34,6 +37,7 @@ class TallantoReadOnlyClient:
     def call(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         normalized_method = (method or "").strip()
         if normalized_method == "set_entry" or normalized_method not in ALLOWED_METHODS:
+            logger.warning("Blocked Tallanto method in read-only client: method=%s", normalized_method or "<empty>")
             raise RuntimeError("Tallanto is read-only")
         if not self.is_configured():
             raise RuntimeError("Tallanto read-only client is not configured.")

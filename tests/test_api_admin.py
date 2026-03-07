@@ -7,6 +7,7 @@ try:
     from sales_agent.sales_api.main import create_app
     from sales_agent.sales_core import db
     from sales_agent.sales_core.config import Settings
+    from sales_agent.sales_core.telegram_business_sender import TelegramBusinessSendError
     from tests.test_client_compat import build_test_client
 
     HAS_ADMIN_DEPS = True
@@ -22,11 +23,12 @@ class ApiAdminTests(unittest.TestCase):
         admin_user: str = "admin",
         admin_pass: str = "secret",
         *,
+        telegram_bot_token: str = "",
         enable_lead_radar: bool = False,
         lead_radar_scheduler_enabled: bool = True,
     ) -> Settings:
         return Settings(
-            telegram_bot_token="",
+            telegram_bot_token=telegram_bot_token,
             openai_api_key="",
             openai_model="gpt-4.1",
             tallanto_api_url="",
@@ -260,6 +262,54 @@ class ApiAdminTests(unittest.TestCase):
             self.assertEqual(metrics_ui.status_code, 200)
             self.assertIn("Revenue Metrics", metrics_ui.text)
 
+    def test_admin_inbox_detail_includes_sanitized_crm_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            settings = self._settings(db_path)
+            settings.tallanto_read_only = True
+            settings.tallanto_api_url = "https://crm.example/api"
+            settings.tallanto_api_token = "token"
+            settings.tallanto_default_contact_module = "contacts"
+            app = create_app(settings)
+
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(
+                    conn,
+                    channel="telegram",
+                    external_id="123456",
+                    username="alice",
+                    first_name="Alice",
+                )
+                db.log_message(conn, user_id=user_id, direction="inbound", text="Привет", meta={})
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            with patch(
+                "sales_agent.sales_api.main.TallantoReadOnlyClient.call",
+                return_value={
+                    "result": [
+                        {
+                            "tags": "vip,parents",
+                            "interests": ["ege", "math"],
+                            "phone": "+79990000000",
+                            "updated_at": "2026-03-01T10:00:00Z",
+                        }
+                    ]
+                },
+            ):
+                response = client.get(f"/admin/inbox/{user_id}", auth=auth)
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            crm_context = payload.get("crm_context") or {}
+            self.assertTrue(crm_context.get("enabled"))
+            self.assertTrue(crm_context.get("found"))
+            self.assertEqual(crm_context.get("tags"), ["vip", "parents"])
+            self.assertEqual(crm_context.get("interests"), ["ege", "math"])
+            self.assertNotIn("phone", crm_context)
+
     def test_admin_business_inbox_api_and_ui(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"
@@ -360,6 +410,146 @@ class ApiAdminTests(unittest.TestCase):
             self.assertEqual(detail_ui.status_code, 200)
             self.assertIn("Business Thread", detail_ui.text)
             self.assertIn("нужна подготовка к ЕГЭ", detail_ui.text)
+
+    def test_admin_business_draft_send_dispatches_via_business_connection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            app = create_app(self._settings(db_path, telegram_bot_token="token-123"))
+            conn = db.get_connection(db_path)
+            try:
+                business_user_id = db.get_or_create_user(
+                    conn,
+                    channel="telegram_business",
+                    external_id="client-send-1",
+                    username="sendclient",
+                    first_name="Send",
+                    last_name="Client",
+                )
+                db.upsert_business_connection(
+                    conn,
+                    business_connection_id="bc-send",
+                    telegram_user_id=801,
+                    user_chat_id=9001,
+                    can_reply=True,
+                    is_enabled=True,
+                    connected_at="2026-03-06T12:00:00+00:00",
+                    meta={},
+                )
+                thread_key = db.upsert_business_thread(
+                    conn,
+                    business_connection_id="bc-send",
+                    chat_id=99901,
+                    user_id=business_user_id,
+                    direction="inbound",
+                    occurred_at="2026-03-06T12:05:00+00:00",
+                    meta={"topic": "ege"},
+                )
+                draft_id = db.create_reply_draft(
+                    conn,
+                    user_id=business_user_id,
+                    thread_id=thread_key,
+                    draft_text="Готовы обсудить стратегию поступления.",
+                    model_name="business_placeholder_v1",
+                    created_by="manager",
+                )
+                db.update_reply_draft_status(conn, draft_id=draft_id, status="approved", actor="manager")
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            with patch(
+                "sales_agent.sales_api.main.send_business_message",
+                return_value={"message_id": 777, "date": 1700000000},
+            ) as mocked_send:
+                send_response = client.post(
+                    f"/admin/inbox/drafts/{draft_id}/send",
+                    auth=auth,
+                    json={},
+                )
+            self.assertEqual(send_response.status_code, 200)
+            send_payload = send_response.json()
+            self.assertEqual(send_payload["draft"]["status"], "sent")
+            self.assertEqual(send_payload["draft"]["sent_message_id"], "777")
+            self.assertEqual(send_payload["delivery"]["transport"], "telegram_business")
+            self.assertEqual(send_payload["delivery"]["message_ids"], [777])
+            self.assertEqual(mocked_send.call_count, 1)
+
+            repeat_response = client.post(
+                f"/admin/inbox/drafts/{draft_id}/send",
+                auth=auth,
+                json={},
+            )
+            self.assertEqual(repeat_response.status_code, 200)
+            self.assertTrue(repeat_response.json()["already_sent"])
+
+            conn = db.get_connection(db_path)
+            try:
+                messages = db.list_business_messages(conn, thread_key="biz:bc-send:99901", limit=20)
+            finally:
+                conn.close()
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(messages[0]["direction"], "outbound")
+            self.assertEqual(messages[0]["telegram_message_id"], 777)
+
+    def test_admin_business_draft_send_failure_keeps_draft_approved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            app = create_app(self._settings(db_path, telegram_bot_token="token-123"))
+            conn = db.get_connection(db_path)
+            try:
+                business_user_id = db.get_or_create_user(
+                    conn,
+                    channel="telegram_business",
+                    external_id="client-send-fail",
+                )
+                db.upsert_business_connection(
+                    conn,
+                    business_connection_id="bc-fail",
+                    can_reply=True,
+                    is_enabled=True,
+                )
+                thread_key = db.upsert_business_thread(
+                    conn,
+                    business_connection_id="bc-fail",
+                    chat_id=99111,
+                    user_id=business_user_id,
+                    direction="inbound",
+                )
+                draft_id = db.create_reply_draft(
+                    conn,
+                    user_id=business_user_id,
+                    thread_id=thread_key,
+                    draft_text="Черновик с ошибкой отправки",
+                    created_by="manager",
+                )
+                db.update_reply_draft_status(conn, draft_id=draft_id, status="approved", actor="manager")
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            with patch(
+                "sales_agent.sales_api.main.send_business_message",
+                side_effect=TelegramBusinessSendError("mock send failure"),
+            ):
+                send_response = client.post(
+                    f"/admin/inbox/drafts/{draft_id}/send",
+                    auth=auth,
+                    json={},
+                )
+            self.assertEqual(send_response.status_code, 502)
+
+            conn = db.get_connection(db_path)
+            try:
+                draft = db.get_reply_draft(conn, draft_id)
+                actions = db.list_approval_actions_for_thread(conn, thread_id="biz:bc-fail:99111", limit=20)
+            finally:
+                conn.close()
+            self.assertIsNotNone(draft)
+            self.assertEqual(draft["status"], "approved")
+            self.assertIn("mock send failure", str(draft.get("last_error") or ""))
+            self.assertTrue(any(item.get("action") == "draft_send_failed" for item in actions))
 
     def test_admin_followups_and_lead_radar_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -479,6 +669,66 @@ class ApiAdminTests(unittest.TestCase):
             response = client.post("/admin/followups/run", auth=auth, json={})
             self.assertEqual(response.status_code, 503)
 
+    def test_admin_followups_run_covers_business_no_reply_threads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            app = create_app(
+                self._settings(
+                    db_path,
+                    enable_lead_radar=True,
+                    lead_radar_scheduler_enabled=False,
+                )
+            )
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(
+                    conn,
+                    channel="telegram_business",
+                    external_id="biz-radar-u1",
+                )
+                db.upsert_business_connection(
+                    conn,
+                    business_connection_id="bc-radar",
+                    can_reply=True,
+                    is_enabled=True,
+                )
+                db.log_business_message(
+                    conn,
+                    business_connection_id="bc-radar",
+                    chat_id=88077,
+                    telegram_message_id=900,
+                    user_id=user_id,
+                    direction="inbound",
+                    text="Хочу консультацию по ЕГЭ",
+                    payload={},
+                    created_at="2026-03-06T12:05:00+00:00",
+                )
+                conn.execute(
+                    "UPDATE business_messages SET created_at = datetime('now', '-5 hours') WHERE thread_key = ?",
+                    ("biz:bc-radar:88077",),
+                )
+                conn.execute(
+                    "UPDATE business_threads SET last_message_at = datetime('now', '-5 hours') WHERE thread_key = ?",
+                    ("biz:bc-radar:88077",),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            run_response = client.post("/admin/followups/run", auth=auth, json={"dry_run": False})
+            self.assertEqual(run_response.status_code, 200)
+            payload = run_response.json()
+            self.assertEqual(payload["rules"]["radar:no_reply"]["created"], 1)
+
+            followups = client.get("/admin/followups?radar_only=true", auth=auth)
+            self.assertEqual(followups.status_code, 200)
+            items = followups.json()["items"]
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["thread_id"], "biz:bc-radar:88077")
+
     def test_admin_calls_upload_and_inbox_enrichment(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "admin.db"
@@ -552,6 +802,53 @@ class ApiAdminTests(unittest.TestCase):
             self.assertEqual(call_detail_ui.status_code, 200)
             self.assertIn("Call Detail", call_detail_ui.text)
             self.assertIn("Transcript", call_detail_ui.text)
+
+    def test_admin_calls_upload_uses_existing_business_thread_user(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "admin.db"
+            app = create_app(self._settings(db_path))
+            conn = db.get_connection(db_path)
+            try:
+                user_id = db.get_or_create_user(
+                    conn,
+                    channel="telegram_business",
+                    external_id="biz-call-user",
+                    username="bizcall",
+                )
+                db.upsert_business_connection(
+                    conn,
+                    business_connection_id="bc-call",
+                    can_reply=True,
+                    is_enabled=True,
+                )
+                db.upsert_business_thread(
+                    conn,
+                    business_connection_id="bc-call",
+                    chat_id=77101,
+                    user_id=user_id,
+                    direction="inbound",
+                )
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            upload_response = client.post(
+                "/admin/calls/upload",
+                auth=auth,
+                data={
+                    "thread_id": "biz:bc-call:77101",
+                    "transcript_hint": "Клиент интересуется олимпиадной подготовкой и консультацией.",
+                },
+            )
+            self.assertEqual(upload_response.status_code, 200)
+            item = upload_response.json()["item"]
+            self.assertEqual(int(item["user_id"]), user_id)
+            self.assertEqual(item["thread_id"], "biz:bc-call:77101")
+
+            followups = client.get("/admin/followups", auth=auth)
+            self.assertEqual(followups.status_code, 200)
+            self.assertTrue(any(task.get("thread_id") == "biz:bc-call:77101" for task in followups.json()["items"]))
 
     def test_admin_calls_ui_upload_redirects_to_call_detail(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

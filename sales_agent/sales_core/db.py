@@ -1164,6 +1164,33 @@ def update_reply_draft_status(
     return True
 
 
+def set_reply_draft_last_error(
+    conn: sqlite3.Connection,
+    *,
+    draft_id: int,
+    last_error: Optional[str],
+) -> bool:
+    row = conn.execute(
+        "SELECT id FROM reply_drafts WHERE id = ? LIMIT 1",
+        (draft_id,),
+    ).fetchone()
+    if not row:
+        return False
+    normalized_error = (last_error or "").strip() or None
+    conn.execute(
+        """
+        UPDATE reply_drafts
+        SET
+            last_error = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (normalized_error, draft_id),
+    )
+    conn.commit()
+    return True
+
+
 def update_reply_draft_text(
     conn: sqlite3.Connection,
     *,

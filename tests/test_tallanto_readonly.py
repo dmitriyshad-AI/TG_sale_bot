@@ -37,8 +37,10 @@ class TallantoReadOnlyClientTests(unittest.TestCase):
 
     def test_call_rejects_write_method(self) -> None:
         client = TallantoReadOnlyClient(base_url="https://crm.example/api", token="token")
-        with self.assertRaises(RuntimeError):
-            client.call("set_entry", {"module": "leads"})
+        with self.assertLogs("sales_agent.sales_core.tallanto_readonly", level="WARNING") as logs:
+            with self.assertRaises(RuntimeError):
+                client.call("set_entry", {"module": "leads"})
+        self.assertTrue(any("Blocked Tallanto method" in line for line in logs.output))
 
     def test_call_rejects_unknown_method(self) -> None:
         client = TallantoReadOnlyClient(base_url="https://crm.example/api", token="token")
