@@ -45,6 +45,8 @@ class DatabaseTests(unittest.TestCase):
                 "faq_candidates",
                 "canonical_answers",
                 "answer_performance",
+                "faq_lab_runs",
+                "faq_lab_events",
                 "campaign_goals",
                 "campaign_plans",
                 "campaign_actions",
@@ -377,6 +379,35 @@ class DatabaseTests(unittest.TestCase):
         ordered_newest = db.list_mango_events(self.conn, limit=10, newest_first=True)
         self.assertEqual(ordered_newest[0]["event_id"], "evt-2")
 
+        claim_missing = db.claim_failed_mango_event_for_retry(self.conn, event_row_id=999999)
+        self.assertEqual(claim_missing, "missing")
+
+        claim_not_failed = db.claim_failed_mango_event_for_retry(self.conn, event_row_id=int(event_state["id"]))
+        self.assertEqual(claim_not_failed, "not_failed")
+
+        failed_state = db.create_or_get_mango_event(
+            self.conn,
+            event_id="evt-claim-failed",
+            call_external_id="call-claim-failed",
+            source="webhook",
+            payload={"event_id": "evt-claim-failed"},
+        )
+        db.update_mango_event_status(
+            self.conn,
+            event_row_id=int(failed_state["id"]),
+            status="failed",
+            error_text="temporary",
+        )
+        claim_ok = db.claim_failed_mango_event_for_retry(self.conn, event_row_id=int(failed_state["id"]))
+        self.assertEqual(claim_ok, "claimed")
+
+        failed_after_claim = db.list_mango_events(self.conn, limit=20)
+        claimed_row = next((item for item in failed_after_claim if item["event_id"] == "evt-claim-failed"), None)
+        self.assertIsNotNone(claimed_row)
+        assert claimed_row is not None
+        self.assertEqual(claimed_row["status"], "processing")
+        self.assertIsNone(claimed_row["error_text"])
+
         call_id = db.create_call_record(
             self.conn,
             user_id=user_id,
@@ -388,7 +419,7 @@ class DatabaseTests(unittest.TestCase):
             created_by="test",
         )
         self.conn.execute(
-            "UPDATE call_records SET created_at = datetime('now', '-5 hours') WHERE id = ?",
+            "UPDATE call_records SET created_at = datetime('now', '-5 hours'), updated_at = datetime('now', '-5 hours') WHERE id = ?",
             (call_id,),
         )
         self.conn.commit()
@@ -406,6 +437,56 @@ class DatabaseTests(unittest.TestCase):
         self.assertIsNotNone(item)
         assert item is not None
         self.assertIsNone(item["file_path"])
+
+        retry_missing = db.claim_failed_call_record_for_retry(self.conn, call_id=999999)
+        self.assertEqual(retry_missing, "missing")
+
+        retry_not_failed = db.claim_failed_call_record_for_retry(self.conn, call_id=call_id)
+        self.assertEqual(retry_not_failed, "not_failed")
+
+        failed_call_id = db.create_call_record(
+            self.conn,
+            user_id=user_id,
+            thread_id=f"tg:{user_id}",
+            source_type="url",
+            source_ref="https://example.com/fail.wav",
+            status="failed",
+            error_text="boom",
+            created_by="test",
+        )
+        retry_rows = db.list_call_records_for_retry(self.conn, limit=10)
+        retry_ids = {int(item["id"]) for item in retry_rows}
+        self.assertIn(failed_call_id, retry_ids)
+        self.assertNotIn(call_id, retry_ids)
+
+        retry_claimed = db.claim_failed_call_record_for_retry(self.conn, call_id=failed_call_id)
+        self.assertEqual(retry_claimed, "claimed")
+        claimed_item = db.get_call_record(self.conn, call_id=failed_call_id)
+        self.assertIsNotNone(claimed_item)
+        assert claimed_item is not None
+        self.assertEqual(claimed_item["status"], "processing")
+        self.assertIsNone(claimed_item["error_text"])
+
+        failed_for_count_id = db.create_call_record(
+            self.conn,
+            user_id=user_id,
+            thread_id=f"tg:{user_id}",
+            source_type="url",
+            source_ref="https://example.com/failed-count.wav",
+            status="failed",
+            error_text="timeout",
+            created_by="test",
+        )
+        self.conn.execute(
+            "UPDATE call_records SET created_at = datetime('now', '-3 hours') WHERE id = ?",
+            (failed_for_count_id,),
+        )
+        self.conn.commit()
+        self.assertGreaterEqual(db.count_call_records(self.conn), 3)
+        self.assertEqual(db.count_call_records(self.conn, status="failed"), 1)
+        self.assertTrue(db.get_oldest_call_record_created_at(self.conn))
+        self.assertTrue(db.get_oldest_call_record_created_at(self.conn, status="failed"))
+        self.assertEqual(db.get_oldest_call_record_created_at(self.conn, status="archived"), "")
 
     def test_get_and_upsert_conversation_context(self) -> None:
         user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="704")
@@ -1039,6 +1120,87 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(len(rejected), 1)
         self.assertEqual(rejected[0]["id"], draft_id)
 
+    def test_faq_lab_runs_and_events_roundtrip(self) -> None:
+        run_id = db.create_faq_lab_run(
+            self.conn,
+            trigger="scheduler",
+            status="running",
+            window_days=30,
+            min_question_count=2,
+            requested_limit=120,
+        )
+        self.assertGreater(run_id, 0)
+        self.assertTrue(
+            db.update_faq_lab_run(
+                self.conn,
+                run_id=run_id,
+                status="success",
+                summary={"ok": True, "candidates_upserted": 3},
+            )
+        )
+
+        runs = db.list_faq_lab_runs(self.conn, limit=10)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["id"], run_id)
+        self.assertEqual(runs[0]["status"], "success")
+        self.assertEqual(runs[0]["summary"]["candidates_upserted"], 3)
+        self.assertEqual(db.list_faq_lab_runs(self.conn, status="failed", limit=10), [])
+        self.assertFalse(
+            db.update_faq_lab_run(
+                self.conn,
+                run_id=999999,
+                status="failed",
+                error_text="missing",
+            )
+        )
+
+        candidate_id = db.upsert_faq_candidate(
+            self.conn,
+            question_key="как не выгореть при подготовке к егэ",
+            question_text="Как не выгореть при подготовке к ЕГЭ?",
+            question_count=4,
+            thread_count=3,
+            approvals_count=2,
+            sends_count=2,
+            next_step_count=1,
+            reply_approved_rate=0.6,
+            next_step_rate=0.5,
+            status="candidate",
+        )
+        canonical = db.promote_faq_candidate_to_canonical(
+            self.conn,
+            candidate_id=candidate_id,
+            answer_text="Разбиваем подготовку на этапы и оставляем запас на восстановление.",
+            created_by="qa",
+        )
+        self.assertIsNotNone(canonical)
+        canonical_id = int((canonical or {}).get("id") or 0)
+        self.assertGreater(canonical_id, 0)
+
+        event_id = db.create_faq_lab_event(
+            self.conn,
+            event_type="candidate_promoted",
+            candidate_id=candidate_id,
+            canonical_id=canonical_id,
+            question_key="как не выгореть при подготовке к егэ",
+            actor="qa",
+            payload={"source": "unit-test"},
+        )
+        self.assertGreater(event_id, 0)
+
+        events = db.list_faq_lab_events(self.conn, limit=10)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_type"], "candidate_promoted")
+        self.assertEqual(events[0]["payload"]["source"], "unit-test")
+        filtered = db.list_faq_lab_events(self.conn, event_type="candidate_promoted", candidate_id=candidate_id, limit=10)
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(db.count_faq_lab_runs(self.conn), 1)
+        self.assertEqual(db.count_faq_lab_runs(self.conn, status="failed"), 0)
+        latest_run = db.get_latest_faq_lab_run(self.conn)
+        self.assertIsNotNone(latest_run)
+        assert latest_run is not None
+        self.assertEqual(latest_run["status"], "success")
+
     def test_campaign_goal_plan_action_report_roundtrip(self) -> None:
         user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="campaign-user")
         thread_id = f"tg:{user_id}"
@@ -1143,6 +1305,11 @@ class DatabaseTests(unittest.TestCase):
         reports = db.list_campaign_reports(self.conn, goal_id=goal_id, limit=10)
         self.assertEqual(len(reports), 1)
         self.assertEqual(reports[0]["report"]["created_actions"], 1)
+        self.assertEqual(db.count_campaign_plans(self.conn), 1)
+        self.assertEqual(db.count_campaign_plans(self.conn, status="approved"), 1)
+        self.assertEqual(db.count_campaign_plans(self.conn, status="draft"), 0)
+        self.assertTrue(db.get_oldest_campaign_plan_created_at(self.conn))
+        self.assertEqual(db.get_oldest_campaign_plan_created_at(self.conn, status="draft"), "")
 
         self.assertFalse(db.update_campaign_goal_status(self.conn, goal_id=99999, status="approved", actor="x"))
         self.assertFalse(db.update_campaign_plan_status(self.conn, plan_id=99999, status="approved", actor="x"))

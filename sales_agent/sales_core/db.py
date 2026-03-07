@@ -327,6 +327,36 @@ CREATE_TABLE_STATEMENTS = [
     );
     """,
     """
+    CREATE TABLE IF NOT EXISTS faq_lab_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trigger TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'running',
+        window_days INTEGER NOT NULL,
+        min_question_count INTEGER NOT NULL,
+        requested_limit INTEGER NOT NULL,
+        summary_json TEXT,
+        error_text TEXT,
+        started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        finished_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS faq_lab_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT NOT NULL,
+        candidate_id INTEGER,
+        canonical_id INTEGER,
+        question_key TEXT,
+        actor TEXT,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(candidate_id) REFERENCES faq_candidates(id),
+        FOREIGN KEY(canonical_id) REFERENCES canonical_answers(id)
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS campaign_goals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         goal_text TEXT NOT NULL,
@@ -443,6 +473,10 @@ CREATE_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_canonical_answers_question_key ON canonical_answers(question_key);",
     "CREATE INDEX IF NOT EXISTS idx_answer_performance_kind_status ON answer_performance(answer_kind, status, next_step_rate DESC, question_count DESC);",
     "CREATE INDEX IF NOT EXISTS idx_answer_performance_question_key ON answer_performance(question_key);",
+    "CREATE INDEX IF NOT EXISTS idx_faq_lab_runs_status_started ON faq_lab_runs(status, started_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_faq_lab_runs_trigger_started ON faq_lab_runs(trigger, started_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_faq_lab_events_type_created ON faq_lab_events(event_type, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_faq_lab_events_candidate_created ON faq_lab_events(candidate_id, created_at DESC);",
     "CREATE INDEX IF NOT EXISTS idx_campaign_goals_status_created ON campaign_goals(status, created_at DESC);",
     "CREATE INDEX IF NOT EXISTS idx_campaign_plans_goal_status ON campaign_plans(goal_id, status, created_at DESC);",
     "CREATE INDEX IF NOT EXISTS idx_campaign_actions_goal_status ON campaign_actions(goal_id, status, created_at DESC);",
@@ -523,11 +557,73 @@ def _migration_20260307_004_add_followup_reason_index(conn: sqlite3.Connection) 
     )
 
 
+def _migration_20260307_005_add_faq_lab_audit_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS faq_lab_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trigger TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running',
+            window_days INTEGER NOT NULL,
+            min_question_count INTEGER NOT NULL,
+            requested_limit INTEGER NOT NULL,
+            summary_json TEXT,
+            error_text TEXT,
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS faq_lab_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            candidate_id INTEGER,
+            canonical_id INTEGER,
+            question_key TEXT,
+            actor TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(candidate_id) REFERENCES faq_candidates(id),
+            FOREIGN KEY(canonical_id) REFERENCES canonical_answers(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_faq_lab_runs_status_started
+        ON faq_lab_runs(status, started_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_faq_lab_runs_trigger_started
+        ON faq_lab_runs(trigger, started_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_faq_lab_events_type_created
+        ON faq_lab_events(event_type, created_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_faq_lab_events_candidate_created
+        ON faq_lab_events(candidate_id, created_at DESC)
+        """
+    )
+
+
 SCHEMA_MIGRATION_STEPS: tuple[tuple[str, Any], ...] = (
     ("20260307_001_sessions_uniqueness", _migration_20260307_001_sessions_uniqueness),
     ("20260307_002_backfill_reply_draft_thread_ids", _migration_20260307_002_backfill_reply_draft_thread_ids),
     ("20260307_003_normalize_followup_priority_and_status", _migration_20260307_003_normalize_followup_priority_and_status),
     ("20260307_004_add_followup_reason_index", _migration_20260307_004_add_followup_reason_index),
+    ("20260307_005_add_faq_lab_audit_tables", _migration_20260307_005_add_faq_lab_audit_tables),
 )
 
 
@@ -2216,6 +2312,236 @@ def list_rejected_reply_drafts(conn: sqlite3.Connection, *, limit: int = 50) -> 
     return [dict(row) for row in cursor.fetchall()]
 
 
+def create_faq_lab_run(
+    conn: sqlite3.Connection,
+    *,
+    trigger: str,
+    status: str,
+    window_days: int,
+    min_question_count: int,
+    requested_limit: int,
+    summary: Optional[Dict[str, Any]] = None,
+    error_text: Optional[str] = None,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO faq_lab_runs (
+            trigger,
+            status,
+            window_days,
+            min_question_count,
+            requested_limit,
+            summary_json,
+            error_text,
+            started_at,
+            finished_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CASE WHEN ? IN ('success', 'failed') THEN CURRENT_TIMESTAMP ELSE NULL END, CURRENT_TIMESTAMP)
+        """,
+        (
+            (trigger or "").strip() or "unknown",
+            (status or "running").strip().lower() or "running",
+            max(1, int(window_days)),
+            max(1, int(min_question_count)),
+            max(1, int(requested_limit)),
+            json.dumps(summary or {}, ensure_ascii=False) if summary is not None else None,
+            (error_text or "").strip() or None,
+            (status or "running").strip().lower() or "running",
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def update_faq_lab_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: int,
+    status: str,
+    summary: Optional[Dict[str, Any]] = None,
+    error_text: Optional[str] = None,
+) -> bool:
+    row = conn.execute("SELECT id FROM faq_lab_runs WHERE id = ? LIMIT 1", (run_id,)).fetchone()
+    if not row:
+        return False
+    normalized_status = (status or "failed").strip().lower() or "failed"
+    conn.execute(
+        """
+        UPDATE faq_lab_runs
+        SET
+            status = ?,
+            summary_json = COALESCE(?, summary_json),
+            error_text = COALESCE(?, error_text),
+            finished_at = CASE WHEN ? IN ('success', 'failed') THEN CURRENT_TIMESTAMP ELSE finished_at END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (
+            normalized_status,
+            json.dumps(summary or {}, ensure_ascii=False) if summary is not None else None,
+            (error_text or "").strip() or None,
+            normalized_status,
+            run_id,
+        ),
+    )
+    conn.commit()
+    return True
+
+
+def list_faq_lab_runs(
+    conn: sqlite3.Connection,
+    *,
+    status: Optional[str] = None,
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    params: list[Any] = []
+    where_sql = ""
+    if isinstance(status, str) and status.strip():
+        where_sql = "WHERE status = ?"
+        params.append(status.strip().lower())
+    params.append(max(1, int(limit)))
+    cursor = conn.execute(
+        f"""
+        SELECT
+            id,
+            trigger,
+            status,
+            window_days,
+            min_question_count,
+            requested_limit,
+            summary_json,
+            error_text,
+            started_at,
+            finished_at,
+            created_at,
+            updated_at
+        FROM faq_lab_runs
+        {where_sql}
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    rows: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["summary"] = _safe_json_loads(item.pop("summary_json"))
+        rows.append(item)
+    return rows
+
+
+def count_faq_lab_runs(conn: sqlite3.Connection, *, status: Optional[str] = None) -> int:
+    params: list[Any] = []
+    where_sql = ""
+    if isinstance(status, str) and status.strip():
+        where_sql = "WHERE status = ?"
+        params.append(status.strip().lower())
+    row = conn.execute(
+        f"""
+        SELECT COUNT(1) AS cnt
+        FROM faq_lab_runs
+        {where_sql}
+        """,
+        tuple(params),
+    ).fetchone()
+    if not row:
+        return 0
+    return int(row["cnt"] or 0)
+
+
+def get_latest_faq_lab_run(conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT id, trigger, status, started_at, finished_at, error_text, updated_at
+        FROM faq_lab_runs
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if not row:
+        return None
+    return dict(row)
+
+
+def create_faq_lab_event(
+    conn: sqlite3.Connection,
+    *,
+    event_type: str,
+    candidate_id: Optional[int] = None,
+    canonical_id: Optional[int] = None,
+    question_key: Optional[str] = None,
+    actor: Optional[str] = None,
+    payload: Optional[Dict[str, Any]] = None,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO faq_lab_events (
+            event_type,
+            candidate_id,
+            canonical_id,
+            question_key,
+            actor,
+            payload_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            (event_type or "").strip().lower() or "unknown",
+            int(candidate_id) if isinstance(candidate_id, int) and candidate_id > 0 else None,
+            int(canonical_id) if isinstance(canonical_id, int) and canonical_id > 0 else None,
+            (question_key or "").strip() or None,
+            (actor or "").strip() or None,
+            json.dumps(payload or {}, ensure_ascii=False),
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def list_faq_lab_events(
+    conn: sqlite3.Connection,
+    *,
+    event_type: Optional[str] = None,
+    candidate_id: Optional[int] = None,
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    where_parts: list[str] = []
+    params: list[Any] = []
+    if isinstance(event_type, str) and event_type.strip():
+        where_parts.append("event_type = ?")
+        params.append(event_type.strip().lower())
+    if isinstance(candidate_id, int) and candidate_id > 0:
+        where_parts.append("candidate_id = ?")
+        params.append(candidate_id)
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    params.append(max(1, int(limit)))
+    cursor = conn.execute(
+        f"""
+        SELECT
+            id,
+            event_type,
+            candidate_id,
+            canonical_id,
+            question_key,
+            actor,
+            payload_json,
+            created_at
+        FROM faq_lab_events
+        {where_sql}
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    rows: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["payload"] = _safe_json_loads(item.pop("payload_json"))
+        rows.append(item)
+    return rows
+
+
 def create_campaign_goal(
     conn: sqlite3.Connection,
     *,
@@ -2456,6 +2782,46 @@ def list_campaign_plans(
         item["actions"] = _safe_json_list(item.pop("actions_json"))
         rows.append(item)
     return rows
+
+
+def count_campaign_plans(conn: sqlite3.Connection, *, status: Optional[str] = None) -> int:
+    params: list[Any] = []
+    where_sql = ""
+    if isinstance(status, str) and status.strip():
+        where_sql = "WHERE status = ?"
+        params.append(status.strip().lower())
+    row = conn.execute(
+        f"""
+        SELECT COUNT(1) AS cnt
+        FROM campaign_plans
+        {where_sql}
+        """,
+        tuple(params),
+    ).fetchone()
+    if not row:
+        return 0
+    return int(row["cnt"] or 0)
+
+
+def get_oldest_campaign_plan_created_at(conn: sqlite3.Connection, *, status: Optional[str] = None) -> str:
+    params: list[Any] = []
+    where_sql = ""
+    if isinstance(status, str) and status.strip():
+        where_sql = "WHERE status = ?"
+        params.append(status.strip().lower())
+    row = conn.execute(
+        f"""
+        SELECT created_at
+        FROM campaign_plans
+        {where_sql}
+        ORDER BY id ASC
+        LIMIT 1
+        """,
+        tuple(params),
+    ).fetchone()
+    if not row:
+        return ""
+    return str(row["created_at"] or "").strip()
 
 
 def update_campaign_plan_status(
@@ -3248,6 +3614,46 @@ def list_call_records(
     return [dict(row) for row in cursor.fetchall()]
 
 
+def count_call_records(conn: sqlite3.Connection, *, status: Optional[str] = None) -> int:
+    params: list[Any] = []
+    where_sql = ""
+    if isinstance(status, str) and status.strip():
+        where_sql = "WHERE status = ?"
+        params.append(status.strip().lower())
+    row = conn.execute(
+        f"""
+        SELECT COUNT(1) AS cnt
+        FROM call_records
+        {where_sql}
+        """,
+        tuple(params),
+    ).fetchone()
+    if not row:
+        return 0
+    return int(row["cnt"] or 0)
+
+
+def get_oldest_call_record_created_at(conn: sqlite3.Connection, *, status: Optional[str] = None) -> str:
+    params: list[Any] = []
+    where_sql = ""
+    if isinstance(status, str) and status.strip():
+        where_sql = "WHERE status = ?"
+        params.append(status.strip().lower())
+    row = conn.execute(
+        f"""
+        SELECT created_at
+        FROM call_records
+        {where_sql}
+        ORDER BY id ASC
+        LIMIT 1
+        """,
+        tuple(params),
+    ).fetchone()
+    if not row:
+        return ""
+    return str(row["created_at"] or "").strip()
+
+
 def get_latest_call_summary_for_thread(
     conn: sqlite3.Connection,
     *,
@@ -3344,6 +3750,48 @@ def update_mango_event_status(
     )
     conn.commit()
     return True
+
+
+def claim_failed_mango_event_for_retry(
+    conn: sqlite3.Connection,
+    *,
+    event_row_id: int,
+) -> str:
+    """
+    Atomically claim a failed mango event for retry processing.
+
+    Returns:
+    - "claimed": status moved failed -> processing
+    - "not_failed": row exists but is not in failed status
+    - "missing": row does not exist
+    """
+    row = conn.execute(
+        "SELECT status FROM mango_events WHERE id = ? LIMIT 1",
+        (int(event_row_id),),
+    ).fetchone()
+    if row is None:
+        return "missing"
+
+    current_status = str(row["status"] or "").strip().lower()
+    if current_status != "failed":
+        return "not_failed"
+
+    cursor = conn.execute(
+        """
+        UPDATE mango_events
+        SET
+            status = 'processing',
+            error_text = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+          AND status = 'failed'
+        """,
+        (int(event_row_id),),
+    )
+    conn.commit()
+    if int(cursor.rowcount or 0) <= 0:
+        return "not_failed"
+    return "claimed"
 
 
 def list_mango_events(
@@ -3487,17 +3935,78 @@ def list_call_records_with_files_for_cleanup(
 ) -> list[Dict[str, Any]]:
     cursor = conn.execute(
         """
-        SELECT id, file_path, created_at
+        SELECT id, file_path, created_at, updated_at, status
         FROM call_records
         WHERE file_path IS NOT NULL
           AND file_path <> ''
-          AND julianday(created_at) <= julianday('now') - (? / 24.0)
+          AND status IN ('done', 'failed')
+          AND julianday(COALESCE(updated_at, created_at)) <= julianday('now') - (? / 24.0)
         ORDER BY id ASC
         LIMIT ?
         """,
         (max(1, int(older_than_hours)), max(1, int(limit))),
     )
     return [dict(row) for row in cursor.fetchall()]
+
+
+def list_call_records_for_retry(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    cursor = conn.execute(
+        """
+        SELECT
+            id,
+            user_id,
+            thread_id,
+            source_type,
+            source_ref,
+            file_path,
+            status,
+            error_text,
+            created_at,
+            updated_at
+        FROM call_records
+        WHERE status = 'failed'
+        ORDER BY id ASC
+        LIMIT ?
+        """,
+        (max(1, int(limit)),),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def claim_failed_call_record_for_retry(
+    conn: sqlite3.Connection,
+    *,
+    call_id: int,
+) -> str:
+    row = conn.execute(
+        "SELECT id, status FROM call_records WHERE id = ? LIMIT 1",
+        (int(call_id),),
+    ).fetchone()
+    if row is None:
+        return "missing"
+    current_status = str(row["status"] or "").strip().lower()
+    if current_status != "failed":
+        return "not_failed"
+    cursor = conn.execute(
+        """
+        UPDATE call_records
+        SET
+            status = 'processing',
+            error_text = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+          AND status = 'failed'
+        """,
+        (int(call_id),),
+    )
+    conn.commit()
+    if int(cursor.rowcount or 0) <= 0:
+        return "not_failed"
+    return "claimed"
 
 
 def clear_call_record_file_path(conn: sqlite3.Connection, *, call_id: int) -> bool:

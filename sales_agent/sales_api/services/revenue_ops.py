@@ -17,6 +17,8 @@ from sales_agent.sales_core.call_copilot import (
 )
 from sales_agent.sales_core.config import Settings, project_root
 from sales_agent.sales_core.db import (
+    claim_failed_call_record_for_retry,
+    claim_failed_mango_event_for_retry,
     clear_call_record_file_path,
     create_approval_action,
     create_call_record,
@@ -30,6 +32,7 @@ from sales_agent.sales_core.db import (
     get_call_record,
     get_latest_mango_event_created_at,
     list_call_records_with_files_for_cleanup,
+    list_call_records_for_retry,
     list_mango_events,
     update_call_record_status,
     update_mango_event_status,
@@ -74,6 +77,8 @@ class RevenueOpsService:
 
         self._lead_radar_lock: Optional[asyncio.Lock] = None
         self._mango_ingest_lock: Optional[asyncio.Lock] = None
+        self._mango_batch_lock: Optional[asyncio.Lock] = None
+        self._call_retry_lock: Optional[asyncio.Lock] = None
 
     def mango_ingest_enabled(self) -> bool:
         return bool(self.settings.enable_mango_auto_ingest and self.settings.enable_call_copilot)
@@ -157,6 +162,23 @@ class RevenueOpsService:
         if normalized in {"hot", "warm", "cold"}:
             return normalized
         return "warm"
+
+    def _call_side_effects_exist(self, conn: Any, *, call_id: int) -> bool:
+        call_token = str(int(call_id))
+        with_space = f'%\"call_id\": {call_token}%'
+        no_space = f'%\"call_id\":{call_token}%'
+        as_string = f'%\"call_id\":\"{call_token}\"%'
+        row = conn.execute(
+            """
+            SELECT id
+            FROM approval_actions
+            WHERE action IN ('manual_action', 'followup_created', 'lead_scored')
+              AND (payload_json LIKE ? OR payload_json LIKE ? OR payload_json LIKE ?)
+            LIMIT 1
+            """,
+            (with_space, no_space, as_string),
+        ).fetchone()
+        return row is not None
 
     def _build_mango_client(self) -> MangoClient:
         if not self.settings.mango_api_base_url or not self.settings.mango_api_token:
@@ -963,6 +985,216 @@ class RevenueOpsService:
 
         return {"ok": True, "item": item}
 
+    async def run_call_retry_failed_once(
+        self,
+        *,
+        trigger: str,
+        limit_override: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not self.settings.enable_call_copilot:
+            return {
+                "ok": False,
+                "enabled": False,
+                "trigger": trigger,
+                "processed": 0,
+                "retried": 0,
+                "failed": 0,
+                "skipped_not_failed": 0,
+                "skipped_already_materialized": 0,
+                "cleanup": self.cleanup_old_call_files(),
+            }
+
+        if self._call_retry_lock is None:
+            self._call_retry_lock = asyncio.Lock()
+
+        async with self._call_retry_lock:
+            effective_limit = max(1, min(int(limit_override or 50), 500))
+            conn = get_connection(self.db_path)
+            try:
+                items = list_call_records_for_retry(conn, limit=effective_limit)
+            finally:
+                conn.close()
+
+            processed = 0
+            retried = 0
+            failed = 0
+            skipped_not_failed = 0
+            skipped_already_materialized = 0
+
+            for item in items:
+                call_id = int(item.get("id") or 0)
+                if call_id <= 0:
+                    continue
+                conn_claim = get_connection(self.db_path)
+                try:
+                    claim_state = claim_failed_call_record_for_retry(conn_claim, call_id=call_id)
+                finally:
+                    conn_claim.close()
+                if claim_state != "claimed":
+                    skipped_not_failed += 1
+                    continue
+
+                processed += 1
+                conn_call = get_connection(self.db_path)
+                try:
+                    call_item = get_call_record(conn_call, call_id=call_id)
+                    if not isinstance(call_item, dict):
+                        raise RuntimeError(f"Call {call_id} not found during retry.")
+                    if self._call_side_effects_exist(conn_call, call_id=call_id):
+                        update_call_record_status(
+                            conn_call,
+                            call_id=call_id,
+                            status="done",
+                            error_text=None,
+                        )
+                        skipped_already_materialized += 1
+                        continue
+
+                    user_id = int(call_item.get("user_id") or 0)
+                    thread_id = self._safe_thread_id(call_item.get("thread_id"))
+                    if user_id <= 0 or not thread_id:
+                        raise RuntimeError("call record has invalid user/thread for retry")
+
+                    source_type = str(call_item.get("source_type") or "upload").strip() or "upload"
+                    source_ref = str(call_item.get("source_ref") or "").strip() or None
+                    transcript_text = str(call_item.get("transcript_text") or "").strip()
+                    if not transcript_text:
+                        raw_path = str(call_item.get("file_path") or "").strip()
+                        if raw_path:
+                            file_path = Path(raw_path)
+                            if file_path.exists():
+                                transcript_text = extract_transcript_from_file(file_path)
+                    effective_transcript = transcript_text or build_transcript_fallback(
+                        source_type=source_type,
+                        source_ref=source_ref,
+                        transcript_hint=None,
+                    )
+                    upsert_call_transcript(
+                        conn_call,
+                        call_id=call_id,
+                        provider="heuristic_retry",
+                        transcript_text=effective_transcript,
+                        language="ru",
+                        confidence=0.55 if transcript_text else 0.4,
+                    )
+                    insights = build_call_insights(effective_transcript)
+                    upsert_call_summary(
+                        conn_call,
+                        call_id=call_id,
+                        summary_text=insights.summary_text,
+                        interests=insights.interests,
+                        objections=insights.objections,
+                        next_best_action=insights.next_best_action,
+                        warmth=insights.warmth,
+                        confidence=insights.confidence,
+                        model_name=self.call_copilot_model_name,
+                    )
+
+                    lead_score_id = create_lead_score(
+                        conn_call,
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        score=insights.score,
+                        temperature=insights.warmth,
+                        confidence=insights.confidence,
+                        factors={
+                            "source": "call_retry",
+                            "trigger": trigger,
+                            "interests": insights.interests,
+                            "objections": insights.objections,
+                        },
+                    )
+                    followup_id = create_followup_task(
+                        conn_call,
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        priority=self._priority_from_warmth(insights.warmth),
+                        reason=f"call_retry: {insights.next_best_action}",
+                        status="pending",
+                        due_at=None,
+                        assigned_to="call_retry:auto",
+                        related_draft_id=None,
+                    )
+                    create_approval_action(
+                        conn_call,
+                        draft_id=None,
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        action="manual_action",
+                        actor="call_retry:auto",
+                        payload={
+                            "source": "call_retry",
+                            "trigger": trigger,
+                            "call_id": call_id,
+                            "followup_task_id": followup_id,
+                            "lead_score_id": lead_score_id,
+                            "next_best_action": insights.next_best_action,
+                        },
+                    )
+                    create_approval_action(
+                        conn_call,
+                        draft_id=None,
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        action="followup_created",
+                        actor="call_retry:auto",
+                        payload={
+                            "source": "call_retry",
+                            "trigger": trigger,
+                            "call_id": call_id,
+                            "followup_task_id": followup_id,
+                        },
+                    )
+                    create_approval_action(
+                        conn_call,
+                        draft_id=None,
+                        user_id=user_id,
+                        thread_id=thread_id,
+                        action="lead_scored",
+                        actor="call_retry:auto",
+                        payload={
+                            "source": "call_retry",
+                            "trigger": trigger,
+                            "call_id": call_id,
+                            "lead_score_id": lead_score_id,
+                            "temperature": insights.warmth,
+                            "score": insights.score,
+                        },
+                    )
+                    update_call_record_status(
+                        conn_call,
+                        call_id=call_id,
+                        status="done",
+                        error_text=None,
+                    )
+                    retried += 1
+                except Exception as exc:
+                    failed += 1
+                    update_call_record_status(
+                        conn_call,
+                        call_id=call_id,
+                        status="failed",
+                        error_text=str(exc)[:700],
+                    )
+                    self.logger.exception("Call retry-failed processing error (call_id=%s)", call_id)
+                finally:
+                    conn_call.close()
+
+            cleanup_result = self.cleanup_old_call_files()
+            return {
+                "ok": failed == 0,
+                "enabled": True,
+                "trigger": trigger,
+                "limit": effective_limit,
+                "fetched": len(items),
+                "processed": processed,
+                "retried": retried,
+                "failed": failed,
+                "skipped_not_failed": skipped_not_failed,
+                "skipped_already_materialized": skipped_already_materialized,
+                "cleanup": cleanup_result,
+            }
+
     async def ingest_mango_event(
         self,
         *,
@@ -1055,6 +1287,8 @@ class RevenueOpsService:
                 raise
 
     async def run_mango_poll_once(self, *, trigger: str, limit_override: Optional[int] = None) -> Dict[str, Any]:
+        if self._mango_batch_lock is None:
+            self._mango_batch_lock = asyncio.Lock()
         if not self.mango_ingest_enabled():
             return {
                 "ok": False,
@@ -1068,82 +1302,83 @@ class RevenueOpsService:
                 "cleanup": self.cleanup_old_call_files(),
             }
 
-        try:
-            client = self._build_mango_client()
-        except MangoClientError as exc:
-            return {
-                "ok": False,
-                "enabled": True,
-                "trigger": trigger,
-                "error": str(exc),
-                "processed": 0,
-                "created": 0,
-                "duplicates": 0,
-                "failed": 0,
-                "attempts": 0,
-                "cleanup": self.cleanup_old_call_files(),
-            }
-
-        conn = get_connection(self.db_path)
-        try:
-            since = get_latest_mango_event_created_at(conn)
-        finally:
-            conn.close()
-
-        effective_limit = max(1, min(int(limit_override or self.settings.mango_poll_limit_per_run), 500))
-        try:
-            events, attempts_used = await fetch_mango_poll_events_with_retries(
-                client=client,
-                since=since,
-                limit=effective_limit,
-                attempts=self.settings.mango_poll_retry_attempts,
-                base_backoff_seconds=self.settings.mango_poll_retry_backoff_seconds,
-            )
-        except MangoClientError as exc:
-            return {
-                "ok": False,
-                "enabled": True,
-                "trigger": trigger,
-                "error": str(exc),
-                "processed": 0,
-                "created": 0,
-                "duplicates": 0,
-                "failed": 0,
-                "attempts": max(1, int(self.settings.mango_poll_retry_attempts)),
-                "cleanup": self.cleanup_old_call_files(),
-            }
-
-        processed = 0
-        created = 0
-        duplicates = 0
-        failed = 0
-        for event in events:
-            processed += 1
+        async with self._mango_batch_lock:
             try:
-                result = await self.ingest_mango_event(event=event, source=f"poll:{trigger}")
-                if result.get("duplicate"):
-                    duplicates += 1
-                else:
-                    created += 1
-            except Exception:
-                failed += 1
-                self.logger.exception("Mango poll event processing failed (event_id=%s)", event.event_id)
+                client = self._build_mango_client()
+            except MangoClientError as exc:
+                return {
+                    "ok": False,
+                    "enabled": True,
+                    "trigger": trigger,
+                    "error": str(exc),
+                    "processed": 0,
+                    "created": 0,
+                    "duplicates": 0,
+                    "failed": 0,
+                    "attempts": 0,
+                    "cleanup": self.cleanup_old_call_files(),
+                }
 
-        cleanup_result = self.cleanup_old_call_files()
-        return {
-            "ok": failed == 0,
-            "enabled": True,
-            "trigger": trigger,
-            "since": since,
-            "limit": effective_limit,
-            "attempts": attempts_used,
-            "fetched": len(events),
-            "processed": processed,
-            "created": created,
-            "duplicates": duplicates,
-            "failed": failed,
-            "cleanup": cleanup_result,
-        }
+            conn = get_connection(self.db_path)
+            try:
+                since = get_latest_mango_event_created_at(conn)
+            finally:
+                conn.close()
+
+            effective_limit = max(1, min(int(limit_override or self.settings.mango_poll_limit_per_run), 500))
+            try:
+                events, attempts_used = await fetch_mango_poll_events_with_retries(
+                    client=client,
+                    since=since,
+                    limit=effective_limit,
+                    attempts=self.settings.mango_poll_retry_attempts,
+                    base_backoff_seconds=self.settings.mango_poll_retry_backoff_seconds,
+                )
+            except MangoClientError as exc:
+                return {
+                    "ok": False,
+                    "enabled": True,
+                    "trigger": trigger,
+                    "error": str(exc),
+                    "processed": 0,
+                    "created": 0,
+                    "duplicates": 0,
+                    "failed": 0,
+                    "attempts": max(1, int(self.settings.mango_poll_retry_attempts)),
+                    "cleanup": self.cleanup_old_call_files(),
+                }
+
+            processed = 0
+            created = 0
+            duplicates = 0
+            failed = 0
+            for event in events:
+                processed += 1
+                try:
+                    result = await self.ingest_mango_event(event=event, source=f"poll:{trigger}")
+                    if result.get("duplicate"):
+                        duplicates += 1
+                    else:
+                        created += 1
+                except Exception:
+                    failed += 1
+                    self.logger.exception("Mango poll event processing failed (event_id=%s)", event.event_id)
+
+            cleanup_result = self.cleanup_old_call_files()
+            return {
+                "ok": failed == 0,
+                "enabled": True,
+                "trigger": trigger,
+                "since": since,
+                "limit": effective_limit,
+                "attempts": attempts_used,
+                "fetched": len(events),
+                "processed": processed,
+                "created": created,
+                "duplicates": duplicates,
+                "failed": failed,
+                "cleanup": cleanup_result,
+            }
 
     async def run_mango_retry_failed_once(
         self,
@@ -1151,6 +1386,8 @@ class RevenueOpsService:
         trigger: str,
         limit_override: Optional[int] = None,
     ) -> Dict[str, Any]:
+        if self._mango_batch_lock is None:
+            self._mango_batch_lock = asyncio.Lock()
         if not self.mango_ingest_enabled():
             return {
                 "ok": False,
@@ -1163,58 +1400,70 @@ class RevenueOpsService:
                 "cleanup": self.cleanup_old_call_files(),
             }
 
-        effective_limit = max(1, min(int(limit_override or self.settings.mango_retry_failed_limit_per_run), 500))
-        conn = get_connection(self.db_path)
-        try:
-            items = list_mango_events(conn, status="failed", limit=effective_limit, newest_first=False)
-        finally:
-            conn.close()
-
-        processed = 0
-        retried = 0
-        failed = 0
-        duplicates = 0
-        for item in items:
-            processed += 1
-            event_row_id = int(item.get("id") or 0)
-            event = event_from_mango_record(item)
-            if event is None:
-                failed += 1
-                conn_failed = get_connection(self.db_path)
-                try:
-                    update_mango_event_status(
-                        conn_failed,
-                        event_row_id=event_row_id,
-                        status="failed",
-                        error_text="retry_parse_failed",
-                    )
-                finally:
-                    conn_failed.close()
-                continue
+        async with self._mango_batch_lock:
+            effective_limit = max(1, min(int(limit_override or self.settings.mango_retry_failed_limit_per_run), 500))
+            conn = get_connection(self.db_path)
             try:
-                result = await self.ingest_mango_event(
-                    event=event,
-                    source=f"retry:{trigger}",
-                    existing_event_row_id=event_row_id,
-                )
-                if result.get("duplicate"):
-                    duplicates += 1
-                else:
-                    retried += 1
-            except Exception:
-                failed += 1
-                self.logger.exception("Mango retry-failed event processing failed (event_id=%s)", event.event_id)
+                items = list_mango_events(conn, status="failed", limit=effective_limit, newest_first=False)
+            finally:
+                conn.close()
 
-        cleanup_result = self.cleanup_old_call_files()
-        return {
-            "ok": failed == 0,
-            "enabled": True,
-            "trigger": trigger,
-            "limit": effective_limit,
-            "fetched": len(items),
-            "processed": processed,
-            "retried": retried,
-            "duplicates": duplicates,
-            "failed": failed,
-            "cleanup": cleanup_result,
-        }
+            processed = 0
+            retried = 0
+            failed = 0
+            duplicates = 0
+            skipped_not_failed = 0
+            for item in items:
+                event_row_id = int(item.get("id") or 0)
+                conn_claim = get_connection(self.db_path)
+                try:
+                    claim_state = claim_failed_mango_event_for_retry(conn_claim, event_row_id=event_row_id)
+                finally:
+                    conn_claim.close()
+                if claim_state != "claimed":
+                    skipped_not_failed += 1
+                    continue
+
+                processed += 1
+                event = event_from_mango_record(item)
+                if event is None:
+                    failed += 1
+                    conn_failed = get_connection(self.db_path)
+                    try:
+                        update_mango_event_status(
+                            conn_failed,
+                            event_row_id=event_row_id,
+                            status="failed",
+                            error_text="retry_parse_failed",
+                        )
+                    finally:
+                        conn_failed.close()
+                    continue
+                try:
+                    result = await self.ingest_mango_event(
+                        event=event,
+                        source=f"retry:{trigger}",
+                        existing_event_row_id=event_row_id,
+                    )
+                    if result.get("duplicate"):
+                        duplicates += 1
+                    else:
+                        retried += 1
+                except Exception:
+                    failed += 1
+                    self.logger.exception("Mango retry-failed event processing failed (event_id=%s)", event.event_id)
+
+            cleanup_result = self.cleanup_old_call_files()
+            return {
+                "ok": failed == 0,
+                "enabled": True,
+                "trigger": trigger,
+                "limit": effective_limit,
+                "fetched": len(items),
+                "processed": processed,
+                "retried": retried,
+                "duplicates": duplicates,
+                "failed": failed,
+                "skipped_not_failed": skipped_not_failed,
+                "cleanup": cleanup_result,
+            }

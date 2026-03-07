@@ -177,6 +177,41 @@ class ApiDirectorTests(unittest.TestCase):
             )
             self.assertIn(apply.status_code, {200, 303})
 
+    def test_director_apply_rejects_invalid_plan_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "director_invalid_plan.db"
+            app = create_app(self._settings(db_path))
+            conn = db.get_connection(db_path)
+            try:
+                goal_id = db.create_campaign_goal(
+                    conn,
+                    goal_text="Невалидный план для проверки",
+                    created_by="admin",
+                    status="approved",
+                )
+                plan_id = db.create_campaign_plan(
+                    conn,
+                    goal_id=goal_id,
+                    objective="Невалидный action type",
+                    actions=[{"action_type": "outbound_spam", "thread_id": "tg:99"}],
+                    status="approved",
+                    created_by="admin",
+                )
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            response = client.post(
+                f"/admin/director/plans/{plan_id}/apply",
+                auth=("admin", "secret"),
+                json={},
+            )
+            self.assertEqual(response.status_code, 422)
+            payload = response.json()
+            self.assertIn("validation failed", str(payload.get("detail", {}).get("message", "")).lower())
+            errors = payload.get("detail", {}).get("errors", [])
+            self.assertTrue(any("unsupported action_type" in str(item).lower() for item in errors))
+
 
 if __name__ == "__main__":
     unittest.main()

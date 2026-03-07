@@ -86,6 +86,43 @@ class MangoAutoIngestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved_user_id, user_id)
         self.assertEqual(resolved_thread_id, f"tg:{user_id}")
 
+    def test_extract_mango_user_and_thread_from_payload_phone_and_chat_id(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram_business", external_id="mango-u4")
+        db.create_lead_record(
+            conn=self.conn,
+            user_id=user_id,
+            status="created",
+            contact={"phone": "+7 999 777 66 55"},
+        )
+        db.upsert_business_connection(
+            self.conn,
+            business_connection_id="bc-mango-chat",
+            can_reply=True,
+            is_enabled=True,
+        )
+        thread_key = db.upsert_business_thread(
+            self.conn,
+            business_connection_id="bc-mango-chat",
+            chat_id=123456,
+            user_id=user_id,
+            direction="inbound",
+        )
+        event = MangoCallEvent(
+            event_id="evt-4",
+            call_id="call-4",
+            phone="",
+            recording_url="https://example.com/rec4.mp3",
+            transcript_hint="",
+            occurred_at="",
+            payload={
+                "chat_id": "123456",
+                "contact": {"phone": "8 (999) 777-66-55"},
+            },
+        )
+        resolved_user_id, resolved_thread_id = extract_mango_user_and_thread(self.conn, event=event)
+        self.assertEqual(resolved_user_id, user_id)
+        self.assertEqual(resolved_thread_id, thread_key)
+
     async def test_fetch_mango_poll_events_with_retries(self) -> None:
         class FakeClient:
             def __init__(self) -> None:
@@ -148,15 +185,24 @@ class MangoAutoIngestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed.call_id, "call-10")
 
         fallback = event_from_mango_record(
-            {"event_id": "evt-11", "call_external_id": "ext-11", "payload": {"note": "no parsable structure"}}
+            {
+                "event_id": "evt-11",
+                "call_external_id": "ext-11",
+                "payload": {
+                    "note": "no parsable structure",
+                    "recording_url": "https://cdn.example/fallback.mp3",
+                    "contact": {"phone": "+7 (999) 555-44-33"},
+                },
+            }
         )
         self.assertIsNotNone(fallback)
         assert fallback is not None
         self.assertEqual(fallback.call_id, "ext-11")
+        self.assertEqual(fallback.recording_url, "https://cdn.example/fallback.mp3")
+        self.assertEqual(fallback.phone, "+7 (999) 555-44-33")
 
         self.assertIsNone(event_from_mango_record({"payload": {}}))
 
 
 if __name__ == "__main__":
     unittest.main()
-

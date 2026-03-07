@@ -41,6 +41,7 @@ jobs:
             --require-webhook-mode
             --require-render-persistent
             --check-mango-runtime
+            --check-revenue-runtime
           )
 
           if [ -n "${TELEGRAM_BOT_TOKEN}" ]; then

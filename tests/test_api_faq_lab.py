@@ -67,6 +67,8 @@ class ApiFaqLabTests(unittest.TestCase):
             payload = snapshot.json()
             self.assertTrue(payload["ok"])
             self.assertGreaterEqual(payload["metrics"]["candidate_count"], 1)
+            self.assertIn("runs", payload)
+            self.assertIn("events", payload)
 
             candidate_id = int(payload["candidates"][0]["id"])
             promote_resp = client.post(
@@ -76,6 +78,7 @@ class ApiFaqLabTests(unittest.TestCase):
             )
             self.assertEqual(promote_resp.status_code, 200)
             self.assertTrue(promote_resp.json()["ok"])
+            self.assertIn("event_id", promote_resp.json())
 
             conn = db.get_connection(db_path)
             try:
@@ -161,7 +164,7 @@ class ApiFaqLabTests(unittest.TestCase):
             candidate_id = int(snapshot.json()["candidates"][0]["id"])
 
             with patch(
-                "sales_agent.sales_api.routers.faq_lab.promote_faq_candidate_to_canonical",
+                "sales_agent.sales_api.routers.faq_lab.faq_lab.promote_candidate_to_canonical_safe",
                 return_value=None,
             ):
                 response = client.post(
@@ -194,6 +197,38 @@ class ApiFaqLabTests(unittest.TestCase):
                 json={"answer_text": "слишком коротко"},
             )
             self.assertEqual(response.status_code, 422)
+
+    def test_promote_candidate_archived_returns_409(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "faq_api_archived.db"
+            app = create_app(self._settings(db_path))
+
+            conn = db.get_connection(db_path)
+            try:
+                candidate_id = db.upsert_faq_candidate(
+                    conn,
+                    question_key="архивный вопрос",
+                    question_text="Архивный вопрос?",
+                    question_count=2,
+                    thread_count=1,
+                    approvals_count=0,
+                    sends_count=0,
+                    next_step_count=0,
+                    reply_approved_rate=0.0,
+                    next_step_rate=0.0,
+                    status="archived",
+                    suggested_answer="Достаточно длинный текст ответа для безопасной проверки архива.",
+                )
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            response = client.post(
+                f"/admin/faq-lab/candidates/{candidate_id}/promote",
+                auth=("admin", "secret"),
+                json={"answer_text": "Достаточно длинный ответ для проверки архивного статуса кандидата."},
+            )
+            self.assertEqual(response.status_code, 409)
 
     def test_faq_lab_scheduler_runs_on_startup(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

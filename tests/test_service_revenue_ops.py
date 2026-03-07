@@ -161,7 +161,10 @@ class RevenueOpsServiceTests(unittest.IsolatedAsyncioTestCase):
                 status="done",
                 created_by="test",
             )
-            conn.execute("UPDATE call_records SET created_at = datetime('now', '-2 hours') WHERE id = ?", (call_id,))
+            conn.execute(
+                "UPDATE call_records SET created_at = datetime('now', '-2 hours'), updated_at = datetime('now', '-2 hours') WHERE id = ?",
+                (call_id,),
+            )
             conn.commit()
         finally:
             conn.close()
@@ -437,6 +440,113 @@ class RevenueOpsServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(service, "ingest_mango_event", side_effect=RuntimeError("retry failed")):
             retry = await service.run_mango_retry_failed_once(trigger="x")
         self.assertGreaterEqual(retry["failed"], 1)
+
+    async def test_run_mango_retry_failed_skips_not_failed_claims(self) -> None:
+        service = self._service(self._settings())
+        conn = db.get_connection(self.db_path)
+        try:
+            created = db.create_or_get_mango_event(
+                conn,
+                event_id="evt-claim-skip-1",
+                call_external_id="call-claim-skip-1",
+                source="test",
+                payload={"event": "call_record", "call": {"id": "call-claim-skip-1"}},
+            )
+            db.update_mango_event_status(conn, event_row_id=int(created["id"]), status="failed", error_text="x")
+        finally:
+            conn.close()
+
+        with patch("sales_agent.sales_api.services.revenue_ops.claim_failed_mango_event_for_retry", return_value="not_failed"):
+            retry = await service.run_mango_retry_failed_once(trigger="x")
+        self.assertTrue(retry["ok"])
+        self.assertEqual(retry["processed"], 0)
+        self.assertEqual(retry["retried"], 0)
+        self.assertEqual(retry["failed"], 0)
+        self.assertGreaterEqual(retry["skipped_not_failed"], 1)
+
+    async def test_run_call_retry_failed_once_branches(self) -> None:
+        service = self._service(self._settings())
+
+        disabled = await self._service(self._settings(enable_call_copilot=False)).run_call_retry_failed_once(trigger="x")
+        self.assertFalse(disabled["enabled"])
+
+        conn = db.get_connection(self.db_path)
+        try:
+            user_id = db.get_or_create_user(conn, channel="telegram", external_id="retry-call-user")
+            call_id = db.create_call_record(
+                conn,
+                user_id=user_id,
+                thread_id=f"tg:{user_id}",
+                source_type="url",
+                source_ref="https://example.com/retry.wav",
+                status="failed",
+                error_text="transient",
+                created_by="test",
+            )
+            call_id_materialized = db.create_call_record(
+                conn,
+                user_id=user_id,
+                thread_id=f"tg:{user_id}",
+                source_type="upload",
+                source_ref="retry-materialized",
+                status="failed",
+                error_text="old",
+                created_by="test",
+            )
+            db.create_approval_action(
+                conn,
+                draft_id=None,
+                user_id=user_id,
+                thread_id=f"tg:{user_id}",
+                action="manual_action",
+                actor="test",
+                payload={"call_id": call_id_materialized, "source": "legacy"},
+            )
+        finally:
+            conn.close()
+
+        result = await service.run_call_retry_failed_once(trigger="manual-test", limit_override=20)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["processed"], 2)
+        self.assertGreaterEqual(result["retried"], 1)
+        self.assertGreaterEqual(result["skipped_already_materialized"], 1)
+
+        conn_check = db.get_connection(self.db_path)
+        try:
+            first = db.get_call_record(conn_check, call_id=call_id)
+            second = db.get_call_record(conn_check, call_id=call_id_materialized)
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            assert first is not None
+            assert second is not None
+            self.assertEqual(first["status"], "done")
+            self.assertEqual(second["status"], "done")
+        finally:
+            conn_check.close()
+
+    async def test_run_call_retry_failed_once_skips_not_failed_claim(self) -> None:
+        service = self._service(self._settings())
+        conn = db.get_connection(self.db_path)
+        try:
+            user_id = db.get_or_create_user(conn, channel="telegram", external_id="retry-claim-user")
+            db.create_call_record(
+                conn,
+                user_id=user_id,
+                thread_id=f"tg:{user_id}",
+                source_type="url",
+                source_ref="https://example.com/retry2.wav",
+                status="failed",
+                error_text="x",
+                created_by="test",
+            )
+        finally:
+            conn.close()
+
+        with patch("sales_agent.sales_api.services.revenue_ops.claim_failed_call_record_for_retry", return_value="not_failed"):
+            retry = await service.run_call_retry_failed_once(trigger="x")
+        self.assertTrue(retry["ok"])
+        self.assertEqual(retry["processed"], 0)
+        self.assertGreaterEqual(retry["skipped_not_failed"], 1)
 
 
 if __name__ == "__main__":

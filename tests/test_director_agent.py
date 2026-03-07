@@ -234,6 +234,53 @@ class DirectorAgentTests(unittest.TestCase):
         self.assertEqual(report_from_non_dict["created_actions"], 0)
         self.assertEqual(report_from_non_dict["skipped"], 1)
 
+    def test_validate_plan_for_apply_normalizes_priorities_and_deduplicates(self) -> None:
+        validated = director_agent.validate_plan_for_apply(
+            {
+                "actions": [
+                    {
+                        "action_type": "reactivation",
+                        "thread_id": "tg:101",
+                        "priority": "urgent",
+                        "reason": " A  very long reason " * 20,
+                    },
+                    {
+                        "action_type": "reactivation",
+                        "thread_id": "tg:101",
+                        "priority": "hot",
+                        "reason": "duplicate",
+                    },
+                    {
+                        "action_type": "manual_review",
+                        "thread_id": None,
+                    },
+                ]
+            },
+            max_actions=20,
+        )
+        plan = validated["plan"]
+        actions = plan["actions"]
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[0]["priority"], "warm")
+        self.assertLessEqual(len(actions[0]["reason"]), 280)
+        self.assertEqual(actions[0]["user_id"], 101)
+        self.assertGreaterEqual(len(validated["warnings"]), 2)
+
+    def test_validate_plan_for_apply_rejects_invalid_actions(self) -> None:
+        with self.assertRaises(director_agent.DirectorPlanValidationError) as ctx:
+            director_agent.validate_plan_for_apply(
+                {
+                    "actions": [
+                        {"action_type": "outbound_spam", "thread_id": "tg:1"},
+                        {"action_type": "followup"},
+                    ]
+                },
+                max_actions=10,
+            )
+        error_text = str(ctx.exception).lower()
+        self.assertIn("unsupported action_type", error_text)
+        self.assertIn("requires thread_id or positive user_id", error_text)
+
 
 if __name__ == "__main__":
     unittest.main()

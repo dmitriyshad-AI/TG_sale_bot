@@ -346,6 +346,7 @@ API/UI:
     --require-webhook-mode \
     --require-render-persistent \
     --check-mango-runtime \
+    --check-revenue-runtime \
     --check-telegram-webhook
   ```
   - Регулярный remote smoke можно включить через GitHub Actions workflow `Release Smoke`:

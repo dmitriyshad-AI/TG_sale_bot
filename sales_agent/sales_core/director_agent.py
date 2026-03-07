@@ -20,6 +20,7 @@ KEYWORD_TAGS = {
     "reactivation": {"реактив", "верн", "застыв", "stale", "warm", "тепл"},
 }
 ALLOWED_ACTION_TYPES = {"reactivation", "manual_review", "followup"}
+ALLOWED_PRIORITIES = {"hot", "warm", "cold"}
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,14 @@ class ThreadCandidate:
     last_message: str
     last_message_at: str
     source: str
+
+
+class DirectorPlanValidationError(ValueError):
+    def __init__(self, errors: list[str], warnings: Optional[list[str]] = None) -> None:
+        self.errors = list(errors)
+        self.warnings = list(warnings or [])
+        message = "; ".join(self.errors) if self.errors else "Director plan validation failed."
+        super().__init__(message)
 
 
 def _normalize_text(value: object) -> str:
@@ -244,6 +253,100 @@ def _infer_user_id_from_thread_id(thread_id: Optional[str]) -> Optional[int]:
         return None
     value = int(suffix)
     return value if value > 0 else None
+
+
+def _normalize_priority(value: object) -> str:
+    priority = str(value or "warm").strip().lower() or "warm"
+    return priority if priority in ALLOWED_PRIORITIES else "warm"
+
+
+def validate_plan_for_apply(
+    plan: Dict[str, Any],
+    *,
+    max_actions: int = 200,
+) -> Dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not isinstance(plan, dict):
+        raise DirectorPlanValidationError(["plan payload must be a JSON object."])
+
+    raw_actions = plan.get("actions")
+    if not isinstance(raw_actions, list):
+        raise DirectorPlanValidationError(["actions must be a JSON array."])
+    if not raw_actions:
+        raise DirectorPlanValidationError(["actions list is empty."])
+
+    action_limit = max(1, min(int(max_actions), 200))
+    normalized_actions: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+
+    for index, action in enumerate(raw_actions, start=1):
+        if len(normalized_actions) >= action_limit:
+            warnings.append(f"actions truncated to {action_limit} items.")
+            break
+
+        if not isinstance(action, dict):
+            errors.append(f"actions[{index}] must be an object.")
+            continue
+
+        action_type = str(action.get("action_type") or "").strip().lower()
+        if action_type not in ALLOWED_ACTION_TYPES:
+            errors.append(f"actions[{index}] has unsupported action_type='{action_type or '<empty>'}'.")
+            continue
+
+        thread_id = str(action.get("thread_id") or "").strip() or None
+        user_id_value = action.get("user_id")
+        user_id: Optional[int]
+        if isinstance(user_id_value, int) and user_id_value > 0:
+            user_id = user_id_value
+        else:
+            user_id = _infer_user_id_from_thread_id(thread_id)
+
+        if action_type in {"reactivation", "followup"} and not thread_id and user_id is None:
+            errors.append(f"actions[{index}] requires thread_id or positive user_id for action_type='{action_type}'.")
+            continue
+
+        priority = _normalize_priority(action.get("priority"))
+        if str(action.get("priority") or "").strip().lower() not in ALLOWED_PRIORITIES:
+            warnings.append(f"actions[{index}] had invalid priority; normalized to 'warm'.")
+
+        reason = _compact_text(action.get("reason"), max_len=280) or "director_agent_action"
+        dedupe_key = f"{action_type}:{thread_id or ''}:{user_id or ''}"
+        if dedupe_key in seen_keys:
+            warnings.append(f"actions[{index}] duplicate action skipped.")
+            continue
+        seen_keys.add(dedupe_key)
+
+        normalized_actions.append(
+            {
+                **action,
+                "action_type": action_type,
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "priority": priority,
+                "reason": reason,
+            }
+        )
+
+    if errors:
+        raise DirectorPlanValidationError(errors, warnings=warnings)
+    if not normalized_actions:
+        raise DirectorPlanValidationError(
+            ["No valid actions remain after normalization."],
+            warnings=warnings,
+        )
+
+    return {
+        "plan": {
+            **plan,
+            "actions": normalized_actions,
+        },
+        "warnings": warnings,
+        "input_actions": len(raw_actions),
+        "selected_actions": len(normalized_actions),
+        "max_actions": action_limit,
+    }
 
 
 def apply_campaign_plan(

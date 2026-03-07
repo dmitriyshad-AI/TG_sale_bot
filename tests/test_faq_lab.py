@@ -275,6 +275,132 @@ class FaqLabTests(unittest.TestCase):
         rows = faq_lab._fetch_source_messages(_Conn(), window_days=30)
         self.assertEqual(rows, [])
 
+    def test_refresh_faq_lab_creates_run_and_audit_event(self) -> None:
+        user_id = db.get_or_create_user(self.conn, channel="telegram", external_id="faq-run-user")
+        db.log_message(self.conn, user_id, "inbound", "Как лучше подготовиться к ЕГЭ по математике?", {})
+
+        summary = faq_lab.refresh_faq_lab(
+            self.conn,
+            window_days=30,
+            min_question_count=1,
+            limit=10,
+            trigger="scheduler",
+        )
+        self.assertTrue(summary["ok"])
+        self.assertGreater(int(summary.get("run_id") or 0), 0)
+        self.assertGreaterEqual(int(summary.get("duration_ms") or 0), 0)
+
+        runs = db.list_faq_lab_runs(self.conn, limit=10)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["status"], "success")
+
+        events = db.list_faq_lab_events(self.conn, event_type="refresh_completed", limit=10)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["payload"]["run_id"], summary["run_id"])
+
+    def test_refresh_faq_lab_failed_creates_failed_run_and_event(self) -> None:
+        with patch("sales_agent.sales_core.faq_lab.build_faq_candidates", side_effect=RuntimeError("refresh boom")):
+            with self.assertRaises(RuntimeError):
+                faq_lab.refresh_faq_lab(
+                    self.conn,
+                    window_days=30,
+                    min_question_count=1,
+                    limit=10,
+                    trigger="scheduler-fail",
+                )
+
+        runs = db.list_faq_lab_runs(self.conn, limit=10)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["status"], "failed")
+        self.assertIn("refresh boom", str(runs[0]["error_text"] or ""))
+
+        events = db.list_faq_lab_events(self.conn, event_type="refresh_failed", limit=10)
+        self.assertEqual(len(events), 1)
+        self.assertIn("refresh boom", str(events[0]["payload"].get("error") or ""))
+
+    def test_promote_candidate_to_canonical_safe_records_event(self) -> None:
+        candidate_id = db.upsert_faq_candidate(
+            self.conn,
+            question_key="как не выгорать при подготовке",
+            question_text="Как не выгорать при подготовке?",
+            question_count=1,
+            thread_count=1,
+            approvals_count=0,
+            sends_count=0,
+            next_step_count=0,
+            reply_approved_rate=0.0,
+            next_step_rate=0.0,
+            status="candidate",
+            suggested_answer="Делим учебную нагрузку на этапы и фиксируем реалистичный недельный ритм.",
+        )
+        promoted = faq_lab.promote_candidate_to_canonical_safe(
+            self.conn,
+            candidate_id=candidate_id,
+            answer_text=None,
+            created_by="admin",
+        )
+        self.assertEqual(promoted["canonical"]["candidate_id"], candidate_id)
+        self.assertGreater(int(promoted["event_id"]), 0)
+        self.assertGreaterEqual(len(promoted["warnings"]), 1)
+        events = db.list_faq_lab_events(self.conn, event_type="candidate_promoted", limit=10)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(int(events[0]["candidate_id"] or 0), candidate_id)
+
+    def test_promote_candidate_to_canonical_safe_validation_errors(self) -> None:
+        with self.assertRaises(faq_lab.FaqLabPromotionError):
+            faq_lab.promote_candidate_to_canonical_safe(
+                self.conn,
+                candidate_id=9999,
+                answer_text="test",
+                created_by="admin",
+            )
+
+        candidate_id = db.upsert_faq_candidate(
+            self.conn,
+            question_key="архивный вопрос",
+            question_text="Архивный вопрос?",
+            question_count=3,
+            thread_count=2,
+            approvals_count=1,
+            sends_count=1,
+            next_step_count=1,
+            reply_approved_rate=0.5,
+            next_step_rate=0.5,
+            status="archived",
+            suggested_answer="Достаточно длинный безопасный ответ для проверки.",
+        )
+        with self.assertRaises(faq_lab.FaqLabPromotionError) as archived_ctx:
+            faq_lab.promote_candidate_to_canonical_safe(
+                self.conn,
+                candidate_id=candidate_id,
+                answer_text=None,
+                created_by="admin",
+            )
+        self.assertEqual(getattr(archived_ctx.exception, "code", ""), "archived")
+
+        candidate_ok = db.upsert_faq_candidate(
+            self.conn,
+            question_key="обычный вопрос",
+            question_text="Обычный вопрос?",
+            question_count=3,
+            thread_count=2,
+            approvals_count=1,
+            sends_count=1,
+            next_step_count=1,
+            reply_approved_rate=0.5,
+            next_step_rate=0.5,
+            status="candidate",
+            suggested_answer="Достаточно длинный безопасный ответ для проверки.",
+        )
+        with self.assertRaises(faq_lab.FaqLabPromotionError) as short_ctx:
+            faq_lab.promote_candidate_to_canonical_safe(
+                self.conn,
+                candidate_id=candidate_ok,
+                answer_text="коротко",
+                created_by="admin",
+            )
+        self.assertEqual(getattr(short_ctx.exception, "code", ""), "answer_too_short")
+
 
 if __name__ == "__main__":
     unittest.main()

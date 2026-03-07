@@ -25,6 +25,8 @@
      --strict-runtime \
      --require-webhook-mode \
      --require-render-persistent \
+     --check-mango-runtime \
+     --check-revenue-runtime \
      --check-telegram-webhook
    ```
 

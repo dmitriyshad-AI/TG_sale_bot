@@ -12,12 +12,12 @@ from pydantic import BaseModel, Field
 from sales_agent.sales_core import faq_lab
 from sales_agent.sales_core.db import (
     get_connection,
-    get_faq_candidate,
     list_answer_performance,
     list_canonical_answers,
     list_faq_candidates,
+    list_faq_lab_events,
+    list_faq_lab_runs,
     list_rejected_reply_drafts,
-    promote_faq_candidate_to_canonical,
 )
 
 
@@ -111,6 +111,9 @@ def build_faq_lab_router(
             canonical = list_canonical_answers(conn, limit=limit)
             top_performance = list_answer_performance(conn, status="active", limit=limit)
             rejected = list_rejected_reply_drafts(conn, limit=min(limit, 100))
+            recent_runs = list_faq_lab_runs(conn, limit=min(100, max(10, limit)))
+            recent_events = list_faq_lab_events(conn, limit=min(200, max(20, limit * 2)))
+            promoted_events = [item for item in recent_events if str(item.get("event_type") or "") == "candidate_promoted"]
 
             metrics = {
                 "question_count": sum(int(item.get("question_count") or 0) for item in candidates),
@@ -131,6 +134,10 @@ def build_faq_lab_router(
                     ),
                     4,
                 ),
+                "runs_total": len(recent_runs),
+                "runs_failed": sum(1 for item in recent_runs if str(item.get("status") or "") == "failed"),
+                "events_total": len(recent_events),
+                "promoted_events": len(promoted_events),
             }
             return {
                 "ok": True,
@@ -148,6 +155,8 @@ def build_faq_lab_router(
                 "canonical_answers": canonical,
                 "top_performing_replies": top_performance,
                 "rejected_replies": rejected,
+                "runs": recent_runs,
+                "events": recent_events,
             }
         finally:
             conn.close()
@@ -190,21 +199,23 @@ def build_faq_lab_router(
         _ensure_enabled()
         conn = get_connection(db_path)
         try:
-            candidate = get_faq_candidate(conn, candidate_id=candidate_id)
-            if not candidate:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="FAQ candidate not found.")
-            canonical = promote_faq_candidate_to_canonical(
-                conn,
-                candidate_id=candidate_id,
-                answer_text=_normalize_answer_text(payload.answer_text),
-                created_by=actor,
-            )
-            if not canonical:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Unable to promote FAQ candidate.",
+            try:
+                promoted = faq_lab.promote_candidate_to_canonical_safe(
+                    conn,
+                    candidate_id=candidate_id,
+                    answer_text=_normalize_answer_text(payload.answer_text),
+                    created_by=actor,
                 )
-            return {"ok": True, "candidate": get_faq_candidate(conn, candidate_id=candidate_id), "canonical": canonical}
+            except faq_lab.FaqLabPromotionError as exc:
+                code = str(getattr(exc, "code", "") or "").strip().lower()
+                if code == "not_found":
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+                if code == "archived":
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+                if code == "answer_too_short":
+                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+            return {"ok": True, **promoted}
         finally:
             conn.close()
 
@@ -268,6 +279,31 @@ def build_faq_lab_router(
                 "</tr>"
             )
 
+        run_rows: list[str] = []
+        for item in payload.get("runs") or []:
+            run_rows.append(
+                "<tr>"
+                f"<td>{int(item.get('id') or 0)}</td>"
+                f"<td>{html.escape(str(item.get('trigger') or ''))}</td>"
+                f"<td>{html.escape(str(item.get('status') or ''))}</td>"
+                f"<td>{html.escape(str(item.get('started_at') or ''))}</td>"
+                f"<td>{html.escape(str(item.get('finished_at') or ''))}</td>"
+                f"<td>{html.escape(str(item.get('error_text') or '-'))}</td>"
+                "</tr>"
+            )
+
+        event_rows: list[str] = []
+        for item in payload.get("events") or []:
+            event_rows.append(
+                "<tr>"
+                f"<td>{int(item.get('id') or 0)}</td>"
+                f"<td>{html.escape(str(item.get('event_type') or ''))}</td>"
+                f"<td>{html.escape(str(item.get('actor') or '-'))}</td>"
+                f"<td>{html.escape(str(item.get('question_key') or '-'))}</td>"
+                f"<td>{html.escape(str(item.get('created_at') or ''))}</td>"
+                "</tr>"
+            )
+
         run_text = "" if run_info is None else html.escape(str(run_info))
         body = (
             "<h1>FAQ Lab</h1>"
@@ -282,7 +318,9 @@ def build_faq_lab_router(
             f"<b>Candidates:</b> {int(metrics.get('candidate_count') or 0)}<br/>"
             f"<b>Canonical Answers:</b> {int(metrics.get('canonical_count') or 0)}<br/>"
             f"<b>Reply Approved Rate:</b> {float(metrics.get('reply_approved_rate') or 0.0):.2f}<br/>"
-            f"<b>Next Step Rate:</b> {float(metrics.get('next_step_rate') or 0.0):.2f}"
+            f"<b>Next Step Rate:</b> {float(metrics.get('next_step_rate') or 0.0):.2f}<br/>"
+            f"<b>Runs Failed:</b> {int(metrics.get('runs_failed') or 0)}<br/>"
+            f"<b>Promoted Events:</b> {int(metrics.get('promoted_events') or 0)}"
             "</div>"
             "<div class='card'>"
             "<form method='get' action='/admin/ui/faq-lab'>"
@@ -305,6 +343,12 @@ def build_faq_lab_router(
             "<h2>Rejected Replies</h2>"
             "<table><thead><tr><th>ID</th><th>Thread</th><th>Draft</th><th>Updated</th></tr></thead>"
             f"<tbody>{''.join(rejected_rows) if rejected_rows else '<tr><td colspan=4>Нет отклоненных ответов</td></tr>'}</tbody></table>"
+            "<h2>Pipeline Runs</h2>"
+            "<table><thead><tr><th>ID</th><th>Trigger</th><th>Status</th><th>Started</th><th>Finished</th><th>Error</th></tr></thead>"
+            f"<tbody>{''.join(run_rows) if run_rows else '<tr><td colspan=6>Нет запусков</td></tr>'}</tbody></table>"
+            "<h2>Audit Events</h2>"
+            "<table><thead><tr><th>ID</th><th>Type</th><th>Actor</th><th>Question Key</th><th>Created</th></tr></thead>"
+            f"<tbody>{''.join(event_rows) if event_rows else '<tr><td colspan=5>Нет событий</td></tr>'}</tbody></table>"
         )
         return render_page("FAQ Lab", body)
 
@@ -340,14 +384,22 @@ def build_faq_lab_router(
         enforce_ui_csrf(request)
         conn = get_connection(db_path)
         try:
-            promoted = promote_faq_candidate_to_canonical(
-                conn,
-                candidate_id=candidate_id,
-                answer_text=_normalize_answer_text(answer_text),
-                created_by="admin_ui",
-            )
-            if not promoted:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="FAQ candidate not found.")
+            try:
+                faq_lab.promote_candidate_to_canonical_safe(
+                    conn,
+                    candidate_id=candidate_id,
+                    answer_text=_normalize_answer_text(answer_text),
+                    created_by="admin_ui",
+                )
+            except faq_lab.FaqLabPromotionError as exc:
+                code = str(getattr(exc, "code", "") or "").strip().lower()
+                if code == "not_found":
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+                if code == "archived":
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+                if code == "answer_too_short":
+                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
         finally:
             conn.close()
         return RedirectResponse(url="/admin/ui/faq-lab?refresh=true", status_code=status.HTTP_303_SEE_OTHER)

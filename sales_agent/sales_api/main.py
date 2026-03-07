@@ -27,6 +27,9 @@ from sales_agent.sales_core.copilot import run_copilot_from_file
 from sales_agent.sales_core.crm import build_crm_client
 from sales_agent.sales_core.db import (
     claim_webhook_update,
+    count_call_records,
+    count_campaign_plans,
+    count_faq_lab_runs,
     count_mango_events,
     count_webhook_updates_by_status,
     create_approval_action,
@@ -38,7 +41,10 @@ from sales_agent.sales_core.db import (
     enqueue_webhook_update,
     get_business_connection,
     get_latest_mango_event_created_at,
+    get_latest_faq_lab_run,
     get_oldest_mango_event_created_at,
+    get_oldest_call_record_created_at,
+    get_oldest_campaign_plan_created_at,
     get_conversation_outcome,
     get_conversation_context,
     get_connection,
@@ -1418,6 +1424,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def run_mango_retry_failed_once(*, trigger: str, limit_override: Optional[int] = None) -> Dict[str, Any]:
         return await revenue_ops.run_mango_retry_failed_once(trigger=trigger, limit_override=limit_override)
 
+    async def run_call_retry_failed_once(*, trigger: str, limit_override: Optional[int] = None) -> Dict[str, Any]:
+        return await revenue_ops.run_call_retry_failed_once(trigger=trigger, limit_override=limit_override)
+
     async def mango_poll_loop(app_instance: FastAPI) -> None:
         event = getattr(app_instance.state, "mango_poll_event", None)
         if event is None:
@@ -1653,6 +1662,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             mango_ingest_enabled=_mango_ingest_enabled,
             run_mango_poll_once=run_mango_poll_once,
             run_mango_retry_failed_once=run_mango_retry_failed_once,
+            run_call_retry_failed_once=run_call_retry_failed_once,
             cleanup_old_call_files=_cleanup_old_call_files,
         )
     )
@@ -2081,6 +2091,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "events_failed": count_mango_events(conn, status="failed"),
                 "oldest_failed_created_at": get_oldest_mango_event_created_at(conn, status="failed"),
             }
+            payload["runtime"]["calls"] = {
+                "enabled": cfg.enable_call_copilot,
+                "records_total": count_call_records(conn),
+                "records_queued": count_call_records(conn, status="queued"),
+                "records_processing": count_call_records(conn, status="processing"),
+                "records_done": count_call_records(conn, status="done"),
+                "records_failed": count_call_records(conn, status="failed"),
+                "oldest_failed_created_at": get_oldest_call_record_created_at(conn, status="failed"),
+            }
+            latest_faq_run = get_latest_faq_lab_run(conn)
             payload["runtime"]["faq_lab"] = {
                 "enabled": cfg.enable_faq_lab,
                 "scheduler_enabled": cfg.faq_lab_scheduler_enabled,
@@ -2088,6 +2108,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "window_days": cfg.faq_lab_window_days,
                 "min_question_count": cfg.faq_lab_min_question_count,
                 "max_items_per_run": cfg.faq_lab_max_items_per_run,
+                "runs_total": count_faq_lab_runs(conn),
+                "runs_failed": count_faq_lab_runs(conn, status="failed"),
+                "latest_run_status": str((latest_faq_run or {}).get("status") or "").strip(),
+                "latest_run_started_at": str((latest_faq_run or {}).get("started_at") or "").strip(),
+                "latest_run_finished_at": str((latest_faq_run or {}).get("finished_at") or "").strip(),
+                "latest_run_error_set": bool(str((latest_faq_run or {}).get("error_text") or "").strip()),
+            }
+            payload["runtime"]["director"] = {
+                "enabled": cfg.enable_director_agent,
+                "plans_total": count_campaign_plans(conn),
+                "plans_draft": count_campaign_plans(conn, status="draft"),
+                "plans_approved": count_campaign_plans(conn, status="approved"),
+                "plans_applied": count_campaign_plans(conn, status="applied"),
+                "plans_completed": count_campaign_plans(conn, status="completed"),
+                "plans_archived": count_campaign_plans(conn, status="archived"),
+                "oldest_draft_created_at": get_oldest_campaign_plan_created_at(conn, status="draft"),
             }
         finally:
             conn.close()

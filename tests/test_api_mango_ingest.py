@@ -346,6 +346,47 @@ class ApiMangoIngestTests(unittest.TestCase):
             self.assertEqual(len(items), 1)
             self.assertEqual(items[0]["event_id"], "evt-failed-1")
 
+    @patch("sales_agent.sales_api.services.revenue_ops.claim_failed_mango_event_for_retry", return_value="not_failed")
+    def test_mango_retry_failed_endpoint_reports_skipped_not_failed(self, _mock_claim) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "mango.db"
+            app = create_app(self._settings(db_path))
+            conn = db.get_connection(db_path)
+            try:
+                state = db.create_or_get_mango_event(
+                    conn,
+                    event_id="evt-failed-skip-1",
+                    call_external_id="call-failed-skip-1",
+                    source="webhook",
+                    payload={
+                        "event": "call_recording_ready",
+                        "event_id": "evt-failed-skip-1",
+                        "data": {
+                            "call_id": "call-failed-skip-1",
+                            "recording_url": "https://cdn.example/retry-failed-skip.mp3",
+                        },
+                    },
+                )
+                db.update_mango_event_status(
+                    conn,
+                    event_row_id=int(state["id"]),
+                    status="failed",
+                    error_text="temporary fail",
+                )
+            finally:
+                conn.close()
+
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+            retry_response = client.post("/admin/calls/mango/retry-failed?limit=5", auth=auth)
+            self.assertEqual(retry_response.status_code, 200)
+            payload = retry_response.json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["processed"], 0)
+            self.assertEqual(payload["retried"], 0)
+            self.assertEqual(payload["failed"], 0)
+            self.assertGreaterEqual(payload["skipped_not_failed"], 1)
+
     def test_mango_poll_endpoint_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "mango.db"
@@ -393,7 +434,7 @@ class ApiMangoIngestTests(unittest.TestCase):
                     created_by="test",
                 )
                 conn.execute(
-                    "UPDATE call_records SET created_at = datetime('now', '-5 hours') WHERE id = ?",
+                    "UPDATE call_records SET created_at = datetime('now', '-5 hours'), updated_at = datetime('now', '-5 hours') WHERE id = ?",
                     (call_id,),
                 )
                 conn.commit()

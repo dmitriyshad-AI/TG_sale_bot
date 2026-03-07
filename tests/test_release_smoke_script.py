@@ -449,6 +449,152 @@ class ReleaseSmokeScriptTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("[FAIL] mango_oldest_failed_age", stdout.getvalue())
 
+    def test_main_checks_revenue_runtime_blocks_successfully(self) -> None:
+        now = datetime.now(timezone.utc)
+        oldest_failed_call = (now - timedelta(hours=2)).isoformat()
+        oldest_draft = (now - timedelta(hours=5)).isoformat()
+
+        def fake_fetch_json(_base_url: str, path: str, _timeout: float) -> dict:
+            if path == "/api/health":
+                return {"status": "ok", "service": "sales-agent"}
+            if path == "/api/runtime/diagnostics":
+                return {
+                    "status": "ok",
+                    "runtime": {
+                        "telegram_mode": "webhook",
+                        "telegram_webhook_secret_set": True,
+                        "calls": {
+                            "enabled": True,
+                            "records_failed": 1,
+                            "oldest_failed_created_at": oldest_failed_call,
+                        },
+                        "faq_lab": {
+                            "enabled": True,
+                            "runs_failed": 0,
+                            "latest_run_status": "success",
+                        },
+                        "director": {
+                            "enabled": True,
+                            "plans_draft": 1,
+                            "oldest_draft_created_at": oldest_draft,
+                        },
+                    },
+                }
+            if path == "/api/miniapp/meta":
+                return {"ok": True, "advisor_name": "Гид"}
+            if path == "/":
+                return {"status": "ok", "user_miniapp": {"status": "ready"}}
+            raise AssertionError(f"Unexpected path: {path}")
+
+        with patch.object(release_smoke, "_fetch_json", side_effect=fake_fetch_json), patch.object(
+            release_smoke, "_fetch_status", return_value=200
+        ), patch("sys.stdout", new_callable=StringIO) as stdout:
+            result = release_smoke.main(
+                [
+                    "--check-revenue-runtime",
+                    "--calls-max-failed-records",
+                    "2",
+                    "--calls-max-oldest-failed-hours",
+                    "6",
+                    "--faq-max-failed-runs",
+                    "1",
+                    "--director-max-draft-plans",
+                    "3",
+                    "--director-max-oldest-draft-hours",
+                    "24",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        text = stdout.getvalue()
+        self.assertIn("[OK] revenue_calls_block", text)
+        self.assertIn("[OK] revenue_faq_lab_block", text)
+        self.assertIn("[OK] revenue_director_block", text)
+
+    def test_main_fails_when_revenue_runtime_blocks_missing(self) -> None:
+        def fake_fetch_json(_base_url: str, path: str, _timeout: float) -> dict:
+            if path == "/api/health":
+                return {"status": "ok", "service": "sales-agent"}
+            if path == "/api/runtime/diagnostics":
+                return {"status": "ok", "runtime": {"telegram_mode": "polling"}}
+            if path == "/api/miniapp/meta":
+                return {"ok": True, "advisor_name": "Гид"}
+            if path == "/":
+                return {"status": "ok", "user_miniapp": {"status": "ready"}}
+            raise AssertionError(f"Unexpected path: {path}")
+
+        with patch.object(release_smoke, "_fetch_json", side_effect=fake_fetch_json), patch.object(
+            release_smoke, "_fetch_status", return_value=200
+        ), patch("sys.stdout", new_callable=StringIO) as stdout:
+            result = release_smoke.main(["--check-revenue-runtime"])
+
+        self.assertEqual(result, 1)
+        text = stdout.getvalue()
+        self.assertIn("[FAIL] revenue_calls_block", text)
+        self.assertIn("[FAIL] revenue_faq_lab_block", text)
+        self.assertIn("[FAIL] revenue_director_block", text)
+
+    def test_main_fails_when_revenue_runtime_thresholds_exceeded(self) -> None:
+        old_draft = "2024-01-01T00:00:00Z"
+
+        def fake_fetch_json(_base_url: str, path: str, _timeout: float) -> dict:
+            if path == "/api/health":
+                return {"status": "ok", "service": "sales-agent"}
+            if path == "/api/runtime/diagnostics":
+                return {
+                    "status": "ok",
+                    "runtime": {
+                        "telegram_mode": "webhook",
+                        "telegram_webhook_secret_set": True,
+                        "calls": {
+                            "enabled": True,
+                            "records_failed": 9,
+                            "oldest_failed_created_at": "bad-date",
+                        },
+                        "faq_lab": {
+                            "enabled": True,
+                            "runs_failed": 4,
+                            "latest_run_status": "failed",
+                        },
+                        "director": {
+                            "enabled": True,
+                            "plans_draft": 5,
+                            "oldest_draft_created_at": old_draft,
+                        },
+                    },
+                }
+            if path == "/api/miniapp/meta":
+                return {"ok": True, "advisor_name": "Гид"}
+            if path == "/":
+                return {"status": "ok", "user_miniapp": {"status": "ready"}}
+            raise AssertionError(f"Unexpected path: {path}")
+
+        with patch.object(release_smoke, "_fetch_json", side_effect=fake_fetch_json), patch.object(
+            release_smoke, "_fetch_status", return_value=200
+        ), patch("sys.stdout", new_callable=StringIO) as stdout:
+            result = release_smoke.main(
+                [
+                    "--check-revenue-runtime",
+                    "--calls-max-failed-records",
+                    "2",
+                    "--faq-max-failed-runs",
+                    "1",
+                    "--director-max-draft-plans",
+                    "1",
+                    "--director-max-oldest-draft-hours",
+                    "24",
+                ]
+            )
+
+        self.assertEqual(result, 1)
+        text = stdout.getvalue()
+        self.assertIn("[FAIL] revenue_calls_failed_records", text)
+        self.assertIn("[FAIL] revenue_calls_oldest_failed_age", text)
+        self.assertIn("[FAIL] revenue_faq_failed_runs", text)
+        self.assertIn("[FAIL] revenue_faq_latest_status", text)
+        self.assertIn("[FAIL] revenue_director_draft_plans", text)
+        self.assertIn("[FAIL] revenue_director_oldest_draft_age", text)
+
 
 if __name__ == "__main__":
     unittest.main()

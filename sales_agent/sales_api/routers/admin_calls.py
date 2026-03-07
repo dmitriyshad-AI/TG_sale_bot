@@ -21,6 +21,7 @@ def build_admin_calls_router(
     mango_ingest_enabled: Callable[[], bool],
     run_mango_poll_once: Callable[..., Awaitable[Dict[str, Any]]],
     run_mango_retry_failed_once: Callable[..., Awaitable[Dict[str, Any]]],
+    run_call_retry_failed_once: Callable[..., Awaitable[Dict[str, Any]]],
     cleanup_old_call_files: Callable[[], Dict[str, Any]],
 ) -> APIRouter:
     router = APIRouter()
@@ -106,8 +107,20 @@ def build_admin_calls_router(
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Mango auto-ingest is disabled. Set ENABLE_MANGO_AUTO_INGEST=true and ENABLE_CALL_COPILOT=true.",
-            )
+        )
         return await run_mango_retry_failed_once(trigger="manual", limit_override=limit)
+
+    @router.post("/admin/calls/retry-failed")
+    async def admin_calls_retry_failed(
+        _: str = Depends(require_admin_dependency),
+        limit: Optional[int] = Query(default=None, ge=1, le=500),
+    ):
+        if not settings.enable_call_copilot:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Call Copilot is disabled. Set ENABLE_CALL_COPILOT=true.",
+            )
+        return await run_call_retry_failed_once(trigger="manual", limit_override=limit)
 
     @router.get("/admin/calls/mango/events")
     async def admin_calls_mango_events(
@@ -195,6 +208,10 @@ def build_admin_calls_router(
             f"<p><label>Retry failed limit: <input type='number' name='limit' min='1' max='500' value='{settings.mango_retry_failed_limit_per_run}' /></label></p>"
             "<p><button type='submit'>Повторно обработать failed events</button></p>"
             "</form>"
+            "<form method='post' action='/admin/ui/calls/retry-failed'>"
+            "<p><label>Retry failed calls limit: <input type='number' name='limit' min='1' max='500' value='50' /></label></p>"
+            "<p><button type='submit'>Повторно обработать failed call_records</button></p>"
+            "</form>"
             "<form method='post' action='/admin/ui/calls/cleanup'>"
             "<p><button type='submit'>Очистить старые call-файлы сейчас</button></p>"
             "</form>"
@@ -259,6 +276,21 @@ def build_admin_calls_router(
                 detail="Call Copilot is disabled. Set ENABLE_CALL_COPILOT=true.",
             )
         cleanup_old_call_files()
+        return RedirectResponse(url="/admin/ui/calls", status_code=status.HTTP_303_SEE_OTHER)
+
+    @router.post("/admin/ui/calls/retry-failed")
+    async def admin_calls_ui_retry_failed(
+        request: Request,
+        _: str = Depends(require_admin_dependency),
+        limit: int = Form(50),
+    ):
+        enforce_ui_csrf(request)
+        if not settings.enable_call_copilot:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Call Copilot is disabled. Set ENABLE_CALL_COPILOT=true.",
+            )
+        await run_call_retry_failed_once(trigger="manual_ui", limit_override=limit)
         return RedirectResponse(url="/admin/ui/calls", status_code=status.HTTP_303_SEE_OTHER)
 
     @router.post("/admin/ui/calls/upload")

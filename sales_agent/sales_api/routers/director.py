@@ -174,10 +174,24 @@ def build_director_router(
 
             actions = plan.get("actions") if isinstance(plan.get("actions"), list) else []
             max_actions = int(payload.max_actions or len(actions) or 1)
-            plan_for_apply = {
-                **plan,
-                "actions": actions[:max_actions],
-            }
+            try:
+                validated = director_agent.validate_plan_for_apply(
+                    {
+                        **plan,
+                        "actions": actions[:max_actions],
+                    },
+                    max_actions=max_actions,
+                )
+            except director_agent.DirectorPlanValidationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "message": "Campaign plan validation failed.",
+                        "errors": exc.errors,
+                        "warnings": exc.warnings,
+                    },
+                ) from exc
+            plan_for_apply = validated["plan"]
 
             report = director_agent.apply_campaign_plan(
                 conn,
@@ -192,6 +206,7 @@ def build_director_router(
             return {
                 "ok": True,
                 "report": report,
+                "validation_warnings": validated["warnings"],
                 "goal": get_campaign_goal(conn, goal_id=int(plan["goal_id"])),
                 "plan": get_campaign_plan(conn, plan_id=plan_id),
                 "actions": list_campaign_actions(conn, plan_id=plan_id, limit=500),
@@ -377,11 +392,18 @@ def build_director_router(
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign plan not found.")
             if str(plan.get("status") or "").lower() != "approved":
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Plan must be approved before apply.")
+            try:
+                validated = director_agent.validate_plan_for_apply(plan, max_actions=200)
+            except director_agent.DirectorPlanValidationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Campaign plan validation failed: {'; '.join(exc.errors)}",
+                ) from exc
             director_agent.apply_campaign_plan(
                 conn,
                 goal_id=int(plan["goal_id"]),
                 plan_id=plan_id,
-                plan=plan,
+                plan=validated["plan"],
                 actor=actor,
             )
             update_campaign_plan_status(conn, plan_id=plan_id, status="applied", actor=actor)

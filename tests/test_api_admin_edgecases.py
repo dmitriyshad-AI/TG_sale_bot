@@ -67,6 +67,7 @@ class ApiAdminEdgeCasesTests(unittest.TestCase):
             self.assertEqual(client.get("/admin/calls/1", auth=auth).status_code, 503)
             self.assertEqual(client.post("/admin/calls/upload", auth=auth, data={"transcript_hint": "x"}).status_code, 503)
             self.assertEqual(client.post("/admin/calls/cleanup", auth=auth).status_code, 503)
+            self.assertEqual(client.post("/admin/calls/retry-failed", auth=auth).status_code, 503)
             self.assertEqual(client.post("/admin/calls/mango/poll", auth=auth).status_code, 503)
             self.assertEqual(client.post("/admin/calls/mango/retry-failed", auth=auth).status_code, 503)
             self.assertEqual(client.get("/admin/ui/calls/1", auth=auth).status_code, 503)
@@ -77,6 +78,10 @@ class ApiAdminEdgeCasesTests(unittest.TestCase):
 
             self.assertEqual(
                 client.post("/admin/ui/calls/cleanup", auth=auth, headers=origin, follow_redirects=False).status_code,
+                503,
+            )
+            self.assertEqual(
+                client.post("/admin/ui/calls/retry-failed", auth=auth, headers=origin, data={}, follow_redirects=False).status_code,
                 503,
             )
             self.assertEqual(
@@ -154,6 +159,8 @@ class ApiAdminEdgeCasesTests(unittest.TestCase):
             self.assertEqual(poll_api.status_code, 200)
             retry_api = client.post("/admin/calls/mango/retry-failed?limit=1", auth=auth)
             self.assertEqual(retry_api.status_code, 200)
+            retry_calls_api = client.post("/admin/calls/retry-failed?limit=1", auth=auth)
+            self.assertEqual(retry_calls_api.status_code, 200)
 
             # UI listing (includes summary truncation branch)
             ui_calls = client.get("/admin/ui/calls", auth=auth)
@@ -177,6 +184,14 @@ class ApiAdminEdgeCasesTests(unittest.TestCase):
                 follow_redirects=False,
             )
             self.assertEqual(retry_resp.status_code, 303)
+            retry_calls_resp = client.post(
+                "/admin/ui/calls/retry-failed",
+                auth=auth,
+                headers=origin,
+                data={"limit": "1"},
+                follow_redirects=False,
+            )
+            self.assertEqual(retry_calls_resp.status_code, 303)
             cleanup_resp = client.post(
                 "/admin/ui/calls/cleanup",
                 auth=auth,

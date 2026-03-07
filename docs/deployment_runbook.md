@@ -314,7 +314,8 @@ python3 scripts/release_smoke.py \
   --strict-runtime \
   --require-webhook-mode \
   --require-render-persistent \
-  --check-mango-runtime
+  --check-mango-runtime \
+  --check-revenue-runtime
    ```
 
 Примечание: для регулярного контроля можно включить GitHub Actions workflow `Release Smoke`:

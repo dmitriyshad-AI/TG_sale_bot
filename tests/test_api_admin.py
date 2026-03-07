@@ -1046,7 +1046,7 @@ class ApiAdminTests(unittest.TestCase):
                     created_by="test",
                 )
                 conn.execute(
-                    "UPDATE call_records SET created_at = datetime('now', '-72 hours') WHERE id = ?",
+                    "UPDATE call_records SET created_at = datetime('now', '-72 hours'), updated_at = datetime('now', '-72 hours') WHERE id = ?",
                     (call_id,),
                 )
                 conn.commit()
@@ -1255,7 +1255,7 @@ class ApiAdminTests(unittest.TestCase):
                     created_by="test",
                 )
                 conn.execute(
-                    "UPDATE call_records SET created_at = datetime('now', '-72 hours') WHERE id = ?",
+                    "UPDATE call_records SET created_at = datetime('now', '-72 hours'), updated_at = datetime('now', '-72 hours') WHERE id = ?",
                     (call_id,),
                 )
                 conn.commit()
@@ -1307,8 +1307,14 @@ class ApiAdminTests(unittest.TestCase):
             cleanup_response = client.post("/admin/calls/cleanup", auth=auth)
             self.assertEqual(cleanup_response.status_code, 503)
 
+            retry_failed_response = client.post("/admin/calls/retry-failed", auth=auth)
+            self.assertEqual(retry_failed_response.status_code, 503)
+
             ui_cleanup_response = client.post("/admin/ui/calls/cleanup", auth=auth)
             self.assertEqual(ui_cleanup_response.status_code, 503)
+
+            ui_retry_failed_response = client.post("/admin/ui/calls/retry-failed", auth=auth, data={"limit": 10})
+            self.assertEqual(ui_retry_failed_response.status_code, 503)
 
     def test_admin_copilot_import_returns_summary_and_draft(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

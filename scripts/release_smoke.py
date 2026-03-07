@@ -67,6 +67,41 @@ def _build_parser() -> argparse.ArgumentParser:
         default=48.0,
         help="Fail if oldest failed Mango event is older than this threshold (hours).",
     )
+    parser.add_argument(
+        "--check-revenue-runtime",
+        action="store_true",
+        help="Validate runtime revenue blocks (calls/faq_lab/director) from /api/runtime/diagnostics.",
+    )
+    parser.add_argument(
+        "--calls-max-failed-records",
+        type=int,
+        default=20,
+        help="Fail if runtime calls.records_failed is above this threshold.",
+    )
+    parser.add_argument(
+        "--calls-max-oldest-failed-hours",
+        type=float,
+        default=72.0,
+        help="Fail if oldest failed call record is older than this threshold (hours).",
+    )
+    parser.add_argument(
+        "--faq-max-failed-runs",
+        type=int,
+        default=10,
+        help="Fail if runtime faq_lab.runs_failed is above this threshold.",
+    )
+    parser.add_argument(
+        "--director-max-draft-plans",
+        type=int,
+        default=50,
+        help="Fail if runtime director.plans_draft is above this threshold.",
+    )
+    parser.add_argument(
+        "--director-max-oldest-draft-hours",
+        type=float,
+        default=168.0,
+        help="Fail if oldest draft campaign plan is older than this threshold (hours).",
+    )
     return parser
 
 
@@ -288,6 +323,112 @@ def main(argv: list[str] | None = None) -> int:
                         )
                 else:
                     checks.append(("mango_oldest_failed_age", True, "no failed events"))
+
+    if args.check_revenue_runtime:
+        calls = runtime.get("calls") if isinstance(runtime, dict) else None
+        if not isinstance(calls, dict):
+            checks.append(("revenue_calls_block", False, "runtime.calls is missing"))
+        else:
+            calls_enabled = bool(calls.get("enabled"))
+            checks.append(("revenue_calls_block", True, f"enabled={calls_enabled}"))
+            if calls_enabled:
+                failed_records = int(calls.get("records_failed") or 0)
+                max_failed_records = max(0, int(args.calls_max_failed_records))
+                checks.append(
+                    (
+                        "revenue_calls_failed_records",
+                        failed_records <= max_failed_records,
+                        f"records_failed={failed_records} max={max_failed_records}",
+                    )
+                )
+                oldest_failed_raw = str(calls.get("oldest_failed_created_at") or "").strip()
+                if oldest_failed_raw:
+                    oldest_failed = _parse_iso_datetime(oldest_failed_raw)
+                    if oldest_failed is None:
+                        checks.append(
+                            (
+                                "revenue_calls_oldest_failed_age",
+                                False,
+                                f"unparseable oldest_failed_created_at={oldest_failed_raw}",
+                            )
+                        )
+                    else:
+                        age_hours = max(0.0, (datetime.now(timezone.utc) - oldest_failed).total_seconds() / 3600.0)
+                        max_hours = max(0.0, float(args.calls_max_oldest_failed_hours))
+                        checks.append(
+                            (
+                                "revenue_calls_oldest_failed_age",
+                                age_hours <= max_hours,
+                                f"age_hours={age_hours:.2f} max={max_hours:.2f}",
+                            )
+                        )
+                else:
+                    checks.append(("revenue_calls_oldest_failed_age", True, "no failed call records"))
+
+        faq_lab = runtime.get("faq_lab") if isinstance(runtime, dict) else None
+        if not isinstance(faq_lab, dict):
+            checks.append(("revenue_faq_lab_block", False, "runtime.faq_lab is missing"))
+        else:
+            faq_enabled = bool(faq_lab.get("enabled"))
+            checks.append(("revenue_faq_lab_block", True, f"enabled={faq_enabled}"))
+            if faq_enabled:
+                failed_runs = int(faq_lab.get("runs_failed") or 0)
+                max_failed_runs = max(0, int(args.faq_max_failed_runs))
+                checks.append(
+                    (
+                        "revenue_faq_failed_runs",
+                        failed_runs <= max_failed_runs,
+                        f"runs_failed={failed_runs} max={max_failed_runs}",
+                    )
+                )
+                latest_run_status = str(faq_lab.get("latest_run_status") or "").strip() or "none"
+                checks.append(
+                    (
+                        "revenue_faq_latest_status",
+                        latest_run_status not in {"failed"},
+                        f"latest_run_status={latest_run_status}",
+                    )
+                )
+
+        director = runtime.get("director") if isinstance(runtime, dict) else None
+        if not isinstance(director, dict):
+            checks.append(("revenue_director_block", False, "runtime.director is missing"))
+        else:
+            director_enabled = bool(director.get("enabled"))
+            checks.append(("revenue_director_block", True, f"enabled={director_enabled}"))
+            if director_enabled:
+                draft_plans = int(director.get("plans_draft") or 0)
+                max_draft_plans = max(0, int(args.director_max_draft_plans))
+                checks.append(
+                    (
+                        "revenue_director_draft_plans",
+                        draft_plans <= max_draft_plans,
+                        f"plans_draft={draft_plans} max={max_draft_plans}",
+                    )
+                )
+                oldest_draft_raw = str(director.get("oldest_draft_created_at") or "").strip()
+                if oldest_draft_raw:
+                    oldest_draft = _parse_iso_datetime(oldest_draft_raw)
+                    if oldest_draft is None:
+                        checks.append(
+                            (
+                                "revenue_director_oldest_draft_age",
+                                False,
+                                f"unparseable oldest_draft_created_at={oldest_draft_raw}",
+                            )
+                        )
+                    else:
+                        age_hours = max(0.0, (datetime.now(timezone.utc) - oldest_draft).total_seconds() / 3600.0)
+                        max_hours = max(0.0, float(args.director_max_oldest_draft_hours))
+                        checks.append(
+                            (
+                                "revenue_director_oldest_draft_age",
+                                age_hours <= max_hours,
+                                f"age_hours={age_hours:.2f} max={max_hours:.2f}",
+                            )
+                        )
+                else:
+                    checks.append(("revenue_director_oldest_draft_age", True, "no draft plans"))
 
     failed = [item for item in checks if not item[1]]
     for name, ok, details in checks:
