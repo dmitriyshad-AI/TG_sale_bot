@@ -301,6 +301,39 @@ class RevenueOpsServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["created_followups"], 0)
         self.assertGreaterEqual(result["rules"]["radar:no_reply"]["skipped_duplicate_trigger"], 1)
 
+    async def test_run_lead_radar_skips_when_recent_draft_sent_exists(self) -> None:
+        service = self._service(self._settings(lead_radar_thread_cooldown_hours=6, lead_radar_daily_cap_per_thread=10))
+        conn = db.get_connection(self.db_path)
+        try:
+            user_id = db.get_or_create_user(conn, channel="telegram", external_id="u-radar-recent-sent")
+            thread_id = f"tg:{user_id}"
+            db.log_message(conn, user_id=user_id, direction="inbound", text="актуально ли?", meta={})
+            conn.execute(
+                "UPDATE messages SET created_at = datetime('now', '-3 hours') WHERE user_id = ?",
+                (user_id,),
+            )
+            db.create_approval_action(
+                conn,
+                draft_id=None,
+                user_id=user_id,
+                thread_id=thread_id,
+                action="draft_sent",
+                actor="manager",
+                payload={"source": "manual"},
+            )
+            conn.execute(
+                "UPDATE approval_actions SET created_at = datetime('now', '-1 hours') WHERE thread_id = ? AND action = 'draft_sent'",
+                (thread_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = await service.run_lead_radar_once(trigger="recent-sent-test")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["created_followups"], 0)
+        self.assertGreaterEqual(result["rules"]["radar:no_reply"]["skipped_recent_sent"], 1)
+
     async def test_process_manual_call_upload_validation_and_error_path(self) -> None:
         service = self._service(self._settings())
         with self.assertRaises(HTTPException) as empty_exc:

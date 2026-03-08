@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -41,6 +41,7 @@ def build_faq_lab_router(
     window_days: int,
     min_question_count: int,
     default_limit: int,
+    run_faq_lab_once: Callable[..., Awaitable[dict[str, Any]]],
 ) -> APIRouter:
     router = APIRouter()
 
@@ -80,19 +81,9 @@ def build_faq_lab_router(
                 detail="FAQ Lab is disabled. Set ENABLE_FAQ_LAB=true.",
             )
 
-    def _snapshot(*, refresh: bool, limit: int, trigger: str) -> dict[str, Any]:
+    def _snapshot(*, limit: int) -> dict[str, Any]:
         conn = get_connection(db_path)
         try:
-            latest_run = None
-            current_candidates = list_faq_candidates(conn, limit=1)
-            if refresh or not current_candidates:
-                latest_run = faq_lab.refresh_faq_lab(
-                    conn,
-                    window_days=window_days,
-                    min_question_count=min_question_count,
-                    limit=limit,
-                    trigger=trigger,
-                )
             candidates = list_faq_candidates(conn, limit=limit)
             ranked_candidates: list[dict[str, Any]] = []
             for item in candidates:
@@ -150,7 +141,7 @@ def build_faq_lab_router(
                     "min_question_count": min_question_count,
                     "default_limit": default_limit,
                 },
-                "latest_run": latest_run,
+                "latest_run": recent_runs[0] if recent_runs else None,
                 "candidates": ranked_candidates,
                 "canonical_answers": canonical,
                 "top_performing_replies": top_performance,
@@ -168,7 +159,9 @@ def build_faq_lab_router(
         limit: int = Query(default=50, ge=1, le=500),
     ):
         _ensure_enabled()
-        return _snapshot(refresh=refresh, limit=limit, trigger="admin_api")
+        if refresh:
+            await run_faq_lab_once(trigger="admin_api", limit_override=limit)
+        return _snapshot(limit=limit)
 
     @router.post("/admin/faq-lab/run")
     async def admin_faq_lab_run(
@@ -177,18 +170,8 @@ def build_faq_lab_router(
     ):
         _ensure_enabled()
         effective_limit = int(payload.limit or default_limit)
-        conn = get_connection(db_path)
-        try:
-            summary = faq_lab.refresh_faq_lab(
-                conn,
-                window_days=window_days,
-                min_question_count=min_question_count,
-                limit=effective_limit,
-                trigger="manual_api",
-            )
-            return {"ok": True, "summary": summary}
-        finally:
-            conn.close()
+        summary = await run_faq_lab_once(trigger="manual_api", limit_override=effective_limit)
+        return {"ok": True, "summary": summary}
 
     @router.post("/admin/faq-lab/candidates/{candidate_id}/promote")
     async def admin_faq_lab_promote_candidate(
@@ -226,7 +209,9 @@ def build_faq_lab_router(
         limit: int = Query(default=25, ge=1, le=100),
     ):
         _ensure_enabled()
-        payload = _snapshot(refresh=refresh, limit=limit, trigger="admin_ui")
+        if refresh:
+            await run_faq_lab_once(trigger="admin_ui", limit_override=limit)
+        payload = _snapshot(limit=limit)
 
         settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
         metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
@@ -360,17 +345,7 @@ def build_faq_lab_router(
     ):
         _ensure_enabled()
         enforce_ui_csrf(request)
-        conn = get_connection(db_path)
-        try:
-            faq_lab.refresh_faq_lab(
-                conn,
-                window_days=window_days,
-                min_question_count=min_question_count,
-                limit=max(1, min(limit, 1000)),
-                trigger="manual_ui",
-            )
-        finally:
-            conn.close()
+        await run_faq_lab_once(trigger="manual_ui", limit_override=max(1, min(limit, 1000)))
         return RedirectResponse(url="/admin/ui/faq-lab?refresh=true", status_code=status.HTTP_303_SEE_OTHER)
 
     @router.post("/admin/ui/faq-lab/candidates/{candidate_id}/promote")

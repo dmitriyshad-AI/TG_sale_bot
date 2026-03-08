@@ -190,6 +190,7 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         self.assertIn("faq_lab_window_days", runtime)
         self.assertIn("faq_lab_min_question_count", runtime)
         self.assertIn("faq_lab_max_items_per_run", runtime)
+        self.assertIn("enable_outbound_copilot", runtime)
 
     def test_diagnostics_warns_when_vector_store_loaded_only_from_meta_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

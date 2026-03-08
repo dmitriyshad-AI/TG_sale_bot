@@ -33,6 +33,28 @@ class DirectorApplyPayload(BaseModel):
     max_actions: Optional[int] = Field(default=None, ge=1, le=200)
 
 
+DIRECTOR_TEMPLATES: list[dict[str, Any]] = [
+    {
+        "id": "reactivate_oge_informatics",
+        "title": "Реактивация: ОГЭ информатика",
+        "goal_text": "Верни 10 теплых лидов по ОГЭ информатика и подготовь очередь follow-up на неделю.",
+        "max_actions": 20,
+    },
+    {
+        "id": "reactivate_ege_math",
+        "title": "Реактивация: ЕГЭ математика",
+        "goal_text": "Верни 10 теплых лидов по ЕГЭ математика и подготовь персональные follow-up.",
+        "max_actions": 20,
+    },
+    {
+        "id": "calls_no_next_step",
+        "title": "После звонков: нет next step",
+        "goal_text": "Собери клиентов после звонков без next step и подготовь приоритетные follow-up.",
+        "max_actions": 25,
+    },
+]
+
+
 def build_director_router(
     *,
     db_path: Path,
@@ -90,6 +112,15 @@ def build_director_router(
             "candidates_found": len(candidates),
         }
 
+    def _resolve_template(template_id: str) -> Optional[dict[str, Any]]:
+        normalized = (template_id or "").strip()
+        if not normalized:
+            return None
+        for item in DIRECTOR_TEMPLATES:
+            if str(item.get("id") or "").strip() == normalized:
+                return item
+        return None
+
     @router.get("/admin/director")
     async def admin_director_overview(
         _: str = Depends(require_admin_dependency),
@@ -130,6 +161,11 @@ def build_director_router(
         finally:
             conn.close()
         return {"ok": True, **created}
+
+    @router.get("/admin/director/templates")
+    async def admin_director_templates(_: str = Depends(require_admin_dependency)):
+        _ensure_enabled()
+        return {"ok": True, "items": DIRECTOR_TEMPLATES}
 
     @router.post("/admin/director/plans/{plan_id}/approve")
     async def admin_director_approve_plan(
@@ -318,7 +354,22 @@ def build_director_router(
             "<h1>Director Agent</h1>"
             "<p class='muted'>Goal -> Campaign Plan -> Approve -> Apply (без автоотправки клиенту)</p>"
             "<div class='card'>"
+            "<h3>Быстрые шаблоны кампаний</h3>"
+            + "".join(
+                (
+                    "<form method='post' action='/admin/ui/director/plan' style='margin:0 0 8px 0;'>"
+                    f"<input type='hidden' name='template_id' value='{html.escape(str(item.get('id') or ''))}'>"
+                    "<input type='hidden' name='goal_text' value=''>"
+                    "<input type='hidden' name='max_actions' value='0'>"
+                    f"<button type='submit'>{html.escape(str(item.get('title') or 'Template'))}</button>"
+                    "</form>"
+                )
+                for item in DIRECTOR_TEMPLATES
+            )
+            + "</div>"
+            "<div class='card'>"
             "<form method='post' action='/admin/ui/director/plan'>"
+            "<input type='hidden' name='template_id' value=''>"
             "<p><label>Goal</label><br/><textarea name='goal_text' rows='4' style='width:100%' placeholder='Верни 10 теплых лидов по ОГЭ информатика'></textarea></p>"
             "<p><label>Max actions <input type='number' name='max_actions' min='1' max='200' value='20'></label></p>"
             "<p><button type='submit'>Build Plan</button></p>"
@@ -343,15 +394,27 @@ def build_director_router(
         actor: str = Depends(require_admin_dependency),
         goal_text: str = Form(...),
         max_actions: int = Form(default=20),
+        template_id: str = Form(default=""),
     ):
         _ensure_enabled()
         enforce_ui_csrf(request)
+        template = _resolve_template(template_id)
+        resolved_goal_text = goal_text
+        resolved_max_actions = max_actions
+        if template is not None:
+            resolved_goal_text = str(template.get("goal_text") or resolved_goal_text)
+            resolved_max_actions = int(template.get("max_actions") or resolved_max_actions)
+        if not str(resolved_goal_text or "").strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="goal_text is required.",
+            )
         conn = get_connection(db_path)
         try:
             _build_plan(
                 conn,
-                goal_text=goal_text,
-                max_actions=max(1, min(max_actions, 200)),
+                goal_text=resolved_goal_text,
+                max_actions=max(1, min(resolved_max_actions, 200)),
                 actor=actor,
             )
         finally:

@@ -72,6 +72,7 @@ class ConfigTests(unittest.TestCase):
             "ENABLE_LEAD_RADAR": "true",
             "ENABLE_FAQ_LAB": "true",
             "ENABLE_MANGO_AUTO_INGEST": "yes",
+            "ENABLE_OUTBOUND_COPILOT": "true",
             "LEAD_RADAR_SCHEDULER_ENABLED": "false",
             "LEAD_RADAR_INTERVAL_SECONDS": "1200",
             "LEAD_RADAR_NO_REPLY_HOURS": "8",
@@ -153,6 +154,7 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(settings.enable_lead_radar)
         self.assertTrue(settings.enable_faq_lab)
         self.assertTrue(settings.enable_mango_auto_ingest)
+        self.assertTrue(settings.enable_outbound_copilot)
         self.assertFalse(settings.lead_radar_scheduler_enabled)
         self.assertEqual(settings.lead_radar_interval_seconds, 1200)
         self.assertEqual(settings.lead_radar_no_reply_hours, 8)
@@ -232,6 +234,7 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(settings.enable_lead_radar)
         self.assertFalse(settings.enable_faq_lab)
         self.assertFalse(settings.enable_mango_auto_ingest)
+        self.assertFalse(settings.enable_outbound_copilot)
         self.assertTrue(settings.lead_radar_scheduler_enabled)
         self.assertEqual(settings.lead_radar_interval_seconds, 3600)
         self.assertEqual(settings.lead_radar_no_reply_hours, 6)

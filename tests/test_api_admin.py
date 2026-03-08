@@ -172,6 +172,13 @@ class ApiAdminTests(unittest.TestCase):
             self.assertEqual(len(inbox_items), 1)
             self.assertEqual(inbox_items[0]["user_id"], user_id)
 
+            summary_response = client.get("/admin/inbox/summary", auth=auth)
+            self.assertEqual(summary_response.status_code, 200)
+            summary_payload = summary_response.json()
+            self.assertTrue(summary_payload["ok"])
+            self.assertEqual(summary_payload["total_threads"], 1)
+            self.assertGreaterEqual(summary_payload["by_workflow"].get("new", 0), 1)
+
             create_draft_response = client.post(
                 f"/admin/inbox/{user_id}/drafts",
                 auth=auth,

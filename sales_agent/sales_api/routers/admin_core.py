@@ -41,6 +41,7 @@ def build_admin_core_router(
                 "enable_lead_radar": settings.enable_lead_radar,
                 "enable_faq_lab": settings.enable_faq_lab,
                 "enable_mango_auto_ingest": settings.enable_mango_auto_ingest,
+                "enable_outbound_copilot": settings.enable_outbound_copilot,
                 "lead_radar_scheduler_enabled": settings.lead_radar_scheduler_enabled,
                 "faq_lab_scheduler_enabled": settings.faq_lab_scheduler_enabled,
             },
@@ -143,6 +144,7 @@ def build_admin_core_router(
             f"ENABLE_LEAD_RADAR={settings.enable_lead_radar}<br/>"
             f"ENABLE_FAQ_LAB={settings.enable_faq_lab}<br/>"
             f"ENABLE_MANGO_AUTO_INGEST={settings.enable_mango_auto_ingest}<br/>"
+            f"ENABLE_OUTBOUND_COPILOT={settings.enable_outbound_copilot}<br/>"
             f"LEAD_RADAR_SCHEDULER_ENABLED={settings.lead_radar_scheduler_enabled}<br/>"
             f"LEAD_RADAR_INTERVAL_SECONDS={settings.lead_radar_interval_seconds}<br/>"
             f"LEAD_RADAR_NO_REPLY_HOURS={settings.lead_radar_no_reply_hours}<br/>"
@@ -391,4 +393,3 @@ def build_admin_core_router(
         return response
 
     return router
-

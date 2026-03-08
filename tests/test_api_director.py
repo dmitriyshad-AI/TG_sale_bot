@@ -96,6 +96,11 @@ class ApiDirectorTests(unittest.TestCase):
             self.assertEqual(overview.status_code, 200)
             self.assertGreaterEqual(len(overview.json()["goals"]), 1)
 
+            templates = client.get("/admin/director/templates", auth=auth)
+            self.assertEqual(templates.status_code, 200)
+            self.assertTrue(templates.json()["ok"])
+            self.assertGreaterEqual(len(templates.json()["items"]), 1)
+
             ui = client.get("/admin/ui/director", auth=auth)
             self.assertEqual(ui.status_code, 200)
             self.assertIn("Director Agent", ui.text)
@@ -106,6 +111,13 @@ class ApiDirectorTests(unittest.TestCase):
                 data={"goal_text": "Верни warm лиды по ОГЭ", "max_actions": 5},
             )
             self.assertIn(ui_create.status_code, {200, 303})
+
+            ui_template_create = client.post(
+                "/admin/ui/director/plan",
+                auth=auth,
+                data={"goal_text": "ignored", "max_actions": 0, "template_id": "reactivate_oge_informatics"},
+            )
+            self.assertIn(ui_template_create.status_code, {200, 303})
 
     def test_director_disabled_returns_404(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

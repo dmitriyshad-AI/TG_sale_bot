@@ -51,6 +51,9 @@ class DatabaseTests(unittest.TestCase):
                 "campaign_plans",
                 "campaign_actions",
                 "campaign_reports",
+                "outbound_companies",
+                "outbound_proposals",
+                "outbound_events",
                 "schema_migrations",
             }.issubset(table_names)
         )
@@ -1318,6 +1321,124 @@ class DatabaseTests(unittest.TestCase):
             db.update_campaign_goal_status(self.conn, goal_id=goal_id, status="invalid", actor="x")
         with self.assertRaises(ValueError):
             db.update_campaign_plan_status(self.conn, plan_id=plan_id, status="invalid", actor="x")
+
+    def test_outbound_company_and_proposal_flow(self) -> None:
+        company_id = db.create_outbound_company(
+            self.conn,
+            company_name="Школа 123",
+            website="https://school123.example",
+            city="Москва",
+            segment="school",
+            source="manual",
+            fit_score=71.4,
+            fit_tags=["school", "moscow"],
+            fit_reason="segment match",
+            owner="owner-1",
+            note="Теплый контакт",
+            created_by="admin",
+        )
+        self.assertGreater(company_id, 0)
+
+        company = db.get_outbound_company(self.conn, company_id=company_id)
+        self.assertIsNotNone(company)
+        self.assertEqual(company["company_name"], "Школа 123")
+        self.assertEqual(company["fit_tags"], ["school", "moscow"])
+        duplicate = db.find_outbound_company_duplicate(
+            self.conn,
+            company_name="школа 123",
+            website="http://school123.example/",
+            city="Москва",
+        )
+        self.assertIsNotNone(duplicate)
+        self.assertEqual(int(duplicate["id"]), company_id)
+
+        self.assertTrue(
+            db.update_outbound_company(
+                self.conn,
+                company_id=company_id,
+                status="qualified",
+                fit_score=82.0,
+                fit_tags=["school", "moscow", "ege"],
+                fit_reason="manual qualification",
+            )
+        )
+
+        listed = db.list_outbound_companies(self.conn, status="qualified", search="Москва", limit=10)
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["status"], "qualified")
+
+        proposal_id = db.create_outbound_proposal(
+            self.conn,
+            company_id=company_id,
+            short_message="Краткое сообщение",
+            proposal_text="Развернутый текст предложения",
+            created_by="admin",
+        )
+        self.assertGreater(proposal_id, 0)
+        self.assertTrue(
+            db.update_outbound_proposal_status(
+                self.conn,
+                proposal_id=proposal_id,
+                status="approved",
+                actor="manager",
+            )
+        )
+
+        proposal = db.get_outbound_proposal(self.conn, proposal_id=proposal_id)
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal["status"], "approved")
+        self.assertEqual(proposal["approved_by"], "manager")
+
+        proposals = db.list_outbound_proposals(self.conn, company_id=company_id, limit=10)
+        self.assertEqual(len(proposals), 1)
+        self.assertEqual(proposals[0]["company_name"], "Школа 123")
+        self.assertEqual(db.count_outbound_company_open_proposals(self.conn, company_id=company_id), 1)
+
+        event_id = db.log_outbound_event(
+            self.conn,
+            company_id=company_id,
+            proposal_id=proposal_id,
+            event_type="proposal_approved",
+            actor="manager",
+            payload={"ok": True},
+        )
+        self.assertGreater(event_id, 0)
+        events = db.list_outbound_events(self.conn, company_id=company_id, limit=10)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_type"], "proposal_approved")
+        self.assertTrue(events[0]["payload"]["ok"])
+        self.assertGreaterEqual(
+            db.count_outbound_company_recent_touches(self.conn, company_id=company_id, within_hours=24),
+            1,
+        )
+
+        # Invalid proposal transition: sent -> approved should be blocked.
+        self.assertTrue(
+            db.update_outbound_proposal_status(
+                self.conn,
+                proposal_id=proposal_id,
+                status="sent",
+                actor="sender",
+            )
+        )
+        self.assertFalse(
+            db.update_outbound_proposal_status(
+                self.conn,
+                proposal_id=proposal_id,
+                status="approved",
+                actor="sender",
+            )
+        )
+
+        # Invalid company transition: new -> won should be blocked.
+        company_2_id = db.create_outbound_company(self.conn, company_name="Новая компания")
+        self.assertFalse(
+            db.update_outbound_company(
+                self.conn,
+                company_id=company_2_id,
+                status="won",
+            )
+        )
 
 
 if __name__ == "__main__":

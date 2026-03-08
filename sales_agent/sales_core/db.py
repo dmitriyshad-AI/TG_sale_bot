@@ -1,7 +1,7 @@
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 SQLITE_BUSY_TIMEOUT_MS = 5000
 SQLITE_CONNECT_TIMEOUT_SECONDS = SQLITE_BUSY_TIMEOUT_MS / 1000
@@ -422,6 +422,55 @@ CREATE_TABLE_STATEMENTS = [
         FOREIGN KEY(plan_id) REFERENCES campaign_plans(id)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS outbound_companies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company_name TEXT NOT NULL,
+        website TEXT,
+        city TEXT,
+        segment TEXT,
+        source TEXT NOT NULL DEFAULT 'manual',
+        fit_score REAL,
+        fit_tags_json TEXT NOT NULL DEFAULT '[]',
+        fit_reason TEXT,
+        status TEXT NOT NULL DEFAULT 'new',
+        owner TEXT,
+        note TEXT,
+        created_by TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS outbound_proposals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company_id INTEGER NOT NULL,
+        short_message TEXT NOT NULL,
+        proposal_text TEXT NOT NULL,
+        offer_type TEXT NOT NULL DEFAULT 'education_program',
+        status TEXT NOT NULL DEFAULT 'draft',
+        model_name TEXT,
+        created_by TEXT,
+        approved_by TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        approved_at TEXT,
+        FOREIGN KEY(company_id) REFERENCES outbound_companies(id)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS outbound_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company_id INTEGER,
+        proposal_id INTEGER,
+        event_type TEXT NOT NULL,
+        actor TEXT,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(company_id) REFERENCES outbound_companies(id),
+        FOREIGN KEY(proposal_id) REFERENCES outbound_proposals(id)
+    );
+    """,
 ]
 
 CREATE_INDEX_STATEMENTS = [
@@ -483,6 +532,13 @@ CREATE_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_campaign_actions_plan_status ON campaign_actions(plan_id, status, created_at DESC);",
     "CREATE INDEX IF NOT EXISTS idx_campaign_actions_thread ON campaign_actions(thread_id, created_at DESC);",
     "CREATE INDEX IF NOT EXISTS idx_campaign_reports_goal_created ON campaign_reports(goal_id, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_outbound_companies_status_fit ON outbound_companies(status, fit_score DESC, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_outbound_companies_segment_city ON outbound_companies(segment, city, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_outbound_companies_source_created ON outbound_companies(source, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_outbound_proposals_company_status ON outbound_proposals(company_id, status, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_outbound_proposals_status_created ON outbound_proposals(status, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_outbound_events_company_created ON outbound_events(company_id, created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_outbound_events_proposal_created ON outbound_events(proposal_id, created_at DESC);",
 ]
 
 
@@ -3020,6 +3076,608 @@ def list_campaign_reports(
     for row in cursor.fetchall():
         item = dict(row)
         item["report"] = _safe_json_loads(item.pop("report_json"))
+        rows.append(item)
+    return rows
+
+
+OUTBOUND_COMPANY_STATUSES = {
+    "new",
+    "qualified",
+    "proposal_ready",
+    "contacted",
+    "in_progress",
+    "won",
+    "lost",
+    "archived",
+}
+OUTBOUND_PROPOSAL_STATUSES = {"draft", "approved", "sent", "rejected", "archived"}
+OUTBOUND_COMPANY_STATUS_TRANSITIONS = {
+    "new": {"new", "qualified", "proposal_ready", "contacted", "in_progress", "lost", "archived"},
+    "qualified": {"qualified", "proposal_ready", "contacted", "in_progress", "lost", "archived"},
+    "proposal_ready": {"proposal_ready", "contacted", "in_progress", "lost", "archived"},
+    "contacted": {"contacted", "in_progress", "won", "lost", "archived"},
+    "in_progress": {"in_progress", "won", "lost", "archived"},
+    "won": {"won", "archived"},
+    "lost": {"lost", "archived"},
+    "archived": {"archived"},
+}
+OUTBOUND_PROPOSAL_STATUS_TRANSITIONS = {
+    "draft": {"draft", "approved", "rejected", "archived"},
+    "approved": {"approved", "sent", "rejected", "archived"},
+    "sent": {"sent", "archived"},
+    "rejected": {"rejected", "draft", "archived"},
+    "archived": {"archived"},
+}
+OUTBOUND_PROPOSAL_OPEN_STATUSES = {"draft", "approved"}
+OUTBOUND_TOUCH_EVENT_TYPES = {
+    "proposal_created",
+    "proposal_approved",
+    "proposal_sent",
+    "manual_contact",
+    "company_status_changed",
+}
+
+
+def _normalize_outbound_company_status(value: Optional[str]) -> str:
+    normalized = (value or "new").strip().lower() or "new"
+    return normalized if normalized in OUTBOUND_COMPANY_STATUSES else "new"
+
+
+def _normalize_outbound_proposal_status(value: Optional[str]) -> str:
+    normalized = (value or "draft").strip().lower() or "draft"
+    return normalized if normalized in OUTBOUND_PROPOSAL_STATUSES else "draft"
+
+
+def _normalize_company_identity_name(value: Optional[str]) -> str:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return ""
+    return " ".join(normalized.replace('"', "").replace("'", "").split())
+
+
+def _normalize_company_identity_city(value: Optional[str]) -> str:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return ""
+    return " ".join(normalized.split())
+
+
+def _normalize_company_identity_website(value: Optional[str]) -> str:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return ""
+    normalized = normalized.replace("https://", "").replace("http://", "")
+    if normalized.startswith("www."):
+        normalized = normalized[4:]
+    normalized = normalized.rstrip("/")
+    if "/" in normalized:
+        normalized = normalized.split("/", 1)[0]
+    return normalized
+
+
+def find_outbound_company_duplicate(
+    conn: sqlite3.Connection,
+    *,
+    company_name: str,
+    website: Optional[str] = None,
+    city: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    name_key = _normalize_company_identity_name(company_name)
+    if not name_key:
+        return None
+    website_key = _normalize_company_identity_website(website)
+    city_key = _normalize_company_identity_city(city)
+
+    cursor = conn.execute(
+        """
+        SELECT id, company_name, website, city, status
+        FROM outbound_companies
+        ORDER BY id DESC
+        LIMIT 2000
+        """
+    )
+    for row in cursor.fetchall():
+        item = dict(row)
+        row_name_key = _normalize_company_identity_name(item.get("company_name"))
+        row_city_key = _normalize_company_identity_city(item.get("city"))
+        row_website_key = _normalize_company_identity_website(item.get("website"))
+        if website_key and row_website_key and website_key == row_website_key:
+            return item
+        if row_name_key == name_key:
+            if city_key and row_city_key and city_key != row_city_key:
+                continue
+            return item
+    return None
+
+
+def count_outbound_company_open_proposals(conn: sqlite3.Connection, *, company_id: int) -> int:
+    placeholders = ",".join("?" for _ in OUTBOUND_PROPOSAL_OPEN_STATUSES)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(1) AS cnt
+        FROM outbound_proposals
+        WHERE company_id = ?
+          AND status IN ({placeholders})
+        """,
+        (int(company_id), *sorted(OUTBOUND_PROPOSAL_OPEN_STATUSES)),
+    ).fetchone()
+    if not row:
+        return 0
+    return int(row["cnt"] or 0)
+
+
+def count_outbound_company_recent_touches(
+    conn: sqlite3.Connection,
+    *,
+    company_id: int,
+    within_hours: int = 24,
+    event_types: Optional[Iterable[str]] = None,
+) -> int:
+    hours = max(1, int(within_hours))
+    normalized_types = sorted(
+        {
+            str(item).strip().lower()
+            for item in (event_types if event_types is not None else OUTBOUND_TOUCH_EVENT_TYPES)
+            if str(item).strip()
+        }
+    )
+    if not normalized_types:
+        return 0
+    placeholders = ",".join("?" for _ in normalized_types)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(1) AS cnt
+        FROM outbound_events
+        WHERE company_id = ?
+          AND event_type IN ({placeholders})
+          AND created_at >= datetime('now', ?)
+        """,
+        (int(company_id), *normalized_types, f"-{hours} hours"),
+    ).fetchone()
+    if not row:
+        return 0
+    return int(row["cnt"] or 0)
+
+
+def create_outbound_company(
+    conn: sqlite3.Connection,
+    *,
+    company_name: str,
+    website: Optional[str] = None,
+    city: Optional[str] = None,
+    segment: Optional[str] = None,
+    source: str = "manual",
+    fit_score: Optional[float] = None,
+    fit_tags: Optional[list[str]] = None,
+    fit_reason: Optional[str] = None,
+    status: str = "new",
+    owner: Optional[str] = None,
+    note: Optional[str] = None,
+    created_by: Optional[str] = None,
+) -> int:
+    normalized_name = (company_name or "").strip()
+    if not normalized_name:
+        raise ValueError("company_name is required")
+    cursor = conn.execute(
+        """
+        INSERT INTO outbound_companies (
+            company_name,
+            website,
+            city,
+            segment,
+            source,
+            fit_score,
+            fit_tags_json,
+            fit_reason,
+            status,
+            owner,
+            note,
+            created_by
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            normalized_name,
+            (website or "").strip() or None,
+            (city or "").strip() or None,
+            (segment or "").strip() or None,
+            (source or "manual").strip().lower() or "manual",
+            float(fit_score) if isinstance(fit_score, (int, float)) else None,
+            json.dumps([str(item).strip() for item in (fit_tags or []) if str(item).strip()], ensure_ascii=False),
+            (fit_reason or "").strip() or None,
+            _normalize_outbound_company_status(status),
+            (owner or "").strip() or None,
+            (note or "").strip() or None,
+            (created_by or "").strip() or None,
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def get_outbound_company(conn: sqlite3.Connection, *, company_id: int) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT
+            id,
+            company_name,
+            website,
+            city,
+            segment,
+            source,
+            fit_score,
+            fit_tags_json,
+            fit_reason,
+            status,
+            owner,
+            note,
+            created_by,
+            created_at,
+            updated_at
+        FROM outbound_companies
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (int(company_id),),
+    ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["fit_tags"] = _safe_json_list(item.pop("fit_tags_json"))
+    return item
+
+
+def list_outbound_companies(
+    conn: sqlite3.Connection,
+    *,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    min_fit_score: Optional[float] = None,
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    where_parts: list[str] = []
+    params: list[Any] = []
+    if isinstance(status, str) and status.strip():
+        where_parts.append("status = ?")
+        params.append(_normalize_outbound_company_status(status))
+    if isinstance(search, str) and search.strip():
+        token = f"%{search.strip()}%"
+        where_parts.append(
+            "(company_name LIKE ? OR COALESCE(city, '') LIKE ? OR COALESCE(segment, '') LIKE ? OR COALESCE(note, '') LIKE ?)"
+        )
+        params.extend([token, token, token, token])
+    if isinstance(min_fit_score, (int, float)):
+        where_parts.append("COALESCE(fit_score, 0) >= ?")
+        params.append(float(min_fit_score))
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    params.append(max(1, int(limit)))
+    cursor = conn.execute(
+        f"""
+        SELECT
+            id,
+            company_name,
+            website,
+            city,
+            segment,
+            source,
+            fit_score,
+            fit_tags_json,
+            fit_reason,
+            status,
+            owner,
+            note,
+            created_by,
+            created_at,
+            updated_at
+        FROM outbound_companies
+        {where_sql}
+        ORDER BY COALESCE(fit_score, 0) DESC, id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    rows: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["fit_tags"] = _safe_json_list(item.pop("fit_tags_json"))
+        rows.append(item)
+    return rows
+
+
+def update_outbound_company(
+    conn: sqlite3.Connection,
+    *,
+    company_id: int,
+    status: Optional[str] = None,
+    fit_score: Optional[float] = None,
+    fit_tags: Optional[list[str]] = None,
+    fit_reason: Optional[str] = None,
+    website: Optional[str] = None,
+    city: Optional[str] = None,
+    segment: Optional[str] = None,
+    owner: Optional[str] = None,
+    note: Optional[str] = None,
+) -> bool:
+    row = conn.execute(
+        "SELECT id, status FROM outbound_companies WHERE id = ? LIMIT 1",
+        (int(company_id),),
+    ).fetchone()
+    if not row:
+        return False
+
+    updates: list[str] = []
+    params: list[Any] = []
+    if status is not None:
+        current_status = _normalize_outbound_company_status(str(row["status"] or "new"))
+        target_status = _normalize_outbound_company_status(status)
+        allowed = OUTBOUND_COMPANY_STATUS_TRANSITIONS.get(current_status, {current_status})
+        if target_status not in allowed:
+            return False
+        updates.append("status = ?")
+        params.append(target_status)
+    if fit_score is not None:
+        updates.append("fit_score = ?")
+        params.append(float(fit_score))
+    if fit_tags is not None:
+        updates.append("fit_tags_json = ?")
+        params.append(json.dumps([str(item).strip() for item in fit_tags if str(item).strip()], ensure_ascii=False))
+    if fit_reason is not None:
+        updates.append("fit_reason = ?")
+        params.append((fit_reason or "").strip() or None)
+    if website is not None:
+        updates.append("website = ?")
+        params.append((website or "").strip() or None)
+    if city is not None:
+        updates.append("city = ?")
+        params.append((city or "").strip() or None)
+    if segment is not None:
+        updates.append("segment = ?")
+        params.append((segment or "").strip() or None)
+    if owner is not None:
+        updates.append("owner = ?")
+        params.append((owner or "").strip() or None)
+    if note is not None:
+        updates.append("note = ?")
+        params.append((note or "").strip() or None)
+    if not updates:
+        return False
+    params.append(int(company_id))
+    conn.execute(
+        f"""
+        UPDATE outbound_companies
+        SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        tuple(params),
+    )
+    conn.commit()
+    return conn.total_changes > 0
+
+
+def create_outbound_proposal(
+    conn: sqlite3.Connection,
+    *,
+    company_id: int,
+    short_message: str,
+    proposal_text: str,
+    offer_type: str = "education_program",
+    status: str = "draft",
+    model_name: Optional[str] = None,
+    created_by: Optional[str] = None,
+) -> int:
+    short_text = (short_message or "").strip()
+    proposal = (proposal_text or "").strip()
+    if not short_text:
+        raise ValueError("short_message is required")
+    if not proposal:
+        raise ValueError("proposal_text is required")
+
+    row = conn.execute("SELECT id FROM outbound_companies WHERE id = ? LIMIT 1", (int(company_id),)).fetchone()
+    if not row:
+        raise ValueError(f"outbound company not found: {company_id}")
+
+    cursor = conn.execute(
+        """
+        INSERT INTO outbound_proposals (
+            company_id,
+            short_message,
+            proposal_text,
+            offer_type,
+            status,
+            model_name,
+            created_by
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(company_id),
+            short_text,
+            proposal,
+            (offer_type or "education_program").strip().lower() or "education_program",
+            _normalize_outbound_proposal_status(status),
+            (model_name or "").strip() or None,
+            (created_by or "").strip() or None,
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def get_outbound_proposal(conn: sqlite3.Connection, *, proposal_id: int) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        """
+        SELECT
+            id,
+            company_id,
+            short_message,
+            proposal_text,
+            offer_type,
+            status,
+            model_name,
+            created_by,
+            approved_by,
+            created_at,
+            updated_at,
+            approved_at
+        FROM outbound_proposals
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (int(proposal_id),),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_outbound_proposals(
+    conn: sqlite3.Connection,
+    *,
+    company_id: Optional[int] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    where_parts: list[str] = []
+    params: list[Any] = []
+    if isinstance(company_id, int):
+        where_parts.append("p.company_id = ?")
+        params.append(int(company_id))
+    if isinstance(status, str) and status.strip():
+        where_parts.append("p.status = ?")
+        params.append(_normalize_outbound_proposal_status(status))
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    params.append(max(1, int(limit)))
+
+    cursor = conn.execute(
+        f"""
+        SELECT
+            p.id,
+            p.company_id,
+            p.short_message,
+            p.proposal_text,
+            p.offer_type,
+            p.status,
+            p.model_name,
+            p.created_by,
+            p.approved_by,
+            p.created_at,
+            p.updated_at,
+            p.approved_at,
+            c.company_name
+        FROM outbound_proposals p
+        JOIN outbound_companies c ON c.id = p.company_id
+        {where_sql}
+        ORDER BY p.id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def update_outbound_proposal_status(
+    conn: sqlite3.Connection,
+    *,
+    proposal_id: int,
+    status: str,
+    actor: Optional[str] = None,
+) -> bool:
+    normalized_status = _normalize_outbound_proposal_status(status)
+    row = conn.execute(
+        "SELECT id, status FROM outbound_proposals WHERE id = ? LIMIT 1",
+        (int(proposal_id),),
+    ).fetchone()
+    if not row:
+        return False
+    current_status = _normalize_outbound_proposal_status(str(row["status"] or "draft"))
+    allowed = OUTBOUND_PROPOSAL_STATUS_TRANSITIONS.get(current_status, {current_status})
+    if normalized_status not in allowed:
+        return False
+    actor_value = (actor or "").strip() or None
+    conn.execute(
+        """
+        UPDATE outbound_proposals
+        SET
+            status = ?,
+            approved_by = CASE WHEN ? = 'approved' THEN COALESCE(?, approved_by) ELSE approved_by END,
+            approved_at = CASE WHEN ? = 'approved' THEN CURRENT_TIMESTAMP ELSE approved_at END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (normalized_status, normalized_status, actor_value, normalized_status, int(proposal_id)),
+    )
+    conn.commit()
+    return conn.total_changes > 0
+
+
+def log_outbound_event(
+    conn: sqlite3.Connection,
+    *,
+    event_type: str,
+    actor: Optional[str] = None,
+    company_id: Optional[int] = None,
+    proposal_id: Optional[int] = None,
+    payload: Optional[Dict[str, Any]] = None,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO outbound_events (
+            company_id,
+            proposal_id,
+            event_type,
+            actor,
+            payload_json
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            int(company_id) if isinstance(company_id, int) and company_id > 0 else None,
+            int(proposal_id) if isinstance(proposal_id, int) and proposal_id > 0 else None,
+            (event_type or "").strip().lower() or "unknown",
+            (actor or "").strip() or None,
+            json.dumps(payload or {}, ensure_ascii=False),
+        ),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def list_outbound_events(
+    conn: sqlite3.Connection,
+    *,
+    company_id: Optional[int] = None,
+    proposal_id: Optional[int] = None,
+    limit: int = 100,
+) -> list[Dict[str, Any]]:
+    where_parts: list[str] = []
+    params: list[Any] = []
+    if isinstance(company_id, int):
+        where_parts.append("company_id = ?")
+        params.append(int(company_id))
+    if isinstance(proposal_id, int):
+        where_parts.append("proposal_id = ?")
+        params.append(int(proposal_id))
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+    params.append(max(1, int(limit)))
+    cursor = conn.execute(
+        f"""
+        SELECT
+            id,
+            company_id,
+            proposal_id,
+            event_type,
+            actor,
+            payload_json,
+            created_at
+        FROM outbound_events
+        {where_sql}
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    rows: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["payload"] = _safe_json_loads(item.pop("payload_json"))
         rows.append(item)
     return rows
 

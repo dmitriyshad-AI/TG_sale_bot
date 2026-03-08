@@ -64,6 +64,7 @@ class Settings:
     enable_lead_radar: bool = False
     enable_faq_lab: bool = False
     enable_mango_auto_ingest: bool = False
+    enable_outbound_copilot: bool = False
     lead_radar_scheduler_enabled: bool = True
     lead_radar_interval_seconds: int = 3600
     lead_radar_no_reply_hours: int = 6
@@ -404,6 +405,7 @@ def get_settings() -> Settings:
         enable_lead_radar=_parse_bool_env("ENABLE_LEAD_RADAR", default=False),
         enable_faq_lab=_parse_bool_env("ENABLE_FAQ_LAB", default=False),
         enable_mango_auto_ingest=_parse_bool_env("ENABLE_MANGO_AUTO_INGEST", default=False),
+        enable_outbound_copilot=_parse_bool_env("ENABLE_OUTBOUND_COPILOT", default=False),
         lead_radar_scheduler_enabled=_parse_bool_env("LEAD_RADAR_SCHEDULER_ENABLED", default=True),
         lead_radar_interval_seconds=lead_radar_interval_seconds,
         lead_radar_no_reply_hours=lead_radar_no_reply_hours,

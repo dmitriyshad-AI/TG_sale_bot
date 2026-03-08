@@ -154,6 +154,7 @@ ENABLE_DIRECTOR_AGENT=false
 ENABLE_LEAD_RADAR=false
 ENABLE_FAQ_LAB=false
 ENABLE_MANGO_AUTO_INGEST=false
+ENABLE_OUTBOUND_COPILOT=false
 LEAD_RADAR_SCHEDULER_ENABLED=true
 LEAD_RADAR_INTERVAL_SECONDS=3600
 LEAD_RADAR_NO_REPLY_HOURS=6
@@ -298,6 +299,23 @@ API/UI:
 - `POST /admin/director/plans/{plan_id}/approve` — approve плана
 - `POST /admin/director/plans/{plan_id}/apply` — создать followups + drafts из плана
 - `GET /admin/ui/director` — рабочая HTML-панель (Goal -> Plan -> Approve -> Apply)
+
+## B2B Outbound Copilot (Step 11)
+
+Назначение: подготовка B2B-выхода без авторассылки. Система помогает импортировать компании, оценить fit, сформировать черновики сообщений/КП и вести статусы.
+
+Feature flag:
+- `ENABLE_OUTBOUND_COPILOT=true`
+
+API/UI:
+- `GET /admin/outbound` — список компаний + proposals + базовая статистика
+- `POST /admin/outbound/companies` — добавить компанию вручную
+- `POST /admin/outbound/import-csv` — импорт CSV (`company_name|name`, `website`, `city`, `segment`, `note`, `owner`)
+- `POST /admin/outbound/companies/{company_id}/score` — пересчитать fit-score
+- `POST /admin/outbound/companies/{company_id}/proposal` — создать draft short-message + draft КП
+- `PATCH /admin/outbound/companies/{company_id}/status` — обновить статус сделки
+- `POST /admin/outbound/proposals/{proposal_id}/approve` — approve draft КП
+- `GET /admin/ui/outbound` — рабочая HTML-панель
 
 ## Команды обслуживания
 

@@ -276,6 +276,23 @@ class RevenueOpsService:
         ).fetchone()
         return int(row["cnt"]) if row else 0
 
+    def _has_recent_draft_sent(self, conn: Any, *, thread_id: str, hours: int) -> bool:
+        normalized_hours = max(0, int(hours))
+        if normalized_hours <= 0:
+            return False
+        row = conn.execute(
+            """
+            SELECT id
+            FROM approval_actions
+            WHERE thread_id = ?
+              AND action = 'draft_sent'
+              AND created_at >= datetime('now', ?)
+            LIMIT 1
+            """,
+            (thread_id, f"-{normalized_hours} hours"),
+        ).fetchone()
+        return row is not None
+
     def _count_today_radar_followups(self, conn: Any, *, thread_id: str) -> int:
         row = conn.execute(
             """
@@ -307,6 +324,12 @@ class RevenueOpsService:
         ):
             return (False, "duplicate_trigger")
         if self.settings.lead_radar_thread_cooldown_hours > 0:
+            if self._has_recent_draft_sent(
+                conn,
+                thread_id=thread_id,
+                hours=self.settings.lead_radar_thread_cooldown_hours,
+            ):
+                return (False, "recent_sent")
             recent_count = self._count_recent_radar_followups(
                 conn,
                 thread_id=thread_id,
@@ -609,6 +632,7 @@ class RevenueOpsService:
                             "skipped_duplicate_trigger": 0,
                             "skipped_outcome": 0,
                             "skipped_cooldown": 0,
+                            "skipped_recent_sent": 0,
                             "skipped_daily_cap": 0,
                         },
                         self.lead_radar_rule_call_no_next_step: {
@@ -618,6 +642,7 @@ class RevenueOpsService:
                             "skipped_duplicate_trigger": 0,
                             "skipped_outcome": 0,
                             "skipped_cooldown": 0,
+                            "skipped_recent_sent": 0,
                             "skipped_daily_cap": 0,
                         },
                         self.lead_radar_rule_stale_warm: {
@@ -627,6 +652,7 @@ class RevenueOpsService:
                             "skipped_duplicate_trigger": 0,
                             "skipped_outcome": 0,
                             "skipped_cooldown": 0,
+                            "skipped_recent_sent": 0,
                             "skipped_daily_cap": 0,
                         },
                     },
@@ -657,6 +683,8 @@ class RevenueOpsService:
                             result["rules"][self.lead_radar_rule_no_reply]["skipped_duplicate_trigger"] += 1
                         elif skip_reason == "cooldown":
                             result["rules"][self.lead_radar_rule_no_reply]["skipped_cooldown"] += 1
+                        elif skip_reason == "recent_sent":
+                            result["rules"][self.lead_radar_rule_no_reply]["skipped_recent_sent"] += 1
                         elif skip_reason == "daily_cap":
                             result["rules"][self.lead_radar_rule_no_reply]["skipped_daily_cap"] += 1
                         continue
@@ -712,6 +740,8 @@ class RevenueOpsService:
                             result["rules"][self.lead_radar_rule_call_no_next_step]["skipped_duplicate_trigger"] += 1
                         elif skip_reason == "cooldown":
                             result["rules"][self.lead_radar_rule_call_no_next_step]["skipped_cooldown"] += 1
+                        elif skip_reason == "recent_sent":
+                            result["rules"][self.lead_radar_rule_call_no_next_step]["skipped_recent_sent"] += 1
                         elif skip_reason == "daily_cap":
                             result["rules"][self.lead_radar_rule_call_no_next_step]["skipped_daily_cap"] += 1
                         continue
@@ -769,6 +799,8 @@ class RevenueOpsService:
                             result["rules"][self.lead_radar_rule_stale_warm]["skipped_duplicate_trigger"] += 1
                         elif skip_reason == "cooldown":
                             result["rules"][self.lead_radar_rule_stale_warm]["skipped_cooldown"] += 1
+                        elif skip_reason == "recent_sent":
+                            result["rules"][self.lead_radar_rule_stale_warm]["skipped_recent_sent"] += 1
                         elif skip_reason == "daily_cap":
                             result["rules"][self.lead_radar_rule_stale_warm]["skipped_daily_cap"] += 1
                         continue

@@ -385,6 +385,7 @@ def build_runtime_diagnostics(settings: Settings) -> Dict[str, object]:
             "enable_call_copilot": settings.enable_call_copilot,
             "enable_faq_lab": settings.enable_faq_lab,
             "enable_mango_auto_ingest": settings.enable_mango_auto_ingest,
+            "enable_outbound_copilot": settings.enable_outbound_copilot,
             "faq_lab_scheduler_enabled": settings.faq_lab_scheduler_enabled,
             "faq_lab_interval_seconds": settings.faq_lab_interval_seconds,
             "faq_lab_window_days": settings.faq_lab_window_days,

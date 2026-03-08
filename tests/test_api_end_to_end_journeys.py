@@ -38,6 +38,21 @@ def _settings(db_path: Path, catalog_path: Path) -> Settings:
     )
 
 
+def _settings_revenue(db_path: Path, catalog_path: Path) -> Settings:
+    cfg = _settings(db_path, catalog_path)
+    cfg.enable_lead_radar = True
+    cfg.enable_director_agent = True
+    cfg.enable_call_copilot = True
+    cfg.enable_outbound_copilot = True
+    cfg.lead_radar_no_reply_hours = 1
+    cfg.lead_radar_call_no_next_step_hours = 1
+    cfg.lead_radar_stale_warm_days = 1
+    cfg.lead_radar_max_items_per_run = 20
+    cfg.lead_radar_thread_cooldown_hours = 0
+    cfg.lead_radar_daily_cap_per_thread = 5
+    return cfg
+
+
 def _write_catalog(path: Path) -> None:
     path.write_text(
         """
@@ -313,6 +328,153 @@ class ApiEndToEndJourneyTests(unittest.TestCase):
             sent = send.json()["draft"]
             self.assertEqual(sent["status"], "sent")
             self.assertEqual(sent["sent_message_id"], "tg-manual-1001")
+
+    def test_e2e_revenue_followup_run_creates_tasks_for_stale_inbound(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = root / "app.db"
+            catalog_path = root / "products.yaml"
+            _write_catalog(catalog_path)
+            cfg = _settings_revenue(db_path, catalog_path)
+            app = create_app(cfg)
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            conn = db_module.get_connection(db_path)
+            try:
+                user_id = db_module.get_or_create_user(conn, channel="telegram", external_id="radar-user-1")
+                db_module.log_message(conn, user_id=user_id, direction="inbound", text="Хочу готовиться к ЕГЭ", meta={})
+                conn.execute(
+                    "UPDATE messages SET created_at = datetime('now', '-2 hours') WHERE user_id = ?",
+                    (user_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            run_response = client.post("/admin/followups/run", auth=auth)
+            self.assertEqual(run_response.status_code, 200)
+            result = run_response.json()
+            self.assertTrue(result)
+
+            followups = client.get("/admin/followups", auth=auth)
+            self.assertEqual(followups.status_code, 200)
+            items = followups.json()["items"]
+            self.assertGreaterEqual(len(items), 1)
+            self.assertTrue(any(str(item.get("reason") or "").startswith("radar:no_reply") for item in items))
+
+    def test_e2e_revenue_call_upload_materializes_summary_and_followup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = root / "app.db"
+            catalog_path = root / "products.yaml"
+            _write_catalog(catalog_path)
+            cfg = _settings_revenue(db_path, catalog_path)
+            app = create_app(cfg)
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            conn = db_module.get_connection(db_path)
+            try:
+                user_id = db_module.get_or_create_user(conn, channel="telegram", external_id="call-user-1")
+            finally:
+                conn.close()
+
+            upload = client.post(
+                "/admin/calls/upload",
+                auth=auth,
+                data={
+                    "user_id": str(user_id),
+                    "transcript_hint": "Родитель спросил про план ЕГЭ по математике, договорились о консультации.",
+                },
+            )
+            self.assertEqual(upload.status_code, 200)
+            call_item = upload.json()["item"]
+            self.assertEqual(call_item["status"], "done")
+
+            calls = client.get("/admin/calls", auth=auth)
+            self.assertEqual(calls.status_code, 200)
+            self.assertGreaterEqual(len(calls.json()["items"]), 1)
+
+            followups = client.get("/admin/followups", auth=auth)
+            self.assertEqual(followups.status_code, 200)
+            self.assertTrue(any("call_copilot" in str(item.get("reason") or "") for item in followups.json()["items"]))
+
+    def test_e2e_revenue_director_plan_to_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = root / "app.db"
+            catalog_path = root / "products.yaml"
+            _write_catalog(catalog_path)
+            cfg = _settings_revenue(db_path, catalog_path)
+            app = create_app(cfg)
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            conn = db_module.get_connection(db_path)
+            try:
+                user_id = db_module.get_or_create_user(conn, channel="telegram", external_id="director-user-1")
+                db_module.log_message(conn, user_id=user_id, direction="inbound", text="ОГЭ информатика, нужен план", meta={})
+            finally:
+                conn.close()
+
+            plan_create = client.post(
+                "/admin/director/plan",
+                auth=auth,
+                json={"goal_text": "Вернуть 5 теплых лидов по ОГЭ информатика", "max_actions": 5},
+            )
+            self.assertEqual(plan_create.status_code, 200)
+            plan_id = int(plan_create.json()["plan_id"])
+
+            approve = client.post(f"/admin/director/plans/{plan_id}/approve", auth=auth)
+            self.assertEqual(approve.status_code, 200)
+
+            apply = client.post(f"/admin/director/plans/{plan_id}/apply", auth=auth, json={"max_actions": 5})
+            self.assertEqual(apply.status_code, 200)
+            self.assertGreaterEqual(len(apply.json()["actions"]), 1)
+
+            followups = client.get("/admin/followups", auth=auth)
+            self.assertEqual(followups.status_code, 200)
+            self.assertGreaterEqual(len(followups.json()["items"]), 1)
+
+    def test_e2e_revenue_outbound_guard_prevents_double_proposal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = root / "app.db"
+            catalog_path = root / "products.yaml"
+            _write_catalog(catalog_path)
+            cfg = _settings_revenue(db_path, catalog_path)
+            app = create_app(cfg)
+            client = build_test_client(app)
+            auth = ("admin", "secret")
+
+            create_company = client.post(
+                "/admin/outbound/companies",
+                auth=auth,
+                json={
+                    "company_name": "Школа Revenue",
+                    "website": "https://revenue-school.example",
+                    "city": "Москва",
+                    "segment": "school",
+                },
+            )
+            self.assertEqual(create_company.status_code, 200)
+            company_id = int(create_company.json()["company"]["id"])
+
+            first = client.post(
+                f"/admin/outbound/companies/{company_id}/proposal",
+                auth=auth,
+                json={"offer_focus": "Пилотная программа ОГЭ/ЕГЭ"},
+            )
+            self.assertEqual(first.status_code, 200)
+
+            second = client.post(
+                f"/admin/outbound/companies/{company_id}/proposal",
+                auth=auth,
+                json={"offer_focus": "Повторное предложение"},
+            )
+            self.assertEqual(second.status_code, 409)
+            self.assertEqual(second.json()["detail"]["code"], "open_proposal_exists")
 
 
 if __name__ == "__main__":

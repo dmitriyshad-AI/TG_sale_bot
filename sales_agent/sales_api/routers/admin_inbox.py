@@ -132,6 +132,35 @@ def build_admin_inbox_router(
             conn.close()
         return {"ok": True, "items": items}
 
+    @router.get("/admin/inbox/summary")
+    async def admin_inbox_summary(
+        _: str = Depends(require_admin_dependency),
+        search: Optional[str] = Query(default=None),
+        limit: int = Query(default=1000, ge=1, le=5000),
+    ):
+        conn = get_connection(db_path)
+        try:
+            items = list_inbox_threads(
+                conn,
+                workflow_status=None,
+                search=(search or "").strip() or None,
+                limit=max(1, min(limit, 5000)),
+            )
+        finally:
+            conn.close()
+        by_workflow: Dict[str, int] = {}
+        for item in items:
+            workflow = str(item.get("workflow_status") or "new").strip().lower() or "new"
+            by_workflow[workflow] = by_workflow.get(workflow, 0) + 1
+        return {
+            "ok": True,
+            "total_threads": len(items),
+            "by_workflow": by_workflow,
+            "needs_approval_count": by_workflow.get("needs_approval", 0),
+            "ready_to_send_count": by_workflow.get("ready_to_send", 0),
+            "failed_count": by_workflow.get("failed", 0),
+        }
+
     @router.get("/admin/followups")
     async def admin_followups(
         _: str = Depends(require_admin_dependency),
